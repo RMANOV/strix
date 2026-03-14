@@ -113,6 +113,8 @@ pub struct SwarmOrchestrator {
     pub assignments: Vec<Assignment>,
     /// Per-drone regime tracking.
     pub regimes: HashMap<u32, Regime>,
+    /// Per-drone previous positions (for visual odometry delta).
+    prev_positions: HashMap<u32, Vector3<f64>>,
     /// Per-drone signal histories for CUSUM (drone_id → signal buffer).
     signal_histories: HashMap<u32, Vec<f64>>,
     /// Gossip version counter.
@@ -161,6 +163,7 @@ impl SwarmOrchestrator {
             tracer: TraceRecorder::new(),
             assignments: Vec::new(),
             regimes,
+            prev_positions: HashMap::new(),
             signal_histories,
             gossip_version: 0,
             tick_count: 0,
@@ -230,6 +233,7 @@ impl SwarmOrchestrator {
         // Remove drone from active tracking
         self.nav_filters.remove(&drone_id);
         self.regimes.remove(&drone_id);
+        self.prev_positions.remove(&drone_id);
         self.signal_histories.remove(&drone_id);
         self.gossip.remove_peer(NodeId(drone_id));
 
@@ -287,21 +291,60 @@ impl SwarmOrchestrator {
 
         for (id, telem) in telemetry {
             if let Some(filter) = self.nav_filters.get_mut(id) {
-                // Build observation from telemetry
-                let obs = vec![strix_core::Observation::Barometer {
-                    altitude: -telem.position[2], // NED: z down, altitude up
-                    timestamp: telem.timestamp,
-                }];
-
                 let drone_pos =
                     Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
+
+                // ── Multi-sensor fusion: build observations from telemetry ──
+                let mut obs = Vec::with_capacity(4);
+
+                // 1. Barometer — constrains vertical position
+                obs.push(strix_core::Observation::Barometer {
+                    altitude: -telem.position[2], // NED: z down, altitude up
+                    timestamp: telem.timestamp,
+                });
+
+                // 2. IMU (velocity as pseudo-acceleration) — constrains velocity
+                obs.push(strix_core::Observation::Imu {
+                    acceleration: Vector3::new(
+                        telem.velocity[0],
+                        telem.velocity[1],
+                        telem.velocity[2],
+                    ),
+                    gyro: None,
+                    timestamp: telem.timestamp,
+                });
+
+                // 3. Magnetometer — constrains heading from yaw
+                let yaw = telem.attitude[2];
+                obs.push(strix_core::Observation::Magnetometer {
+                    heading: Vector3::new(yaw.cos(), yaw.sin(), 0.0),
+                    timestamp: telem.timestamp,
+                });
+
+                // 4. Visual Odometry — position delta from previous tick
+                if let Some(prev) = self.prev_positions.get(id) {
+                    let delta = drone_pos - prev;
+                    // Only use VO if the drone actually moved (avoids noise on stationary)
+                    if delta.norm() > 0.01 {
+                        obs.push(strix_core::Observation::VisualOdometry {
+                            delta_position: delta,
+                            confidence: 0.7,
+                            timestamp: telem.timestamp,
+                        });
+                    }
+                }
+                // ── End multi-sensor fusion ─────────────────────────────────
+
                 let bearing = threat_bearings
                     .get(id)
                     .copied()
                     .unwrap_or_else(Vector3::zeros);
 
-                // Run particle filter step
+                // Run particle filter step with fused observations
                 let (_pos, _vel, _probs) = filter.step(&obs, &bearing, 1.0, dt);
+
+                // Store position for next tick's VO delta
+                self.prev_positions.insert(*id, drone_pos);
 
                 fleet_centroid += drone_pos;
                 alive_count += 1;
