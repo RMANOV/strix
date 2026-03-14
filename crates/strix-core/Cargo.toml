@@ -1,0 +1,25 @@
+[package]
+name = "strix-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Particle filter + Kalman + CUSUM + Regime detection for GPS-denied drone navigation"
+
+[lib]
+name = "strix_core"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+pyo3 = { workspace = true, optional = true }
+numpy = { workspace = true, optional = true }
+ndarray.workspace = true
+rayon.workspace = true
+nalgebra.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[features]
+default = []
+python = ["pyo3", "numpy"]

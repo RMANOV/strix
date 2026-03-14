@@ -1,0 +1,32 @@
+# Build
+/target/
+*.so
+*.dylib
+*.dll
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Maturin
+*.whl
+
+# Wrangler
+.wrangler/
+
+# Press releases (internal marketing, never in git)
+press-releases/

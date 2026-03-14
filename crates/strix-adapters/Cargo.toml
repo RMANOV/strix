@@ -1,0 +1,16 @@
+[package]
+name = "strix-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Platform adapters: MAVLink, ROS2, Simulator (Puppet Master layer)"
+
+[dependencies]
+strix-core = { path = "../strix-core" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+nalgebra.workspace = true

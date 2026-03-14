@@ -1,0 +1,188 @@
+name: Multi-Domain Combined Operations
+description: >
+  Combined UAV + UGV mission demonstrating STRIX's platform-agnostic
+  orchestration.  3 aerial drones provide overwatch and reconnaissance
+  while 2 ground vehicles navigate to an objective.  Tests the
+  PlatformAdapter abstraction, multi-platform auction, heterogeneous
+  formation management, and cross-domain coordination.
+
+  The air-ground coordination challenge: aerial sensors detect threats
+  and relay information to ground vehicles, while ground vehicles
+  request air support for obstacle clearing.  The auction must
+  correctly value cross-domain tasks (an aerial drone's bid for
+  "provide overwatch" vs a ground vehicle's bid for "advance to
+  waypoint").
+
+duration_seconds: 720
+
+platforms:
+  aerial:
+    count: 3
+    type: quadrotor
+    adapter: mavlink
+    sensors: [camera, imu, baro, mag, thermal]
+    capabilities:
+      has_sensor: true
+      has_weapon: false
+      has_ew: false
+      has_relay: true
+    max_speed_ms: 20.0
+    max_altitude_m: 120
+    endurance_s: 1500
+    initial_positions:
+      - [0, -200, -60]
+      - [-50, -220, -70]
+      - [50, -220, -70]
+    initial_energy: 1.0
+
+  ground:
+    count: 2
+    type: tracked_ugv
+    adapter: ros2
+    sensors: [camera, lidar, imu, gps]
+    capabilities:
+      has_sensor: true
+      has_weapon: true
+      has_ew: false
+      has_relay: false
+    max_speed_ms: 5.0
+    max_altitude_m: 0
+    endurance_s: 7200
+    initial_positions:
+      - [-20, -300, 0]
+      - [20, -300, 0]
+    initial_energy: 1.0
+
+environment:
+  gps_available: true
+  wind_speed_ms: 4
+  wind_direction_deg: 315
+  visibility: good
+  terrain: mixed
+  terrain_features:
+    - type: woods
+      position: [-100, -100, 0]
+      radius: 80
+      description: "Dense woodland -- blocks aerial line of sight"
+    - type: river
+      start: [-200, 0, 0]
+      end: [200, 0, 0]
+      width_m: 15
+      depth_m: 1.5
+      fordable: true
+      ford_position: [50, 0, 0]
+      description: "River crossing -- UGVs must use ford point"
+    - type: building
+      position: [0, 100, 0]
+      footprint: [20, 30]
+      height_m: 8
+      description: "Target building -- objective"
+
+mission:
+  type: escort
+  phases:
+    - name: advance
+      description: "Ground vehicles advance to river crossing with aerial overwatch"
+      objective:
+        position: [50, 0, 0]
+        radius: 30
+      duration_estimate_s: 240
+
+    - name: crossing
+      description: "UGVs cross river at ford point, UAVs provide 360-degree security"
+      objective:
+        position: [50, 20, 0]
+        radius: 20
+      duration_estimate_s: 120
+
+    - name: assault
+      description: "UGVs advance to target building, UAVs provide overwatch and BDA"
+      objective:
+        position: [0, 100, 0]
+        radius: 50
+      duration_estimate_s: 180
+
+  coordination_rules:
+    max_air_ground_separation_m: 200
+    min_overwatch_altitude_m: 40
+    relay_required: true
+
+threats:
+  - id: 1
+    type: small_arms
+    position: [100, 50, 0]
+    lethal_radius_m: 100
+    affects: [ground]
+    description: "Infantry position near river crossing"
+
+  - id: 2
+    type: small_arms
+    position: [-50, 80, 0]
+    lethal_radius_m: 80
+    affects: [ground, aerial]
+    description: "Elevated fighting position -- can engage both air and ground"
+
+  - id: 3
+    type: electronic_warfare
+    position: [0, 150, 0]
+    effect_radius_m: 100
+    effect_type: gps_degradation
+    affects: [aerial, ground]
+    description: "Localized GPS degradation near objective"
+
+auction_config:
+  cross_domain_bonus: 1.5
+  relay_priority_multiplier: 2.0
+  overwatch_proximity_weight: 3.0
+
+events:
+  - time: 60
+    type: threat_detection
+    threat_id: 1
+    detected_by: uav_1
+    description: "Aerial sensor detects infantry position near crossing"
+
+  - time: 120
+    type: ground_obstacle
+    position: [30, -100, 0]
+    type_detail: fallen_tree
+    blocks: ugv_1
+    description: "UGV 1 blocked by obstacle -- requests alternate route"
+
+  - time: 300
+    type: river_crossing_start
+    description: "UGVs begin river crossing -- maximum vulnerability"
+
+  - time: 360
+    type: threat_engagement
+    threat_id: 1
+    target: ugv_2
+    description: "Infantry opens fire on UGV 2 during crossing"
+
+  - time: 420
+    type: gps_degradation
+    affected_area:
+      center: [0, 100, 0]
+      radius: 100
+    description: "GPS degraded near objective -- UAVs switch to particle filter nav"
+
+success_criteria:
+  both_ugvs_reach_objective: true
+  max_ugv_losses: 0
+  max_uav_losses: 1
+  river_crossing_time_s: 180
+  relay_coverage_pct: 95
+  overwatch_maintained: true
+  gps_denied_nav_accuracy_m: 15
+
+metrics:
+  - phase_completion_times
+  - air_ground_separation_m
+  - relay_link_availability_pct
+  - cross_domain_task_allocation
+  - threat_detection_to_response_s
+  - ugv_path_efficiency
+  - uav_sensor_coverage_of_ugv_route
+  - regime_transitions
+  - auction_cross_domain_bids
+  - formation_coherence_per_phase

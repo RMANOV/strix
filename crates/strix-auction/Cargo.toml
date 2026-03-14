@@ -1,0 +1,15 @@
+[package]
+name = "strix-auction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Combinatorial task auction engine for drone swarm task allocation"
+
+[dependencies]
+# strix-core = { path = "../strix-core" }  # TODO: re-enable when strix-core is built
+ndarray.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rand.workspace = true
+thiserror.workspace = true

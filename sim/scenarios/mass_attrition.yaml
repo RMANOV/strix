@@ -1,0 +1,151 @@
+name: Mass Attrition Survivability
+description: >
+  12 drones performing area patrol suffer 50% losses over 10 minutes from
+  multiple threat types.  Tests the anti-fragile response: kill zone learning,
+  task redistribution, formation collapse and recovery, and the attrition
+  monitor's drawdown protection.
+
+  The key metric is not whether the swarm survives (it will lose drones),
+  but whether mission effectiveness *per surviving drone* increases after
+  each loss -- the hallmark of anti-fragile behavior.
+
+duration_seconds: 900
+
+drones:
+  count: 12
+  type: quadrotor
+  sensors: [camera, imu, baro, mag, visual_odometry]
+  initial_positions:
+    # 3x4 grid formation at 30m spacing
+    - [-45, -45, -60]
+    - [-15, -45, -60]
+    - [15, -45, -60]
+    - [45, -45, -60]
+    - [-45, -15, -60]
+    - [-15, -15, -60]
+    - [15, -15, -60]
+    - [45, -15, -60]
+    - [-45, 15, -60]
+    - [-15, 15, -60]
+    - [15, 15, -60]
+    - [45, 15, -60]
+  initial_energy: 0.9
+  max_speed_ms: 20.0
+  endurance_s: 1500
+  capabilities:
+    has_sensor: true
+    has_weapon: false
+    has_ew: false
+    has_relay: false
+
+environment:
+  gps_available: true
+  gps_loss_time: null
+  wind_speed_ms: 3
+  wind_direction_deg: 90
+  visibility: good
+  terrain: flat
+
+mission:
+  type: patrol
+  area:
+    center: [0, 0, 0]
+    radius: 800
+  patrol_pattern: sector_scan
+  report_interval: 30
+
+threats:
+  - id: 1
+    type: sam
+    position: [300, 200, 0]
+    lethal_radius_m: 250
+    detection_radius_m: 400
+    active_from_s: 60
+    description: "SAM site activates at t=60"
+
+  - id: 2
+    type: small_arms
+    position: [-200, 300, 0]
+    lethal_radius_m: 150
+    active_from_s: 0
+    description: "Persistent small arms threat"
+
+  - id: 3
+    type: small_arms
+    position: [100, -200, 0]
+    lethal_radius_m: 120
+    active_from_s: 180
+    description: "Ambush position activates at t=180"
+
+  - id: 4
+    type: electronic_warfare
+    position: [0, 400, 0]
+    effect_radius_m: 300
+    effect_type: comms_jamming
+    active_from_s: 120
+    description: "Comms jammer -- tests mesh resilience"
+
+# Scripted loss events -- 6 drones lost at specific times/positions
+attrition_schedule:
+  - time: 90
+    drone_id: 2
+    cause: sam_engagement
+    position: [280, 180, -55]
+    description: "Drone 2 enters SAM envelope"
+
+  - time: 150
+    drone_id: 7
+    cause: sam_engagement
+    position: [310, 220, -65]
+    description: "Drone 7 hit by same SAM -- kill zone should be learned"
+
+  - time: 240
+    drone_id: 0
+    cause: small_arms
+    position: [-180, 280, -50]
+    description: "Drone 0 hit by small arms"
+
+  - time: 360
+    drone_id: 4
+    cause: small_arms
+    position: [120, -180, -55]
+    description: "Drone 4 hit at ambush position"
+
+  - time: 480
+    drone_id: 9
+    cause: small_arms
+    position: [-190, 310, -50]
+    description: "Drone 9 hit near same small arms -- second kill zone"
+
+  - time: 600
+    drone_id: 11
+    cause: collision
+    position: [40, 10, -60]
+    description: "Drone 11 mid-air collision during evasive maneuver"
+
+antifragile_config:
+  kill_zone_radius_m: 150
+  kill_zone_penalty_weight: 0.5
+  attrition_drawdown_threshold: 0.3
+  critical_drawdown_threshold: 0.5
+  task_redistribution_delay_s: 5
+
+success_criteria:
+  min_drones_alive: 4
+  mission_continuity: true
+  kill_zone_count: 3
+  per_drone_effectiveness_increase: true
+  formation_recovery_time_s: 30
+  max_near_miss_kill_zone: 1
+
+metrics:
+  - drone_survival_timeline
+  - kill_zones_identified
+  - per_drone_coverage_rate
+  - formation_recovery_time_per_loss
+  - regime_transition_count
+  - attrition_rate_vs_time
+  - kill_zone_avoidance_success_rate
+  - mission_effectiveness_per_surviving_drone
+  - bid_score_evolution_near_kill_zones
+  - energy_efficiency_post_attrition

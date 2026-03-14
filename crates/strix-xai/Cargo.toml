@@ -1,0 +1,13 @@
+[package]
+name = "strix-xai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Explainability engine: decision traces, narration, after-action replay"
+
+[dependencies]
+strix-core = { path = "../strix-core" }
+# strix-auction = { path = "../strix-auction" }  # TODO: re-enable once auction API stabilises
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

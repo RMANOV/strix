@@ -1,0 +1,58 @@
+//! **strix-core** — Particle filter + Kalman + CUSUM + Regime detection
+//! for GPS-denied drone navigation.
+//!
+//! This crate is the computational heart of STRIX, a drone swarm
+//! orchestrator.  It adapts the 2D trading particle filter
+//! (`particle-filter-rs`) to a 6D navigation problem
+//! `[x, y, z, vx, vy, vz]` with three battlespace regimes:
+//!
+//! | Regime  | Trading Analogue | Dynamics                                  |
+//! |---------|------------------|-------------------------------------------|
+//! | PATROL  | RANGE            | Mean-reverting velocity, hold pattern      |
+//! | ENGAGE  | TREND            | Velocity tracks threat bearing, beta=0.3   |
+//! | EVADE   | PANIC            | High-noise random walk, rapid evasion      |
+//!
+//! Key innovations:
+//! - **Dual Particle Filter**: friendly navigation + enemy tracking
+//! - **Multi-Horizon Temporal Manager**: H1(0.1s), H2(5s), H3(60s)
+//! - **CUSUM anomaly detection**: jamming, threat shifts, environment
+//! - **Uncertainty quantification**: Hurst, volatility, kurtosis
+
+pub mod anomaly;
+pub mod particle_nav;
+pub mod regime;
+pub mod state;
+pub mod temporal;
+pub mod threat_tracker;
+pub mod uncertainty;
+
+// Re-export primary types at crate root for convenience.
+pub use state::{
+    DroneState, FleetState, Observation, Regime, SensorConfig, StateError, ThreatRegime,
+    ThreatState,
+};
+
+pub use particle_nav::ParticleNavFilter;
+pub use temporal::TemporalManager;
+pub use threat_tracker::ThreatTracker;
+
+// ---------------------------------------------------------------------------
+// PyO3 module registration (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "python")]
+mod python {
+    use pyo3::prelude::*;
+
+    /// Python module entry point for `strix_core`.
+    ///
+    /// Registers the Rust types and functions for use from Python via
+    /// PyO3.  The full Python wrappers are not implemented here — only
+    /// the module scaffold so the Rust API remains clean.
+    #[pymodule]
+    fn strix_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+        m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+        // TODO: add #[pyclass] wrappers for DroneState, ParticleNavFilter, etc.
+        Ok(())
+    }
+}

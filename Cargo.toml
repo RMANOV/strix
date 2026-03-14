@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/strix-core",
+    "crates/strix-auction",
+    "crates/strix-mesh",
+    "crates/strix-adapters",
+    "crates/strix-xai",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["RMANOV"]
+repository = "https://github.com/RMANOV/strix"
+
+[workspace.dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+numpy = "0.23"
+ndarray = "0.16"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+nalgebra = { version = "0.33", features = ["serde-serialize"] }
+rand = "0.8"
+rand_distr = "0.4"
+thiserror = "2"
+tracing = "0.1"

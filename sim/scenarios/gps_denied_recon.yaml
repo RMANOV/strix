@@ -1,0 +1,106 @@
+name: GPS-Denied Reconnaissance
+description: >
+  4 drones perform systematic area reconnaissance after losing GPS at t=30s.
+  Tests the core particle filter navigation in degraded mode, pheromone-based
+  area coverage, and formation maintenance without external positioning.
+
+  Success requires achieving 80% area coverage with position error below 10m,
+  using only IMU, barometer, magnetometer, and visual odometry.
+
+duration_seconds: 600
+
+drones:
+  count: 4
+  type: quadrotor
+  sensors: [camera, imu, baro, mag, visual_odometry]
+  initial_positions:
+    - [0, 0, -50]      # Drone 1: formation leader
+    - [20, 0, -50]     # Drone 2: right wingman
+    - [-20, 0, -50]    # Drone 3: left wingman
+    - [0, -20, -50]    # Drone 4: tail
+  initial_energy: 1.0
+  max_speed_ms: 20.0
+  endurance_s: 1800
+  capabilities:
+    has_sensor: true
+    has_weapon: false
+    has_ew: false
+    has_relay: false
+
+environment:
+  gps_available: false
+  gps_loss_time: 30         # GPS lost at t=30s (drones airborne and in formation)
+  wind_speed_ms: 5
+  wind_direction_deg: 270   # westerly wind
+  visibility: good
+  terrain: flat
+  temperature_c: 25
+  pressure_hpa: 1013
+  magnetic_declination_deg: 3.5
+
+  # Sensor noise (1-sigma)
+  sensor_noise:
+    imu_accel: 0.1          # m/s^2
+    imu_gyro: 0.01          # rad/s
+    baro: 0.5               # meters
+    mag: 0.05               # radians
+    visual_odometry: 0.02   # meters per frame
+
+mission:
+  type: recon
+  area:
+    center: [0, 0, 0]
+    radius: 500
+    min_altitude: 30
+    max_altitude: 120
+  report_interval: 60
+  coverage_pattern: expanding_spiral
+  formation: line_abreast
+  formation_spacing_m: 40
+
+threats: []
+
+particle_filter:
+  n_particles: 1000
+  resample_threshold: 0.5
+  process_noise:
+    patrol:
+      pos: [0.05, 0.05, 0.02]
+      vel: [0.1, 0.1, 0.05]
+    engage:
+      pos: [0.15, 0.15, 0.08]
+      vel: [0.3, 0.3, 0.15]
+    evade:
+      pos: [0.4, 0.4, 0.2]
+      vel: [0.8, 0.8, 0.4]
+
+success_criteria:
+  area_coverage_pct: 80
+  max_position_error_m: 10
+  min_drones_alive: 4
+  max_formation_deviation_m: 30
+  min_energy_remaining: 0.3
+
+events:
+  - time: 30
+    type: gps_loss
+    description: "GPS signal lost -- jamming or satellite denial"
+  - time: 120
+    type: wind_gust
+    wind_speed_ms: 12
+    duration_s: 30
+    description: "Sudden wind gust tests IMU-based stabilization"
+  - time: 300
+    type: sensor_degradation
+    drone_id: 2
+    sensor: visual_odometry
+    new_noise: 0.1
+    description: "Drone 2 camera obscured -- VO quality degrades"
+
+metrics:
+  - position_error_rms_m
+  - area_coverage_pct
+  - formation_coherence
+  - energy_consumed_pct
+  - particle_filter_ess
+  - regime_time_pct
