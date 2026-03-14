@@ -1,0 +1,17 @@
+[package]
+name = "strix-python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PyO3 bindings for the STRIX drone swarm system"
+
+[lib]
+name = "_strix_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { workspace = true }
+numpy = { workspace = true }
+strix-core = { path = "../strix-core" }
+strix-auction = { path = "../strix-auction" }
+nalgebra.workspace = true

@@ -117,6 +117,8 @@ pub struct SwarmOrchestrator {
     prev_positions: HashMap<u32, Vector3<f64>>,
     /// Per-drone signal histories for CUSUM (drone_id → signal buffer).
     signal_histories: HashMap<u32, Vec<f64>>,
+    /// Per-drone threat distance histories for Hurst exponent (drone_id → distance buffer).
+    threat_distance_histories: HashMap<u32, Vec<f64>>,
     /// Gossip version counter.
     gossip_version: u64,
     /// Tick counter.
@@ -133,6 +135,7 @@ impl SwarmOrchestrator {
         let mut nav_filters = HashMap::new();
         let mut regimes = HashMap::new();
         let mut signal_histories = HashMap::new();
+        let mut threat_distance_histories = HashMap::new();
 
         // Initialize gossip network
         let self_id = drone_ids.first().copied().unwrap_or(0);
@@ -148,6 +151,7 @@ impl SwarmOrchestrator {
             );
             regimes.insert(id, Regime::Patrol);
             signal_histories.insert(id, Vec::new());
+            threat_distance_histories.insert(id, Vec::new());
         }
 
         Self {
@@ -165,6 +169,7 @@ impl SwarmOrchestrator {
             regimes,
             prev_positions: HashMap::new(),
             signal_histories,
+            threat_distance_histories,
             gossip_version: 0,
             tick_count: 0,
             sim_time: 0.0,
@@ -185,6 +190,7 @@ impl SwarmOrchestrator {
         );
         self.regimes.insert(id, Regime::Patrol);
         self.signal_histories.insert(id, Vec::new());
+        self.threat_distance_histories.insert(id, Vec::new());
         self.gossip.add_peer(NodeId(id));
     }
 
@@ -235,6 +241,7 @@ impl SwarmOrchestrator {
         self.regimes.remove(&drone_id);
         self.prev_positions.remove(&drone_id);
         self.signal_histories.remove(&drone_id);
+        self.threat_distance_histories.remove(&drone_id);
         self.gossip.remove_peer(NodeId(drone_id));
 
         // Remove assignments for this drone
@@ -375,6 +382,15 @@ impl SwarmOrchestrator {
 
             // Compute regime signals
             let (nearest_threat_dist, closing_rate) = self.nearest_threat_metrics(&drone_pos);
+
+            // Update threat distance history for Hurst exponent computation
+            if let Some(tdh) = self.threat_distance_histories.get_mut(id) {
+                tdh.push(nearest_threat_dist);
+                if tdh.len() > 100 {
+                    tdh.drain(..50);
+                }
+            }
+
             let cusum_triggered = self
                 .signal_histories
                 .get(id)
@@ -395,8 +411,18 @@ impl SwarmOrchestrator {
             let signals = RegimeSignals {
                 cusum_triggered,
                 cusum_direction: 0,
-                hurst: 0.5,
-                volatility_ratio: 1.0,
+                hurst: self
+                    .threat_distance_histories
+                    .get(id)
+                    .filter(|h| h.len() >= 20)
+                    .map(|h| strix_core::uncertainty::hurst_exponent(h, 10, 50).0)
+                    .unwrap_or(0.5),
+                volatility_ratio: self
+                    .signal_histories
+                    .get(id)
+                    .filter(|h| h.len() >= 20)
+                    .map(|h| strix_core::uncertainty::volatility_compression(h, 10, 50).0)
+                    .unwrap_or(1.0),
                 threat_distance: nearest_threat_dist,
                 closing_rate,
             };

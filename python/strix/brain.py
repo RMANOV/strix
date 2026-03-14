@@ -227,6 +227,22 @@ class MissionBrain:
         self._pending_intents: list[MissionIntent] = []
         self._running = False
         self._last_auction_tick = 0
+
+        # Rust FFI: particle filters + auctioneer (graceful fallback)
+        self._filters: dict[int, object] = {}
+        self._rust_available = False
+        self._auctioneer = None
+        try:
+            from strix._strix_core import Auctioneer, ParticleNavFilter  # noqa: F401
+
+            self._ParticleNavFilter = ParticleNavFilter
+            self._auctioneer = Auctioneer()
+            self._rust_available = True
+            logger.info("MissionBrain: Rust FFI available")
+        except ImportError:
+            self._ParticleNavFilter = None
+            logger.warning("MissionBrain: Rust FFI unavailable, using Python fallbacks")
+
         logger.info("MissionBrain initialised (particles=%d)", self.config.n_particles)
 
     # -- Fleet management ----------------------------------------------------
@@ -236,10 +252,17 @@ class MissionBrain:
         if len(self._fleet) >= self.config.max_fleet_size and drone.drone_id not in self._fleet:
             raise ValueError(f"Fleet full ({self.config.max_fleet_size} drones)")
         self._fleet[drone.drone_id] = drone
+        if self._rust_available and drone.drone_id not in self._filters:
+            self._filters[drone.drone_id] = self._ParticleNavFilter(
+                n_particles=self.config.n_particles,
+                position=[drone.position.x, drone.position.y, drone.position.z],
+                drone_id=drone.drone_id,
+            )
 
     def remove_drone(self, drone_id: int) -> None:
         """Mark a drone as lost and remove it from active fleet."""
         self._fleet.pop(drone_id, None)
+        self._filters.pop(drone_id, None)
 
     @property
     def fleet_size(self) -> int:
@@ -440,26 +463,33 @@ class MissionBrain:
     # -- Private helpers -----------------------------------------------------
 
     def _predict_step(self, dt: float) -> None:
-        """Propagate particle filters forward (placeholder for Rust FFI).
+        """Propagate particle filters forward via Rust FFI.
 
-        In production this calls:
-            strix._strix_core.predict_particles_6d(...)
+        Each filter.step() does predict+update+resample in one call.
+        Falls back to naive kinematics if Rust is unavailable.
         """
-        # TODO: Replace with actual FFI call to strix._strix_core
         for drone in self._fleet.values():
-            if drone.alive:
+            if not drone.alive:
+                continue
+            pf = self._filters.get(drone.drone_id) if self._rust_available else None
+            if pf is not None:
+                observations = [("barometer", -drone.position.z)]
+                tb = self._nearest_threat_bearing(drone)
+                pos, vel, _regime_probs = pf.step(observations, tb, 1.0, dt)
+                drone.position = Vec3(*pos)
+                drone.velocity = Vec3(*vel)
+            else:
                 drone.position.x += drone.velocity.x * dt
                 drone.position.y += drone.velocity.y * dt
                 drone.position.z += drone.velocity.z * dt
 
     def _update_step(self) -> None:
-        """Incorporate sensor observations (placeholder for Rust FFI).
+        """No-op: predict already did the full predict+update cycle.
 
-        In production this calls:
-            strix._strix_core.update_weights_6d(...)
+        The Rust ParticleNavFilter.step() combines predict, update, and
+        resample in one call, so _predict_step already incorporates
+        sensor observations.
         """
-        # TODO: Replace with actual FFI call to strix._strix_core
-        pass
 
     def _check_regime(self) -> RegimeLabel:
         """Evaluate regime transitions from threat environment.
@@ -486,13 +516,97 @@ class MissionBrain:
         return RegimeLabel.PATROL
 
     def _run_auction(self) -> list[Decision]:
-        """Run the combinatorial task auction (placeholder for Rust FFI).
+        """Run the combinatorial task auction via Rust FFI.
 
-        In production this calls:
-            strix._strix_core.run_auction(...)
+        Builds AuctionDroneState/Task/ThreatState lists from internal state,
+        calls Auctioneer.run_auction(), and converts Assignment results to
+        Decision objects.
         """
-        # TODO: Replace with actual FFI call to strix._strix_core
-        return []
+        if not self._rust_available or self._auctioneer is None:
+            return []
+
+        from strix._strix_core import AuctionDroneState, Task as AuctionTask, ThreatState as AuctionThreat
+
+        # Build drone states for auction
+        auction_drones = []
+        for drone in self._fleet.values():
+            if not drone.alive:
+                continue
+            auction_drones.append(
+                AuctionDroneState(
+                    id=drone.drone_id,
+                    position=[drone.position.x, drone.position.y, drone.position.z],
+                    velocity=[drone.velocity.x, drone.velocity.y, drone.velocity.z],
+                    regime_index=drone.regime.value,
+                    energy=drone.energy,
+                    alive=True,
+                )
+            )
+
+        # Build tasks from active plan assignments (if any)
+        auction_tasks = []
+        if self._active_plan:
+            for i, assignment in enumerate(self._active_plan.assignments):
+                if assignment.target_position:
+                    tp = assignment.target_position
+                    auction_tasks.append(
+                        AuctionTask(
+                            id=i,
+                            location=[tp.x, tp.y, tp.z],
+                            priority=assignment.confidence,
+                        )
+                    )
+
+        if not auction_drones or not auction_tasks:
+            return []
+
+        # Build threats
+        auction_threats = [
+            AuctionThreat(
+                id=t.threat_id,
+                position=[t.position.x, t.position.y, t.position.z],
+            )
+            for t in self._threats.values()
+        ]
+
+        result = self._auctioneer.run_auction(auction_drones, auction_tasks, auction_threats)
+
+        # Convert assignments to decisions
+        decisions: list[Decision] = []
+        for assignment in result.assignments:
+            # Find the corresponding task's location
+            task_pos = None
+            if assignment.task_id < len(auction_tasks):
+                t = auction_tasks[assignment.task_id]
+                task_pos = Vec3(t.id, 0, 0)  # placeholder — get from plan
+            if self._active_plan and assignment.task_id < len(self._active_plan.assignments):
+                plan_assignment = self._active_plan.assignments[assignment.task_id]
+                task_pos = plan_assignment.target_position
+
+            decisions.append(
+                Decision(
+                    drone_id=assignment.drone_id,
+                    kind=DecisionKind.GOTO,
+                    target_position=task_pos,
+                    reason=f"Auction assignment (score={assignment.bid_score:.2f})",
+                    confidence=min(assignment.bid_score / 10.0, 1.0),
+                )
+            )
+
+        return decisions
+
+    def _nearest_threat_bearing(self, drone: DroneSnapshot) -> list[float]:
+        """Compute unit vector from drone toward nearest threat."""
+        if not self._threats:
+            return [0.0, 0.0, 0.0]
+        nearest = min(self._threats.values(), key=lambda t: drone.position.distance_to(t.position))
+        dx = nearest.position.x - drone.position.x
+        dy = nearest.position.y - drone.position.y
+        dz = nearest.position.z - drone.position.z
+        dist = (dx**2 + dy**2 + dz**2) ** 0.5
+        if dist < 1e-6:
+            return [0.0, 0.0, 0.0]
+        return [dx / dist, dy / dist, dz / dist]
 
     def _score_drones_for_intent(
         self,

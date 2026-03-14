@@ -641,8 +641,6 @@ version = "0.1.0"
 dependencies = [
  "nalgebra",
  "ndarray",
- "numpy",
- "pyo3",
  "rand",
  "rand_distr",
  "rayon",
@@ -661,6 +659,17 @@ dependencies = [
  "serde_json",
  "strix-core",
  "thiserror",
+]
+
+[[package]]
+name = "strix-python"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "numpy",
+ "pyo3",
+ "strix-auction",
+ "strix-core",
 ]
 
 [[package]]

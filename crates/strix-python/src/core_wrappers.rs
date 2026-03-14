@@ -3,22 +3,15 @@
 //! These types bridge the Rust API (which uses nalgebra/ndarray) to Python
 //! using simple lists and tuples. Each wrapper holds the inner Rust type
 //! and exposes `#[pymethods]` for Python consumption.
-//!
-//! ```python
-//! from strix._strix_core import ParticleNavFilter, DroneState, Regime
-//!
-//! f = ParticleNavFilter(n_particles=200, position=[0.0, 0.0, -50.0])
-//! pos, vel, probs = f.step(observations=[], threat_bearing=[1.0, 0.0, 0.0], vel_gain=1.0, dt=0.1)
-//! ```
 
 use pyo3::prelude::*;
 
 use nalgebra::Vector3;
 
-use crate::anomaly::{self, CusumConfig};
-use crate::particle_nav::ParticleNavFilter;
-use crate::regime::{self, DetectionConfig, RegimeSignals};
-use crate::state::{Observation, Regime, SensorConfig};
+use strix_core::anomaly::{self, CusumConfig};
+use strix_core::particle_nav::ParticleNavFilter;
+use strix_core::regime::{self, DetectionConfig, RegimeSignals};
+use strix_core::state::{Observation, Regime, SensorConfig};
 
 // ---------------------------------------------------------------------------
 // PyRegime — enum wrapper
@@ -28,7 +21,7 @@ use crate::state::{Observation, Regime, SensorConfig};
 #[pyclass(name = "Regime")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PyRegime {
-    inner: Regime,
+    pub(crate) inner: Regime,
 }
 
 #[pymethods]
@@ -263,7 +256,7 @@ impl PyParticleNavFilter {
     /// Current effective sample size.
     #[getter]
     fn ess(&self) -> f64 {
-        crate::particle_nav::effective_sample_size(&self.inner.weights)
+        strix_core::particle_nav::effective_sample_size(&self.inner.weights)
     }
 
     fn __repr__(&self) -> String {
@@ -284,14 +277,6 @@ impl PyParticleNavFilter {
 // ---------------------------------------------------------------------------
 
 /// Detect GPS/radio jamming via CUSUM on signal quality metrics.
-///
-/// Args:
-///     signal_metrics: Time series of signal quality values (e.g. SNR).
-///     threshold: CUSUM threshold multiplier (default 0.5).
-///     min_samples: Minimum samples before CUSUM is active (default 10).
-///
-/// Returns:
-///     Tuple of (is_jamming: bool, direction: int, cusum_value: float).
 #[pyfunction]
 #[pyo3(name = "detect_jamming", signature = (signal_metrics, threshold=0.5, min_samples=10))]
 pub fn py_detect_jamming(
@@ -307,16 +292,6 @@ pub fn py_detect_jamming(
 }
 
 /// Detect the current battlespace regime from tactical signals.
-///
-/// Args:
-///     cusum_triggered: Whether CUSUM detected a break.
-///     threat_distance: Distance to nearest threat (meters).
-///     closing_rate: Threat closing speed (m/s, negative = approaching).
-///     hurst: Hurst exponent of threat movement (default 0.5).
-///     current_regime: Current regime index (0=Patrol, 1=Engage, 2=Evade).
-///
-/// Returns:
-///     PyRegime — the detected regime.
 #[pyfunction]
 #[pyo3(name = "detect_regime", signature = (cusum_triggered, threat_distance, closing_rate, hurst=0.5, current_regime=0))]
 pub fn py_detect_regime(

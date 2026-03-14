@@ -36,36 +36,4 @@ pub use particle_nav::ParticleNavFilter;
 pub use temporal::TemporalManager;
 pub use threat_tracker::ThreatTracker;
 
-// ---------------------------------------------------------------------------
-// PyO3 module registration (feature-gated)
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "python")]
-pub mod python;
-
-// ---------------------------------------------------------------------------
-// PyO3 module registration (feature-gated)
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "python")]
-mod _pymodule {
-    use pyo3::prelude::*;
-
-    /// Python module entry point for `strix_core`.
-    #[pymodule]
-    fn _strix_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
-        m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-
-        // Types
-        m.add_class::<super::python::PyRegime>()?;
-        m.add_class::<super::python::PySensorConfig>()?;
-        m.add_class::<super::python::PyDroneState>()?;
-        m.add_class::<super::python::PyParticleNavFilter>()?;
-
-        // Functions
-        m.add_function(wrap_pyfunction!(super::python::py_detect_jamming, m)?)?;
-        m.add_function(wrap_pyfunction!(super::python::py_detect_regime, m)?)?;
-
-        Ok(())
-    }
-}
+// Note: PyO3 wrappers live in the `strix-python` crate (cdylib target).
