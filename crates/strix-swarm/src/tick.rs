@@ -15,6 +15,8 @@ use nalgebra::Vector3;
 use strix_adapters::traits::Telemetry;
 use strix_auction::{Assignment, Auctioneer, Capabilities, LossAnalyzer, Task};
 use strix_core::anomaly::CusumConfig;
+use strix_core::hysteresis::{HysteresisConfig, HysteresisGate};
+use strix_core::intent::{self, IntentConfig, IntentSignals};
 use strix_core::particle_nav::ParticleNavFilter;
 use strix_core::regime::{detect_regime, DetectionConfig, RegimeSignals};
 use strix_core::threat_tracker::ThreatTracker;
@@ -47,6 +49,10 @@ pub struct SwarmConfig {
     pub gossip_fanout: usize,
     /// Default drone capabilities for auction bidding.
     pub default_capabilities: Capabilities,
+    /// Hysteresis gate configuration for regime stability.
+    pub hysteresis_config: HysteresisConfig,
+    /// Intent detection pipeline configuration.
+    pub intent_config: IntentConfig,
 }
 
 impl Default for SwarmConfig {
@@ -66,6 +72,8 @@ impl Default for SwarmConfig {
                 has_ew: false,
                 has_relay: false,
             },
+            hysteresis_config: HysteresisConfig::default(),
+            intent_config: IntentConfig::default(),
         }
     }
 }
@@ -91,6 +99,8 @@ pub struct SwarmDecision {
     pub gossip_convergence: f64,
     /// Active pheromone cells.
     pub pheromone_cells: usize,
+    /// Maximum threat intent score across all drones this tick [-1, 1].
+    pub max_intent_score: f64,
 }
 
 /// The swarm orchestrator — chains all 5 STRIX crates together.
@@ -119,6 +129,10 @@ pub struct SwarmOrchestrator {
     signal_histories: HashMap<u32, Vec<f64>>,
     /// Per-drone threat distance histories for Hurst exponent (drone_id → distance buffer).
     threat_distance_histories: HashMap<u32, Vec<f64>>,
+    /// Per-drone hysteresis gates for regime stability.
+    hysteresis_gates: HashMap<u32, HysteresisGate>,
+    /// Per-drone previous closing rates for closing acceleration (Item B.3).
+    prev_closing_rates: HashMap<u32, f64>,
     /// Gossip version counter.
     gossip_version: u64,
     /// Tick counter.
@@ -136,6 +150,7 @@ impl SwarmOrchestrator {
         let mut regimes = HashMap::new();
         let mut signal_histories = HashMap::new();
         let mut threat_distance_histories = HashMap::new();
+        let mut hysteresis_gates = HashMap::new();
 
         // Initialize gossip network
         let self_id = drone_ids.first().copied().unwrap_or(0);
@@ -152,6 +167,10 @@ impl SwarmOrchestrator {
             regimes.insert(id, Regime::Patrol);
             signal_histories.insert(id, Vec::new());
             threat_distance_histories.insert(id, Vec::new());
+            hysteresis_gates.insert(
+                id,
+                HysteresisGate::new(Regime::Patrol, 0.0, config.hysteresis_config.clone()),
+            );
         }
 
         Self {
@@ -170,6 +189,8 @@ impl SwarmOrchestrator {
             prev_positions: HashMap::new(),
             signal_histories,
             threat_distance_histories,
+            hysteresis_gates,
+            prev_closing_rates: HashMap::new(),
             gossip_version: 0,
             tick_count: 0,
             sim_time: 0.0,
@@ -191,6 +212,14 @@ impl SwarmOrchestrator {
         self.regimes.insert(id, Regime::Patrol);
         self.signal_histories.insert(id, Vec::new());
         self.threat_distance_histories.insert(id, Vec::new());
+        self.hysteresis_gates.insert(
+            id,
+            HysteresisGate::new(
+                Regime::Patrol,
+                self.sim_time,
+                self.config.hysteresis_config.clone(),
+            ),
+        );
         self.gossip.add_peer(NodeId(id));
     }
 
@@ -242,6 +271,8 @@ impl SwarmOrchestrator {
         self.prev_positions.remove(&drone_id);
         self.signal_histories.remove(&drone_id);
         self.threat_distance_histories.remove(&drone_id);
+        self.hysteresis_gates.remove(&drone_id);
+        self.prev_closing_rates.remove(&drone_id);
         self.gossip.remove_peer(NodeId(drone_id));
 
         // Remove assignments for this drone
@@ -374,8 +405,17 @@ impl SwarmOrchestrator {
             fleet_centroid /= alive_count as f64;
         }
 
-        // ── 2. Detect regimes (CUSUM + signals) ──────────────────────────
+        // ── 2. Detect regimes (CUSUM + signals) + intent ─────────────────
+
+        // Item D: Compute fleet velocity coherence once per tick.
+        let fleet_velocities: Vec<Vector3<f64>> = telemetry
+            .iter()
+            .map(|(_, t)| Vector3::new(t.velocity[0], t.velocity[1], t.velocity[2]))
+            .collect();
+        let fleet_coherence = strix_core::fleet_metrics::velocity_coherence(&fleet_velocities, 0.5);
+
         let mut regime_changes = Vec::new();
+        let mut max_intent_score = 0.0_f64;
         for (id, telem) in telemetry {
             let regime = self.regimes.get(id).copied().unwrap_or(Regime::Patrol);
             let drone_pos = Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
@@ -391,47 +431,126 @@ impl SwarmOrchestrator {
                 }
             }
 
-            let cusum_triggered = self
+            // Item B.1: Extract actual CUSUM direction instead of hardcoding 0.
+            let (cusum_triggered, cusum_direction) = self
                 .signal_histories
                 .get(id)
                 .map(|h| {
                     if h.len() >= self.config.cusum_config.min_samples {
-                        let (triggered, _dir, _val) = strix_core::anomaly::cusum_test(
+                        let (triggered, dir, _val) = strix_core::anomaly::cusum_test(
                             h,
                             self.config.cusum_config.threshold_h,
                             self.config.cusum_config.min_samples,
                         );
-                        triggered
+                        (triggered, dir)
                     } else {
-                        false
+                        (false, 0)
                     }
                 })
-                .unwrap_or(false);
+                .unwrap_or((false, 0));
+
+            // Item B.3: Compute closing acceleration = d(closing_rate)/dt.
+            let prev_cr = self
+                .prev_closing_rates
+                .get(id)
+                .copied()
+                .unwrap_or(closing_rate);
+            let closing_acceleration = if dt > 1e-9 {
+                (closing_rate - prev_cr) / dt
+            } else {
+                0.0
+            };
+            self.prev_closing_rates.insert(*id, closing_rate);
+
+            // Item C: Compute Hurst with uncertainty for intent pipeline.
+            let (hurst_val, hurst_unc) = self
+                .threat_distance_histories
+                .get(id)
+                .filter(|h| h.len() >= 20)
+                .map(|h| strix_core::uncertainty::hurst_exponent(h, 10, 50))
+                .unwrap_or((0.5, 0.5));
+
+            // Intent pipeline uses THREAT distance volatility (threat behavior),
+            // while regime detection uses SELF speed volatility (below).
+            let intent_vol_ratio = self
+                .threat_distance_histories
+                .get(id)
+                .filter(|h| h.len() >= 20)
+                .map(|h| strix_core::uncertainty::volatility_compression(h, 10, 50).0)
+                .unwrap_or(1.0);
+
+            // Self-speed volatility for regime detection.
+            let self_vol_ratio = self
+                .signal_histories
+                .get(id)
+                .filter(|h| h.len() >= 20)
+                .map(|h| strix_core::uncertainty::volatility_compression(h, 10, 50).0)
+                .unwrap_or(1.0);
+
+            // Item C: Run intent detection pipeline.
+            let intent_signals = IntentSignals {
+                hurst: hurst_val,
+                hurst_uncertainty: hurst_unc,
+                closing_rate,
+                closing_acceleration,
+                volatility_ratio: intent_vol_ratio,
+                threat_distance: nearest_threat_dist,
+                fleet_coherence: Some(fleet_coherence),
+            };
+            let intent_result = intent::detect_intent(&intent_signals, &self.config.intent_config);
+            if intent_result.score.abs() > max_intent_score.abs() {
+                max_intent_score = intent_result.score;
+            }
 
             let signals = RegimeSignals {
                 cusum_triggered,
-                cusum_direction: 0,
-                hurst: self
-                    .threat_distance_histories
-                    .get(id)
-                    .filter(|h| h.len() >= 20)
-                    .map(|h| strix_core::uncertainty::hurst_exponent(h, 10, 50).0)
-                    .unwrap_or(0.5),
-                volatility_ratio: self
-                    .signal_histories
-                    .get(id)
-                    .filter(|h| h.len() >= 20)
-                    .map(|h| strix_core::uncertainty::volatility_compression(h, 10, 50).0)
-                    .unwrap_or(1.0),
+                cusum_direction,
+                hurst: hurst_val,
+                volatility_ratio: self_vol_ratio,
                 threat_distance: nearest_threat_dist,
                 closing_rate,
             };
 
-            let new_regime = detect_regime(&signals, regime, &self.config.detection_config);
+            let proposed_regime = detect_regime(&signals, regime, &self.config.detection_config);
 
-            if new_regime != regime {
-                regime_changes.push((*id, regime, new_regime));
-                self.regimes.insert(*id, new_regime);
+            // Item A: Route through hysteresis gate instead of direct apply.
+            let approved_regime = if let Some(gate) = self.hysteresis_gates.get_mut(id) {
+                gate.propose(proposed_regime, self.sim_time)
+            } else {
+                proposed_regime
+            };
+
+            if approved_regime != regime {
+                regime_changes.push((*id, regime, approved_regime));
+                self.regimes.insert(*id, approved_regime);
+            }
+        }
+
+        // Item B.2: Check attrition risk level — force EVADE if Retreat/Survival.
+        {
+            let alive = self.nav_filters.len() as u32;
+            let initial = (alive + self.loss_analyzer.total_losses() as u32).max(1);
+            let attrition_rate = 1.0 - (alive as f64 / initial as f64);
+            let risk_level = strix_auction::RiskLevel::from_attrition(attrition_rate);
+            if matches!(
+                risk_level,
+                strix_auction::RiskLevel::Retreat | strix_auction::RiskLevel::Survival
+            ) {
+                let drone_ids: Vec<u32> = self.regimes.keys().copied().collect();
+                for drone_id in drone_ids {
+                    if self.regimes.get(&drone_id).copied() != Some(Regime::Evade) {
+                        if let Some(gate) = self.hysteresis_gates.get_mut(&drone_id) {
+                            gate.force_transition(Regime::Evade, self.sim_time);
+                        }
+                        let old = self
+                            .regimes
+                            .insert(drone_id, Regime::Evade)
+                            .unwrap_or(Regime::Patrol);
+                        if old != Regime::Evade {
+                            regime_changes.push((drone_id, old, Regime::Evade));
+                        }
+                    }
+                }
             }
         }
 
@@ -466,6 +585,18 @@ impl SwarmOrchestrator {
             self.tick_count % self.config.auction_interval == 0 || self.auctioneer.needs_reauction;
 
         if should_auction && !tasks.is_empty() {
+            // Item C: Intent-based urgency boost — high threat intent raises
+            // urgency of nearby tasks, creating a market-driven tactical response.
+            let mut boosted_tasks: Vec<Task> = tasks.to_vec();
+            if max_intent_score > 0.0 {
+                for task in &mut boosted_tasks {
+                    // Boost urgency proportional to intent score for all tasks.
+                    // The auction market naturally reallocates drones toward
+                    // high-urgency tasks without requiring regime changes.
+                    task.urgency *= 1.0 + max_intent_score;
+                }
+            }
+
             // Build auction drone states from telemetry
             let auction_drones: Vec<strix_auction::DroneState> = telemetry
                 .iter()
@@ -499,7 +630,7 @@ impl SwarmOrchestrator {
 
             let result = self.auctioneer.run_auction(
                 &auction_drones,
-                tasks,
+                &boosted_tasks,
                 &auction_threats,
                 &HashMap::new(),
                 &kill_zone_penalties,
@@ -611,6 +742,7 @@ impl SwarmOrchestrator {
             traces_recorded,
             gossip_convergence: self.gossip.convergence_estimate(),
             pheromone_cells: self.pheromones.active_cells(),
+            max_intent_score,
         }
     }
 

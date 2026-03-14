@@ -19,7 +19,9 @@
 
 use std::sync::{Arc, Mutex};
 
+use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
+use strix_core::cbf::{self, CbfConfig, NoFlyZone};
 
 use crate::traits::*;
 
@@ -453,6 +455,11 @@ impl PlatformAdapter for SimulatorAdapter {
 pub struct SimulatorFleet {
     /// All drones in the fleet.
     pub drones: Vec<SimulatorAdapter>,
+    /// Optional CBF safety config. When set, `step_all_safe` applies
+    /// barrier function corrections after each physics step.
+    pub cbf_config: Option<CbfConfig>,
+    /// No-fly zones for CBF avoidance.
+    pub no_fly_zones: Vec<NoFlyZone>,
 }
 
 impl SimulatorFleet {
@@ -469,7 +476,11 @@ impl SimulatorFleet {
                 SimulatorAdapter::new(i as u32, pos, config.clone())
             })
             .collect();
-        Self { drones }
+        Self {
+            drones,
+            cbf_config: None,
+            no_fly_zones: Vec::new(),
+        }
     }
 
     /// Create a fleet of `n` drones all at the origin.
@@ -477,7 +488,22 @@ impl SimulatorFleet {
         let drones = (0..n)
             .map(|i| SimulatorAdapter::new_default(i as u32))
             .collect();
-        Self { drones }
+        Self {
+            drones,
+            cbf_config: None,
+            no_fly_zones: Vec::new(),
+        }
+    }
+
+    /// Enable CBF safety layer for this fleet.
+    pub fn with_cbf(mut self, config: CbfConfig) -> Self {
+        self.cbf_config = Some(config);
+        self
+    }
+
+    /// Add a no-fly zone.
+    pub fn add_no_fly_zone(&mut self, zone: NoFlyZone) {
+        self.no_fly_zones.push(zone);
     }
 
     /// Advance all drones by one time-step.
@@ -491,6 +517,78 @@ impl SimulatorFleet {
     pub fn step_all_n(&self, n: usize) {
         for _ in 0..n {
             self.step_all();
+        }
+    }
+
+    /// Advance all drones by one step with CBF safety corrections.
+    ///
+    /// After normal physics, applies control barrier functions to correct
+    /// velocities that would violate safety constraints (inter-drone
+    /// separation, altitude bounds, no-fly zones).
+    pub fn step_all_safe(&self) {
+        // 1. Normal physics step.
+        self.step_all();
+
+        // 2. Apply CBF corrections if configured.
+        let cbf_config = match &self.cbf_config {
+            Some(cfg) => cfg,
+            None => return,
+        };
+
+        // Gather all positions.
+        let positions: Vec<(u32, Vector3<f64>)> = self
+            .drones
+            .iter()
+            .filter(|d| !d.has_failed())
+            .filter_map(|d| {
+                d.get_telemetry().ok().map(|t| {
+                    (
+                        d.id(),
+                        Vector3::new(t.position[0], t.position[1], t.position[2]),
+                    )
+                })
+            })
+            .collect();
+
+        // For each drone, compute CBF-filtered velocity.
+        for drone in &self.drones {
+            if drone.has_failed() {
+                continue;
+            }
+            let telem = match drone.get_telemetry() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            let my_pos = Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
+            let my_vel = Vector3::new(telem.velocity[0], telem.velocity[1], telem.velocity[2]);
+
+            // Collect neighbor positions (exclude self).
+            let neighbors: Vec<Vector3<f64>> = positions
+                .iter()
+                .filter(|(id, _)| *id != drone.id())
+                .map(|(_, pos)| *pos)
+                .collect();
+
+            let result =
+                cbf::cbf_filter(&my_pos, &my_vel, &neighbors, &self.no_fly_zones, cbf_config);
+
+            if result.any_active {
+                // Apply corrected velocity directly to internal state.
+                let mut s = drone.state.lock().unwrap();
+                s.velocity = [
+                    result.safe_velocity.x,
+                    result.safe_velocity.y,
+                    result.safe_velocity.z,
+                ];
+            }
+        }
+    }
+
+    /// Advance all drones by `n` steps with CBF safety corrections.
+    pub fn step_all_safe_n(&self, n: usize) {
+        for _ in 0..n {
+            self.step_all_safe();
         }
     }
 

@@ -19,6 +19,10 @@
 //! - **Uncertainty quantification**: Hurst, volatility, kurtosis
 
 pub mod anomaly;
+pub mod cbf;
+pub mod fleet_metrics;
+pub mod hysteresis;
+pub mod intent;
 pub mod particle_nav;
 pub mod regime;
 pub mod state;
