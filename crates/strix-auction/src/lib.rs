@@ -22,21 +22,15 @@ pub mod portfolio;
 pub mod risk;
 
 // ────────────────────────────────────────────────────────────────────────────────
-// Stub types — will be replaced by `use strix_core::*` once the crate is built.
+// Core re-exports — Regime is shared directly from strix-core.
+// Auction-specific types (Position, DroneState, Task, etc.) kept here with
+// From/Into conversions for cross-crate interop.
 // ────────────────────────────────────────────────────────────────────────────────
 
 use serde::{Deserialize, Serialize};
 
-/// Operational regime for a drone or the entire swarm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Regime {
-    /// Area surveillance / presence.
-    Patrol,
-    /// Active engagement with a designated target.
-    Engage,
-    /// Threat-avoidance manoeuvring.
-    Evade,
-}
+/// Re-export the canonical Regime from strix-core (eliminates duplication).
+pub use strix_core::state::Regime;
 
 /// Capability flags a drone may carry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -143,6 +137,51 @@ pub struct Assignment {
     pub drone_id: u32,
     pub task_id: u32,
     pub bid_score: f64,
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Cross-crate conversions: strix-core <-> strix-auction
+// ────────────────────────────────────────────────────────────────────────────────
+
+impl From<nalgebra::Vector3<f64>> for Position {
+    fn from(v: nalgebra::Vector3<f64>) -> Self {
+        Position::new(v.x, v.y, v.z)
+    }
+}
+
+impl From<&Position> for nalgebra::Vector3<f64> {
+    fn from(p: &Position) -> Self {
+        nalgebra::Vector3::new(p.x, p.y, p.z)
+    }
+}
+
+impl From<Position> for nalgebra::Vector3<f64> {
+    fn from(p: Position) -> Self {
+        nalgebra::Vector3::new(p.x, p.y, p.z)
+    }
+}
+
+/// Convert a strix-core DroneState into the auction's lightweight DroneState.
+///
+/// Maps `capabilities: u64` bit-flags to the auction `Capabilities` struct
+/// using bit positions: 0=sensor, 1=weapon, 2=ew, 3=relay.
+impl From<&strix_core::DroneState> for DroneState {
+    fn from(core: &strix_core::DroneState) -> Self {
+        DroneState {
+            id: core.drone_id,
+            position: Position::from(core.position),
+            velocity: [core.velocity.x, core.velocity.y, core.velocity.z],
+            regime: core.regime,
+            capabilities: Capabilities {
+                has_sensor: core.capabilities & 1 != 0,
+                has_weapon: core.capabilities & 2 != 0,
+                has_ew: core.capabilities & 4 != 0,
+                has_relay: core.capabilities & 8 != 0,
+            },
+            energy: 1.0, // not tracked in core, default to full
+            alive: true,
+        }
+    }
 }
 
 // Re-export key public types from submodules.

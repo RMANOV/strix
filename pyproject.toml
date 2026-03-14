@@ -15,8 +15,9 @@ dependencies = [
 ]
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "python"]
 module-name = "strix._strix_core"
+manifest-path = "crates/strix-core/Cargo.toml"
 
 [tool.ruff]
 line-length = 120

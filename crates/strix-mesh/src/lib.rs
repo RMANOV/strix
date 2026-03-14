@@ -16,7 +16,7 @@ pub mod stigmergy;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
-// Stub types — will be replaced by strix-core re-exports once that crate exists
+// Mesh-specific types with From/Into conversions to strix-core
 // ---------------------------------------------------------------------------
 
 /// Unique drone identifier within the mesh.
@@ -45,6 +45,28 @@ impl Position3D {
     /// Zero origin.
     pub fn origin() -> Self {
         Self([0.0, 0.0, 0.0])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-crate conversions: strix-core <-> strix-mesh
+// ---------------------------------------------------------------------------
+
+impl From<nalgebra::Vector3<f64>> for Position3D {
+    fn from(v: nalgebra::Vector3<f64>) -> Self {
+        Position3D([v.x, v.y, v.z])
+    }
+}
+
+impl From<&Position3D> for nalgebra::Vector3<f64> {
+    fn from(p: &Position3D) -> Self {
+        nalgebra::Vector3::new(p.0[0], p.0[1], p.0[2])
+    }
+}
+
+impl From<Position3D> for nalgebra::Vector3<f64> {
+    fn from(p: Position3D) -> Self {
+        nalgebra::Vector3::new(p.0[0], p.0[1], p.0[2])
     }
 }
 

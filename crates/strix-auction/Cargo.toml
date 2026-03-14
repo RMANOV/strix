@@ -6,7 +6,8 @@ license.workspace = true
 description = "Combinatorial task auction engine for drone swarm task allocation"
 
 [dependencies]
-# strix-core = { path = "../strix-core" }  # TODO: re-enable when strix-core is built
+strix-core = { path = "../strix-core" }
+nalgebra.workspace = true
 ndarray.workspace = true
 rayon.workspace = true
 serde.workspace = true

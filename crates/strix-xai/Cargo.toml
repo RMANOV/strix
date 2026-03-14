@@ -7,7 +7,7 @@ description = "Explainability engine: decision traces, narration, after-action r
 
 [dependencies]
 strix-core = { path = "../strix-core" }
-# strix-auction = { path = "../strix-auction" }  # TODO: re-enable once auction API stabilises
+strix-auction = { path = "../strix-auction" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

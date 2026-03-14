@@ -40,6 +40,23 @@ pub struct DroneState {
     pub timestamp: f64,
 }
 
+/// Convert a strix-core DroneState into the gossip DroneState.
+///
+/// Maps core fields to gossip's network-oriented representation.
+/// Fields not present in core (version, timestamp) get sensible defaults.
+impl From<&strix_core::DroneState> for DroneState {
+    fn from(core: &strix_core::DroneState) -> Self {
+        DroneState {
+            node_id: NodeId(core.drone_id),
+            position: Position3D([core.position.x, core.position.y, core.position.z]),
+            battery: 1.0, // not tracked in core, default full
+            regime: format!("{:?}", core.regime),
+            version: 0,
+            timestamp: 0.0,
+        }
+    }
+}
+
 /// A threat record — never discarded, only updated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreatRecord {

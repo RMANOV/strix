@@ -1,0 +1,21 @@
+[package]
+name = "strix-swarm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Integration orchestrator: chains all STRIX crates into a unified swarm tick loop"
+
+[dependencies]
+strix-core = { path = "../strix-core" }
+strix-auction = { path = "../strix-auction" }
+strix-mesh = { path = "../strix-mesh" }
+strix-adapters = { path = "../strix-adapters" }
+strix-xai = { path = "../strix-xai" }
+nalgebra.workspace = true
+ndarray.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+rand_distr = "0.4"

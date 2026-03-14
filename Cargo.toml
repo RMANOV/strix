@@ -6,6 +6,7 @@ members = [
     "crates/strix-mesh",
     "crates/strix-adapters",
     "crates/strix-xai",
+    "crates/strix-swarm",
 ]
 
 [workspace.package]

@@ -41,18 +41,31 @@ pub use threat_tracker::ThreatTracker;
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "python")]
-mod python {
+pub mod python;
+
+// ---------------------------------------------------------------------------
+// PyO3 module registration (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "python")]
+mod _pymodule {
     use pyo3::prelude::*;
 
     /// Python module entry point for `strix_core`.
-    ///
-    /// Registers the Rust types and functions for use from Python via
-    /// PyO3.  The full Python wrappers are not implemented here — only
-    /// the module scaffold so the Rust API remains clean.
     #[pymodule]
-    fn strix_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    fn _strix_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-        // TODO: add #[pyclass] wrappers for DroneState, ParticleNavFilter, etc.
+
+        // Types
+        m.add_class::<super::python::PyRegime>()?;
+        m.add_class::<super::python::PySensorConfig>()?;
+        m.add_class::<super::python::PyDroneState>()?;
+        m.add_class::<super::python::PyParticleNavFilter>()?;
+
+        // Functions
+        m.add_function(wrap_pyfunction!(super::python::py_detect_jamming, m)?)?;
+        m.add_function(wrap_pyfunction!(super::python::py_detect_regime, m)?)?;
+
         Ok(())
     }
 }

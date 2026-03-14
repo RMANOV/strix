@@ -625,11 +625,13 @@ dependencies = [
 name = "strix-auction"
 version = "0.1.0"
 dependencies = [
+ "nalgebra",
  "ndarray",
  "rand",
  "rayon",
  "serde",
  "serde_json",
+ "strix-core",
  "thiserror",
 ]
 
@@ -652,11 +654,30 @@ dependencies = [
 name = "strix-mesh"
 version = "0.1.0"
 dependencies = [
+ "nalgebra",
  "rand",
  "rayon",
  "serde",
  "serde_json",
+ "strix-core",
  "thiserror",
+]
+
+[[package]]
+name = "strix-swarm"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "ndarray",
+ "rand",
+ "rand_distr",
+ "serde",
+ "serde_json",
+ "strix-adapters",
+ "strix-auction",
+ "strix-core",
+ "strix-mesh",
+ "strix-xai",
 ]
 
 [[package]]
@@ -665,6 +686,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "strix-auction",
  "strix-core",
  "thiserror",
 ]
