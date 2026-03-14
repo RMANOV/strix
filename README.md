@@ -1,134 +1,178 @@
-# STRIX
+# STRIX -- Swarm Tactical Reasoning and Intelligence eXchange
 
-**Swarm Tactical Reasoning and Intelligence eXchange**
+*From the genus* Strix *(owls) -- silent predators with exceptional sensor fusion.*
 
-*From the genus Strix (owls) -- silent predators with exceptional sensor fusion.*
+> **The battlefield is a market. Drones are traders. Missions are positions. The enemy is a counterparty.**
 
-> The battlefield is a market. Drones are traders. Missions are positions. The enemy is a counterparty.
+Quantitative trading firms have spent decades solving problems structurally identical to drone swarm orchestration: decentralized decision-making under uncertainty, adversarial prediction, resource allocation with constraints, and graceful degradation under stress. STRIX applies these battle-tested algorithms -- particle filters, regime-switching models, combinatorial auctions, portfolio optimization -- directly to autonomous multi-vehicle coordination in contested, GPS-denied, comms-degraded environments.
+
+The mapping is not a metaphor. It is a structural isomorphism. The mathematics that tracks hidden asset prices from noisy market data is the same mathematics that tracks drone position from noisy IMU/barometer/magnetometer readings. The auction that allocates capital across a portfolio is the same auction that allocates drones across missions. The counterparty model that predicts institutional flow is the same model that predicts enemy maneuvers.
 
 ---
 
-A drone swarm orchestrator built on quantitative trading mathematics. STRIX applies algorithms proven in the most adversarial competitive environment on Earth -- financial markets -- to the problem of autonomous multi-vehicle coordination in contested environments.
-
 ## Key Innovations
 
-1. **GPS-Denied Navigation via Particle Filter** -- the same 6D particle filter that tracks hidden asset prices now tracks drone position from IMU, barometer, magnetometer, and visual odometry. 1000 particles, 6 dimensions, 10 Hz.
+### 1. Adversarial Particle Filter ("Enemy as Market")
 
-2. **Adversarial Prediction Engine** -- a dual particle filter that models enemy intent as a first-class concept. Each enemy particle is a hypothesis about whether the adversary is defending, attacking, or retreating. Predict their maneuver before they complete it.
+A **dual particle filter** architecture. The first filter tracks friendly drone state in 6D `[x, y, z, vx, vy, vz]` for GPS-denied navigation (1000 particles, 10 Hz). The second filter tracks enemy entities, encoding each adversary as a kinematic state plus an intent hypothesis: DEFENDING, ATTACKING, or RETREATING. This directly mirrors counterparty prediction in quantitative trading -- model the opponent's likely actions before they complete them. The informational advantage is measured in seconds, which in combat is the difference between initiative and reaction.
 
-3. **Anti-Fragile Swarm** -- drone losses do not simply degrade the swarm. They improve it. Loss locations become kill zones with elevated risk scores. Surviving drones automatically avoid learned threats. Mission effectiveness per drone increases after attrition.
+### 2. Anti-Fragile Loss Recovery (Taleb)
 
-4. **Combinatorial Task Auction** -- drones bid on tasks like traders bid on assets. Sealed-bid scoring, modified Hungarian assignment, dark pool compartmentalization. The same mathematics that allocates capital across a portfolio now allocates drones across missions.
+The swarm gets **stronger** after losses, not weaker. When a drone is destroyed:
+- The loss location is marked as a kill zone with elevated risk scoring (spatial memory).
+- Future auction bids automatically penalize tasks near kill zones (risk repricing).
+- Attrition analysis classifies the failure mode (cause identification).
+- Surviving drones adjust approach vectors to avoid the learned threat pattern (behavioral adaptation).
 
-5. **Multi-Horizon Planning (t-CoT)** -- three parallel planning horizons cascade top-down (strategic 60s, operational 5s, tactical 0.1s) with bottom-up veto capability. A tactical impossibility vetoes the operational plan that requested it.
+Each loss provides information that improves all future decisions. This is the military application of Taleb's anti-fragility -- a convex response to adversity where volatility becomes a source of strength.
 
-6. **Glass Box Explainability** -- every decision produces a human-readable explanation. No black boxes. The commander sees not just what the system decided, but why, in real time.
+### 3. Multi-Horizon Temporal Reasoning
+
+Three parallel planning horizons with cascade constraints:
+
+| Horizon | Update Rate | Lookahead | Purpose |
+|---------|-------------|-----------|---------|
+| H1 Tactical | 0.1 s | 10 s | Obstacle avoidance, collision prevention |
+| H2 Operational | 5 s | 5 min | Formation, coordination, sensor coverage |
+| H3 Strategic | 60 s | 1 hr | Mission phasing, resource allocation |
+
+**Top-down**: strategic decisions constrain operational plans, which constrain tactical maneuvers. **Bottom-up**: a tactical impossibility vetoes the operational plan. An operational infeasibility flags the strategic plan for re-evaluation. No planning horizon operates in isolation.
+
+### 4. Stigmergy + LLM Hybrid
+
+Bio-inspired coordination fused with explainable AI. Drones deposit digital pheromones (`explored`, `danger`, `interest`, `relay`) onto a shared spatial grid. Other drones read the field to avoid redundant coverage and steer toward high-value areas. Pheromone payloads are ~20 bytes -- bandwidth-efficient enough for contested RF environments.
+
+On top of this, an edge-deployable LLM (3B parameters, Phi-3 / Llama-3.2 class) converts raw decision traces into natural-language explanations. The commander sees not just what the swarm decided, but *why*. When the LLM is unavailable (comms-denied, resource-constrained), a rule-based keyword parser provides baseline NLP capability -- the system never depends on a single inference path.
+
+### 5. Fractal Self-Similarity
+
+The same organizational algorithms operate at every echelon:
+
+```
+Pair (2) --> Squad (4) --> Platoon (16) --> Company (64)
+```
+
+A squad of 4 drones has the same command structure, consensus mechanism, and coordination protocol as a platoon of 16 or a company of 64. Leadership is emergent via consensus, not assigned. Losing a leader degrades performance, not capability. There is no "head" to cut off.
+
+### 6. "Dark Pool" Mission Compartmentalization
+
+Sensitive tasks (strike missions, electronic warfare operations) are restricted to specific sub-swarms via `dark_pool` identifiers. Reconnaissance drones in sub-swarm A cannot see or bid on strike tasks assigned to sub-swarm B. This enforces need-to-know compartmentalization at the algorithmic level -- the military equivalent of dark pool order routing in financial markets, where large orders execute without revealing intent to the broader market.
+
+---
 
 ## Architecture
 
 ```
-Layer 0  Human Interface     Voice/NLP -> Intent -> Confirm -> Execute
-Layer 1  Market Brain        Particle filters + Regime-switching + Adversarial
-Layer 2  Auction Floor       Sealed-bid scoring + Hungarian + Dark pools
-Layer 3  Mesh Coordination   Fractal hierarchy + Stigmergy + Gossip
-Layer 4  Puppet Master       PlatformAdapter -> MAVLink / ROS2 / Simulator
-Layer 5  Glass Box           Decision traces + Narration + After-action replay
++-----------------------------------------------------------+
+|               LAYER 0: HUMAN INTERFACE                    |
+|  Voice/NLP -> Intent -> Confirmation -> Execution         |
+|  "Recon north ridge, avoid AA" -> MissionIntent           |
++-----------------------------------------------------------+
+|               LAYER 1: MARKET BRAIN                       |
+|  predict -> update -> regime_check -> auction -> assign   |
+|  Particle filters (6D) + Regime-switching Markov model    |
++-----------------------------------------------------------+
+|               LAYER 2: AUCTION FLOOR                      |
+|  Sealed-bid scoring + Hungarian assignment + Dark pools   |
+|  score = urgency*10 + capability*3 + proximity*5          |
+|         + energy*2 - risk*4                               |
++-----------------------------------------------------------+
+|               LAYER 3: MESH COORDINATION                  |
+|  Fractal hierarchy + Stigmergy + Gossip protocol          |
+|  O(log N) convergence, bandwidth-aware prioritization     |
++-----------------------------------------------------------+
+|               LAYER 4: PUPPET MASTER                      |
+|  PlatformAdapter trait -> MAVLink / ROS2 / Simulator      |
+|  Unified command interface across all drone platforms      |
++-----------------------------------------------------------+
+|               LAYER 5: GLASS BOX                          |
+|  Decision traces + Narration + After-action replay        |
+|  Every decision is explainable and auditable              |
++-----------------------------------------------------------+
 ```
+
+---
 
 ## Tech Stack
 
 | Component | Technology | Purpose |
-|---|---|---|
-| Core Engine | Rust + rayon | Particle filter, auction, mesh -- parallel, zero-copy |
-| Orchestration | Python 3.12 + asyncio | Mission brain, NLP, planning, digital twin |
-| FFI Bridge | PyO3 + maturin | Rust-Python interop with minimal overhead |
+|-----------|------------|---------|
+| Core Engine | Rust (rayon, ndarray, nalgebra) | Particle filter, auction, mesh -- parallel, zero-copy |
+| Orchestration | Python 3.12+ (asyncio) | Mission brain, NLP, planning, digital twin |
+| FFI Bridge | PyO3 + maturin | Rust-to-Python interop with minimal overhead |
+| Math | ndarray, nalgebra | Linear algebra, matrix ops, state estimation |
 | Autopilot | MAVLink v2 | PX4 / ArduPilot integration |
 | Robotics | ROS2 (DDS) | Ground vehicle / naval craft integration |
-| Visualization | rerun.io | 3D digital twin with uncertainty clouds |
-| Edge LLM | llama.cpp / ONNX | On-device NLP for comms-denied ops |
-| Serialization | serde + JSON | All state is serializable for replay |
+| Edge LLM | llama.cpp / ONNX | On-device NLP for comms-denied operations |
+| Serialization | serde + JSON | All state is serializable for replay and audit |
+
+---
 
 ## Quick Start
 
 ```bash
-# Clone
 git clone https://github.com/RMANOV/strix.git
 cd strix
 
-# Build and test (189 tests)
+# Build and test (189 tests, all passing)
 cargo test --workspace
 
 # Build optimized
 cargo build --release
 
-# Install Python layer
+# Install Python orchestration layer
 pip install -e .
 ```
 
-### Requirements
+**Requirements**: Rust 1.75+ (2021 edition), Python 3.11+, maturin 1.11+
 
-- Rust 1.75+ (2021 edition)
-- Python 3.11+
-- NumPy 1.26+
-- maturin 1.11+
+---
 
 ## Project Structure
 
 ```
 strix/
 ├── crates/
-│   ├── strix-core/          # 6D particle filter, state types, regime model
-│   ├── strix-auction/       # Combinatorial auction, portfolio, risk, anti-fragile
-│   ├── strix-mesh/          # Mesh coordination, gossip, stigmergy, fractal
-│   ├── strix-adapters/      # Platform adapters (MAVLink, ROS2, simulator)
-│   └── strix-xai/           # Explainability engine, decision traces
+│   ├── strix-core/          6D particle filter, regime model, CUSUM anomaly detection
+│   ├── strix-auction/       Combinatorial auction, portfolio optimization, anti-fragile
+│   ├── strix-mesh/          Mesh coordination, gossip protocol, stigmergy, fractal hierarchy
+│   ├── strix-adapters/      Platform adapters (MAVLink, ROS2, simulator)
+│   └── strix-xai/           Explainability engine, decision traces, narration
 ├── python/strix/
-│   ├── brain.py             # Mission planner (Market Brain)
-│   ├── adversarial.py       # Adversarial prediction engine
-│   ├── nlp/                 # Intent parsing, acknowledgment loop
-│   ├── temporal/            # Multi-horizon planner (t-CoT)
-│   ├── digital_twin/        # 3D world model, rehearsal, visualization
-│   └── llm/                 # Military LLM, edge inference
-├── sim/scenarios/           # YAML simulation scenarios
-├── docs/                    # Architecture, trading mapping, ITAR analysis
-└── demo/                    # Demo scripts and dashboard
+│   ├── brain.py             Mission planner (Market Brain, 10 Hz main loop)
+│   ├── adversarial.py       Adversarial prediction engine (dual particle filter)
+│   ├── nlp/                 Intent parsing, acknowledgment loop
+│   ├── temporal/            Multi-horizon planner (H1/H2/H3 cascade)
+│   ├── digital_twin/        3D world model, rehearsal, visualization
+│   └── llm/                 Military LLM, edge inference, narration
+├── sim/scenarios/           YAML simulation scenarios
+├── demo/                    Dashboard and demo scripts
+└── docs/                    Architecture, trading mapping, ITAR analysis
 ```
+
+---
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) -- 6-layer system design with data flow
-- [Trading Mapping](docs/trading_mapping.md) -- complete algorithm-to-warfare mapping (14 rows)
-- [ITAR Analysis](docs/itar_analysis.md) -- open-source legal strategy and precedents
-- [Competitor Comparison](docs/competitor_comparison.md) -- differentiation vs. 5 AVO competitors
+- [Architecture](docs/architecture.md) -- 6-layer system design with data flow diagrams
+- [Trading-to-Warfare Mapping](docs/trading_mapping.md) -- complete algorithm mapping (14 transformations)
+- [Competitor Comparison](docs/competitor_comparison.md) -- differentiation vs. OpenAI, xAI/SpaceX, Shield AI, Anduril, Auterion
+- [ITAR Analysis](docs/itar_analysis.md) -- open-source legal strategy and export control precedents
 
-## Simulation Scenarios
-
-| Scenario | Drones | Duration | Key Test |
-|---|---|---|---|
-| [GPS-Denied Recon](sim/scenarios/gps_denied_recon.yaml) | 4 | 10 min | Particle filter navigation without GPS |
-| [Contested Strike](sim/scenarios/contested_strike.yaml) | 6 | 8 min | SAM avoidance, regime switching, dark pools |
-| [Mass Attrition](sim/scenarios/mass_attrition.yaml) | 12 | 15 min | 50% loss survivability, anti-fragile adaptation |
-| [Multi-Domain](sim/scenarios/multi_domain.yaml) | 3 UAV + 2 UGV | 12 min | Cross-platform coordination, air-ground escort |
+---
 
 ## License
 
 Apache 2.0 -- see [LICENSE-APACHE](LICENSE-APACHE).
 
-The open-source core contains published mathematics and general-purpose algorithms. Military-specific integrations (weapon adapters, classified scenarios, classified platform adapters) are maintained in a separate proprietary repository. See [ITAR Analysis](docs/itar_analysis.md) for the legal framework.
-
-## Roadmap
-
-| Phase | Timeline | Deliverable |
-|---|---|---|
-| Phase 1 | Q1 2026 | Particle filter + auction core in Rust, Python orchestration |
-| Phase 2 | Q2 2026 | Simulator integration, 4-drone GPS-denied demo |
-| Phase 3 | Q3 2026 | MAVLink adapter, real hardware flight test |
-| Phase 4 | Q4 2026 | Adversarial prediction, multi-horizon planning |
-| Phase 5 | Q1 2027 | Edge LLM integration, voice command interface |
-| Phase 6 | Q2 2027 | Multi-domain (UAV + UGV), production hardening |
+The open-source core contains published mathematics and general-purpose algorithms. It is ITAR-exempt under **EAR Section 734.7 (Published Information Exemption)**: algorithms derived from published academic literature and publicly available quantitative finance research do not constitute controlled technical data. Military-specific integrations (weapon adapters, classified platform interfaces, classified operational scenarios) are maintained in a separate, access-controlled repository with appropriate export controls. See [ITAR Analysis](docs/itar_analysis.md) for the full legal framework.
 
 ---
 
-**Note**: STRIX is a research prototype. It has not been tested with live hardware or in operational environments.
+## Disclaimer
+
+STRIX is a **research prototype** under active development. It has not been validated for operational deployment and carries no warranty regarding fitness for any particular use case, including defense applications. The system is intended for research, experimentation, and technology demonstration. Users are responsible for compliance with all applicable laws, regulations, and export controls.
+
+---
 
 *STRIX -- because the most dangerous swarm is the one that thinks like a trading firm.*
