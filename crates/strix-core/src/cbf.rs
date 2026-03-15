@@ -109,7 +109,7 @@ pub fn cbf_filter(
         // dh/dt = 2 * (p_i - p_j) . (v_i - v_j)
         // For safety: dh/dt + alpha * h >= 0
         // Assume neighbor velocity ≈ 0 for worst case.
-        let dh_dt = 2.0 * diff.dot(&(desired_vel + &correction));
+        let dh_dt = 2.0 * diff.dot(&(desired_vel + correction));
         let constraint = dh_dt + config.alpha * h;
 
         if constraint < 0.0 {
@@ -172,7 +172,7 @@ pub fn cbf_filter(
 
     // ── Constraint 3: No-fly zone avoidance ─────────────────────────
     for zone in nfz {
-        let diff = my_pos - &zone.center;
+        let diff = my_pos - zone.center;
         let dist_sq = diff.norm_squared();
         let r_sq = zone.radius * zone.radius;
 
@@ -187,7 +187,7 @@ pub fn cbf_filter(
             continue;
         }
 
-        let dh_dt = 2.0 * diff.dot(&(desired_vel + &correction));
+        let dh_dt = 2.0 * diff.dot(&(desired_vel + correction));
         let constraint = dh_dt + config.alpha * h;
 
         if constraint < 0.0 {
@@ -236,7 +236,7 @@ pub fn is_position_safe(
 
     // No-fly zones.
     for zone in nfz {
-        if (pos - &zone.center).norm_squared() < zone.radius * zone.radius {
+        if (pos - zone.center).norm_squared() < zone.radius * zone.radius {
             return false;
         }
     }
@@ -361,7 +361,7 @@ mod tests {
         let neighbor = Vector3::new(10.0, 0.0, -50.0); // 10m > 5m min
         assert!(is_position_safe(&pos_safe, &[neighbor], &[], &config));
 
-        let pos_unsafe = Vector3::new(3.0, 0.0, -50.0); // 7m from neighbor — wait, that's >5m
+        let pos_unsafe = Vector3::new(3.0, 0.0, -50.0); // position near close_neighbor
         let close_neighbor = Vector3::new(4.0, 0.0, -50.0); // 1m away
         assert!(!is_position_safe(
             &pos_unsafe,

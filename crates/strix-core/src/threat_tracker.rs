@@ -218,9 +218,9 @@ impl ThreatTracker {
             p[5] = new_vz;
         });
 
-        for i in 0..n {
-            for j in 0..6 {
-                self.particles[[i, j]] = buf[i][j];
+        for (i, row) in buf.iter().enumerate().take(n) {
+            for (j, val) in row.iter().enumerate() {
+                self.particles[[i, j]] = *val;
             }
         }
     }
@@ -377,7 +377,7 @@ impl ThreatTracker {
         let regime_idx = probs
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
             .map(|(idx, _)| idx)
             .unwrap_or(0);
         let regime = ThreatRegime::from_index(regime_idx as u8).unwrap_or(ThreatRegime::Defend);
@@ -448,15 +448,15 @@ pub fn threat_momentum_score(distance_history: &[f64], window: usize) -> f64 {
 
     let mut recent_sum = 0.0_f64;
     let mut recent_count = 0_usize;
-    for i in mid..n {
-        recent_sum += distance_history[i];
+    for val in &distance_history[mid..n] {
+        recent_sum += val;
         recent_count += 1;
     }
 
     let mut older_sum = 0.0_f64;
     let mut older_count = 0_usize;
-    for i in start..mid {
-        older_sum += distance_history[i];
+    for val in &distance_history[start..mid] {
+        older_sum += val;
         older_count += 1;
     }
 

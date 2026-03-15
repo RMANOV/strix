@@ -7,8 +7,6 @@
 //! regime transitions, pheromone deposits, gossip convergence,
 //! and decision trace generation.
 
-use std::collections::HashMap;
-
 use strix_adapters::simulator::{SimulatorConfig, SimulatorFleet};
 use strix_adapters::traits::{Action, PlatformAdapter};
 use strix_auction::{Capabilities, LossClassification, Position, Task};

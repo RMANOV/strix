@@ -54,8 +54,8 @@ pub fn hurst_exponent(values: &[f64], min_window: usize, max_window: usize) -> (
             let end = start + window;
 
             let mut chunk_mean = 0.0_f64;
-            for i in start..end {
-                chunk_mean += returns[i];
+            for val in &returns[start..end] {
+                chunk_mean += val;
             }
             chunk_mean /= window as f64;
 
@@ -63,8 +63,8 @@ pub fn hurst_exponent(values: &[f64], min_window: usize, max_window: usize) -> (
             let mut r_max = 0.0_f64;
             let mut r_min = 0.0_f64;
 
-            for i in start..end {
-                cumsum += returns[i] - chunk_mean;
+            for val in &returns[start..end] {
+                cumsum += val - chunk_mean;
                 if cumsum > r_max {
                     r_max = cumsum;
                 }
@@ -76,8 +76,8 @@ pub fn hurst_exponent(values: &[f64], min_window: usize, max_window: usize) -> (
             let r = r_max - r_min;
 
             let mut var = 0.0_f64;
-            for i in start..end {
-                let diff = returns[i] - chunk_mean;
+            for val in &returns[start..end] {
+                let diff = val - chunk_mean;
                 var += diff * diff;
             }
             let s = (var / window as f64).sqrt();
@@ -175,9 +175,9 @@ pub fn volatility_compression(
 
     let mut short_sum = 0.0_f64;
     let mut short_sum_sq = 0.0_f64;
-    for i in short_start..returns_n {
-        short_sum += returns[i];
-        short_sum_sq += returns[i] * returns[i];
+    for val in &returns[short_start..returns_n] {
+        short_sum += val;
+        short_sum_sq += val * val;
     }
     let short_mean = short_sum / short_count as f64;
     let short_var = (short_sum_sq / short_count as f64) - (short_mean * short_mean);
@@ -189,9 +189,9 @@ pub fn volatility_compression(
 
     let mut long_sum = 0.0_f64;
     let mut long_sum_sq = 0.0_f64;
-    for i in long_start..returns_n {
-        long_sum += returns[i];
-        long_sum_sq += returns[i] * returns[i];
+    for val in &returns[long_start..returns_n] {
+        long_sum += val;
+        long_sum_sq += val * val;
     }
     let long_mean = long_sum / long_count as f64;
     let long_var = (long_sum_sq / long_count as f64) - (long_mean * long_mean);
@@ -267,8 +267,8 @@ pub fn threat_density_contours(
 /// Excess kurtosis of the most recent `window` values.
 ///
 /// >0 → fat tails (unexpected events likely),
-/// <0 → thin tails,
-///  0 → normal.
+/// > <0 → thin tails,
+/// >  0 → normal.
 ///
 /// Direct port of `rolling_kurtosis`.
 pub fn rolling_kurtosis(values: &[f64], window: usize) -> f64 {
@@ -281,15 +281,15 @@ pub fn rolling_kurtosis(values: &[f64], window: usize) -> f64 {
     let start = n - window;
 
     let mut mean = 0.0_f64;
-    for i in start..n {
-        mean += values[i];
+    for val in &values[start..n] {
+        mean += val;
     }
     mean /= window as f64;
 
     let mut m2 = 0.0_f64;
     let mut m4 = 0.0_f64;
-    for i in start..n {
-        let diff = values[i] - mean;
+    for val in &values[start..n] {
+        let diff = val - mean;
         let diff_sq = diff * diff;
         m2 += diff_sq;
         m4 += diff_sq * diff_sq;
@@ -327,15 +327,15 @@ pub fn momentum_score(values: &[f64], window: usize) -> f64 {
 
     let mut recent_sum = 0.0_f64;
     let mut recent_count = 0_usize;
-    for i in mid..n {
-        recent_sum += values[i];
+    for val in &values[mid..n] {
+        recent_sum += val;
         recent_count += 1;
     }
 
     let mut older_sum = 0.0_f64;
     let mut older_count = 0_usize;
-    for i in start..mid {
-        older_sum += values[i];
+    for val in &values[start..mid] {
+        older_sum += val;
         older_count += 1;
     }
 

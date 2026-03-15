@@ -97,7 +97,7 @@ impl ParticleFilterState {
         if n == 0 || self.data.is_empty() {
             return vec![ParticleFilterShard::empty(); n.max(1)];
         }
-        let chunk_size = (self.data.len() + n - 1) / n;
+        let chunk_size = self.data.len().div_ceil(n);
         self.data
             .chunks(chunk_size)
             .enumerate()
@@ -317,7 +317,7 @@ pub fn build_hierarchy(drone_ids: &[NodeId]) -> FractalHierarchy {
                         for &child in &n.children {
                             if nodes
                                 .get(&child)
-                                .map_or(false, |c| c.level == HierarchyLevel::Pair)
+                                .is_some_and(|c| c.level == HierarchyLevel::Pair)
                             {
                                 members.push(child);
                             }
@@ -413,7 +413,7 @@ fn build_groups_from_ids(ids: &[NodeId], min_size: usize, max_size: usize) -> Ve
     if n <= max_size {
         return vec![ids.to_vec()];
     }
-    let num_groups = (n + max_size - 1) / max_size;
+    let num_groups = n.div_ceil(max_size);
     let base_size = n / num_groups;
     let remainder = n % num_groups;
 

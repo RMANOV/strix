@@ -206,8 +206,8 @@ impl SimulatorAdapter {
         }
 
         // --- wind disturbance ---
-        for i in 0..3 {
-            accel[i] += self.config.wind[i] * 0.1; // wind as a gentle force
+        for (a, w) in accel.iter_mut().zip(self.config.wind.iter()) {
+            *a += w * 0.1; // wind as a gentle force
         }
 
         // --- drag when loitering (no target) ---
@@ -218,13 +218,13 @@ impl SimulatorAdapter {
         }
 
         // --- integrate velocity ---
-        for i in 0..3 {
-            s.velocity[i] += accel[i] * dt;
+        for (v, a) in s.velocity.iter_mut().zip(accel.iter()) {
+            *v += a * dt;
         }
 
         // Clamp speed to setpoint only during cruise (not near target)
         let speed = (s.velocity[0].powi(2) + s.velocity[1].powi(2) + s.velocity[2].powi(2)).sqrt();
-        let near_target = s.target.map_or(true, |t| {
+        let near_target = s.target.is_none_or(|t| {
             let d = ((t[0] - s.position[0]).powi(2)
                 + (t[1] - s.position[1]).powi(2)
                 + (t[2] - s.position[2]).powi(2))

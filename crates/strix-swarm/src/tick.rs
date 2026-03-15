@@ -286,7 +286,7 @@ impl SwarmOrchestrator {
         let trace = DecisionTrace::new(self.sim_time, DecisionType::ReAuction)
             .with_inputs(TraceInputs {
                 drone_ids: alive_ids,
-                regime: format!("mixed"),
+                regime: "mixed".to_string(),
                 metrics: serde_json::json!({
                     "lost_drone": drone_id,
                     "kill_zones": self.loss_analyzer.active_kill_zones(),
@@ -755,7 +755,7 @@ impl SwarmOrchestrator {
                 let (pos, _vel, _probs) = t.estimate_threat();
                 (pos, (pos - drone_pos).norm())
             })
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(pos, _)| convert::threat_bearing(drone_pos, &pos))
             .unwrap_or_else(Vector3::zeros)
     }
@@ -775,7 +775,7 @@ impl SwarmOrchestrator {
                 };
                 (dist, closing)
             })
-            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+            .min_by(|a, b| a.0.total_cmp(&b.0))
             .unwrap_or((f64::MAX, 0.0))
     }
 }

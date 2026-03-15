@@ -234,7 +234,7 @@ impl GossipEngine {
             .filter(|s| {
                 peer_versions
                     .get(&s.node_id)
-                    .map_or(true, |&pv| s.version > pv)
+                    .is_none_or(|&pv| s.version > pv)
             })
             .cloned()
             .collect();
@@ -276,7 +276,7 @@ impl GossipEngine {
             let dominated = self
                 .known_states
                 .get(&incoming.node_id)
-                .map_or(true, |existing| incoming.version > existing.version);
+                .is_none_or(|existing| incoming.version > existing.version);
             if dominated {
                 self.known_states.insert(incoming.node_id, incoming.clone());
             }
@@ -287,7 +287,7 @@ impl GossipEngine {
             let should_insert = self
                 .known_threats
                 .get(&incoming.threat_id)
-                .map_or(true, |existing| incoming.timestamp > existing.timestamp);
+                .is_none_or(|existing| incoming.timestamp > existing.timestamp);
             if should_insert {
                 self.known_threats
                     .insert(incoming.threat_id, incoming.clone());

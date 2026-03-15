@@ -177,7 +177,7 @@ impl Auctioneer {
         let mut already_bundled: HashSet<u32> = HashSet::new();
 
         // First pass: add bundles as single slots.
-        for (_bundle_id, member_ids) in bundles {
+        for member_ids in bundles.values() {
             if member_ids.len() > 1 {
                 slot_task_ids.push(member_ids.clone());
                 for &tid in member_ids {
@@ -216,10 +216,8 @@ impl Auctioneer {
                 cost_matrix[di][si] = 0.0;
             }
         }
-        for di in drone_ids.len()..n {
-            for si in 0..n {
-                cost_matrix[di][si] = 0.0;
-            }
+        for row in cost_matrix.iter_mut().skip(drone_ids.len()) {
+            row.fill(0.0);
         }
 
         // Run Hungarian algorithm.
@@ -241,7 +239,7 @@ impl Auctioneer {
             let has_any_bid = slot.iter().any(|&tid| {
                 bid_map
                     .get(&(did, tid))
-                    .map_or(false, |&s| s >= self.min_bid_threshold)
+                    .is_some_and(|&s| s >= self.min_bid_threshold)
             });
 
             if has_any_bid {
