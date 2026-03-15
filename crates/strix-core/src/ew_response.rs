@@ -177,6 +177,14 @@ impl EwEngine {
     // Internal dispatch
     // -----------------------------------------------------------------------
 
+    /// Compute response actions for an event (read-only, does not store).
+    ///
+    /// Used by the tick loop to re-derive responses from active events
+    /// without mutating the engine state.
+    pub fn compute_responses_readonly(&self, event: &EwEvent) -> Vec<EwResponse> {
+        self.compute_responses(event)
+    }
+
     fn compute_responses(&self, event: &EwEvent) -> Vec<EwResponse> {
         match event.threat {
             EwThreat::GpsDenial => self.respond_gps_denial(event),

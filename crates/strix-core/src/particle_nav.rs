@@ -94,6 +94,27 @@ impl ProcessNoiseConfig {
             },
         }
     }
+
+    /// Scale all noise profiles uniformly by an EW noise multiplier.
+    ///
+    /// Used when electronic warfare degradation inflates navigation uncertainty.
+    pub fn scaled_by_ew(&self, multiplier: f64) -> Self {
+        let m = multiplier.max(1.0);
+        Self {
+            patrol: RegimeNoise {
+                pos_noise: self.patrol.pos_noise.map(|n| n * m),
+                vel_noise: self.patrol.vel_noise.map(|n| n * m),
+            },
+            engage: RegimeNoise {
+                pos_noise: self.engage.pos_noise.map(|n| n * m),
+                vel_noise: self.engage.vel_noise.map(|n| n * m),
+            },
+            evade: RegimeNoise {
+                pos_noise: self.evade.pos_noise.map(|n| n * m),
+                vel_noise: self.evade.vel_noise.map(|n| n * m),
+            },
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

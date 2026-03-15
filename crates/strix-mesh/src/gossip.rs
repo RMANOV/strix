@@ -131,6 +131,11 @@ impl GossipEngine {
         }
     }
 
+    /// Dynamically adjust the gossip fanout (e.g., for EW degradation).
+    pub fn set_fanout(&mut self, fanout: usize) {
+        self.fanout = fanout.max(1);
+    }
+
     /// Register a peer.
     pub fn add_peer(&mut self, peer: NodeId) {
         if peer != self.self_id && !self.peers.contains(&peer) {

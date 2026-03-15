@@ -1,5 +1,7 @@
 # STRIX -- Swarm Tactical Reasoning and Intelligence eXchange
 
+[![CI](https://github.com/RMANOV/strix/actions/workflows/ci.yml/badge.svg)](https://github.com/RMANOV/strix/actions/workflows/ci.yml)
+
 *From the genus* Strix *(owls) -- silent predators with exceptional sensor fusion.*
 
 > **The battlefield is a market. Drones are traders. Missions are positions. The enemy is a counterparty.**
@@ -14,7 +16,7 @@ The mapping is not a metaphor. It is a structural isomorphism. The mathematics t
 
 ### 1. Adversarial Particle Filter ("Enemy as Market")
 
-A **dual particle filter** architecture. The first filter tracks friendly drone state in 6D `[x, y, z, vx, vy, vz]` for GPS-denied navigation (1000 particles, 10 Hz). The second filter tracks enemy entities, encoding each adversary as a kinematic state plus an intent hypothesis: DEFENDING, ATTACKING, or RETREATING. This directly mirrors counterparty prediction in quantitative trading -- model the opponent's likely actions before they complete them. The informational advantage is measured in seconds, which in combat is the difference between initiative and reaction.
+A **dual particle filter** architecture. The first filter tracks friendly drone state in 6D `[x, y, z, vx, vy, vz]` for GPS-denied navigation (configurable 50–2000 particles, default 200 at 10 Hz). The second filter tracks enemy entities, encoding each adversary as a kinematic state plus an intent hypothesis: DEFENDING, ATTACKING, or RETREATING. This directly mirrors counterparty prediction in quantitative trading -- model the opponent's likely actions before they complete them. The informational advantage is measured in seconds, which in combat is the difference between initiative and reaction.
 
 ### 2. Anti-Fragile Loss Recovery (Taleb)
 
@@ -44,17 +46,27 @@ Bio-inspired coordination fused with explainable AI. Drones deposit digital pher
 
 On top of this, an edge-deployable LLM (3B parameters, Phi-3 / Llama-3.2 class) converts raw decision traces into natural-language explanations. The commander sees not just what the swarm decided, but *why*. When the LLM is unavailable (comms-denied, resource-constrained), a rule-based keyword parser provides baseline NLP capability -- the system never depends on a single inference path.
 
-### 5. Fractal Self-Similarity
+### 5. Integrated Safety and Engagement
+
+Five operational modules are wired directly into the orchestration loop:
+
+- **Formation Control** — 7 tactical formations (Vee, Line, Wedge, Column, Echelon L/R, Spread) with proportional correction and deadband control
+- **Rules of Engagement (ROE)** — go/no-go gate with WeaponsHold/Tight/Free postures, self-defense override, collateral risk cap, and human-in-the-loop escalation
+- **Electronic Warfare Response** — GPS denial/spoofing, comms jamming, radar lock, and directed energy detection with automated multi-action response plans
+- **Control Barrier Functions (CBF)** — provably safe collision avoidance (inter-drone separation, altitude bounds, no-fly zones) with formal dh/dt + αh ≥ 0 guarantees
+- **Multi-Horizon Temporal Manager** — three parallel particle filters (H1 tactical 0.1s, H2 operational 5s, H3 strategic 60s) with top-down cascade constraints
+
+### 6. Fractal Self-Similarity
 
 The same organizational algorithms operate at every echelon:
 
 ```
-Pair (2) --> Squad (4) --> Platoon (16) --> Company (64)
+Pair (2) --> Squad (5-8) --> Platoon (20-30) --> Company (60-100)
 ```
 
-A squad of 4 drones has the same command structure, consensus mechanism, and coordination protocol as a platoon of 16 or a company of 64. Leadership is emergent via consensus, not assigned. Losing a leader degrades performance, not capability. There is no "head" to cut off.
+A squad of 5–8 drones has the same command structure, consensus mechanism, and coordination protocol as a platoon of 20–30 or a company of 60+. Leadership is emergent via consensus, not assigned. Losing a leader degrades performance, not capability. There is no "head" to cut off.
 
-### 6. "Dark Pool" Mission Compartmentalization
+### 7. "Dark Pool" Mission Compartmentalization
 
 Sensitive tasks (strike missions, electronic warfare operations) are restricted to specific sub-swarms via `dark_pool` identifiers. Reconnaissance drones in sub-swarm A cannot see or bid on strike tasks assigned to sub-swarm B. This enforces need-to-know compartmentalization at the algorithmic level -- the military equivalent of dark pool order routing in financial markets, where large orders execute without revealing intent to the broader market.
 
@@ -108,13 +120,35 @@ Sensitive tasks (strike missions, electronic warfare operations) are restricted 
 
 ---
 
+## Performance (Criterion Benchmarks)
+
+All measurements on a single core, unoptimized test profile. Release builds are 2–5× faster.
+
+| Benchmark | Configuration | Time |
+|-----------|--------------|------|
+| Particle filter step | 50 particles | 42 µs |
+| Particle filter step | 200 particles (default) | 75 µs |
+| Particle filter step | 1000 particles | 226 µs |
+| Combinatorial auction | 5 drones, 3 tasks | 2.7 µs |
+| Combinatorial auction | 20 drones, 10 tasks | 47 µs |
+| Combinatorial auction | 50 drones, 20 tasks | 465 µs |
+| **Full swarm tick** | **5 drones** | **298 µs** |
+| **Full swarm tick** | **10 drones** | **580 µs** |
+| **Full swarm tick** | **20 drones** | **1.15 ms** |
+
+The full tick includes: particle filter update, regime detection (CUSUM + Hurst + intent), formation correction, ROE authorization, combinatorial auction, gossip propagation, pheromone update, CBF safety clamp, and XAI trace recording. All modules integrated, all safety checks active.
+
+At 1.15 ms per tick for 20 drones, the system supports **870 Hz orchestration** — well within the 10 Hz real-time target with 99% headroom for sensor processing, communication, and platform I/O.
+
+---
+
 ## Quick Start
 
 ```bash
 git clone https://github.com/RMANOV/strix.git
 cd strix
 
-# Build and test (189 tests, all passing)
+# Build and test (315+ tests, all passing)
 cargo test --workspace
 
 # Build optimized
@@ -133,11 +167,14 @@ pip install -e .
 ```
 strix/
 ├── crates/
-│   ├── strix-core/          6D particle filter, regime model, CUSUM anomaly detection
+│   ├── strix-core/          6D particle filter, regime model, CUSUM, formation, ROE, EW, CBF, temporal
 │   ├── strix-auction/       Combinatorial auction, portfolio optimization, anti-fragile
 │   ├── strix-mesh/          Mesh coordination, gossip protocol, stigmergy, fractal hierarchy
 │   ├── strix-adapters/      Platform adapters (MAVLink, ROS2, simulator)
-│   └── strix-xai/           Explainability engine, decision traces, narration
+│   ├── strix-xai/           Explainability engine, decision traces, narration
+│   ├── strix-swarm/         Integration orchestrator: tick loop chains all crates
+│   ├── strix-python/        PyO3 Python bindings (cdylib)
+│   └── strix-playground/    Simulation engine with 4 presets + BattleReport
 ├── python/strix/
 │   ├── brain.py             Mission planner (Market Brain, 10 Hz main loop)
 │   ├── adversarial.py       Adversarial prediction engine (dual particle filter)

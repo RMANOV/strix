@@ -1,12 +1,16 @@
 //! The main tick() loop — one orchestration cycle: sense → think → act.
 //!
-//! Each tick chains all 5 STRIX crates in sequence:
-//! 1. strix-core: particle filter prediction + measurement update
-//! 2. strix-core: CUSUM anomaly detection + regime transitions
-//! 3. strix-core: threat tracker update
-//! 4. strix-auction: combinatorial task auction
-//! 5. strix-mesh: gossip state propagation + pheromone update
-//! 6. strix-xai: decision trace recording
+//! Each tick chains all STRIX crates in sequence:
+//! 1. strix-core: EW threat scan + noise/gossip modulation
+//! 2. strix-core: particle filter prediction + measurement update
+//! 3. strix-core: CUSUM anomaly detection + regime transitions
+//! 4. strix-core: formation correction (geometry + deadband control)
+//! 5. strix-core: threat tracker update
+//! 6. strix-core: ROE authorization gate
+//! 7. strix-auction: combinatorial task auction
+//! 8. strix-mesh: gossip state propagation + pheromone update
+//! 9. strix-core: CBF safety clamp (collision + altitude + NFZ)
+//! 10. strix-xai: decision trace recording
 
 use std::collections::HashMap;
 
@@ -15,10 +19,14 @@ use nalgebra::Vector3;
 use strix_adapters::traits::Telemetry;
 use strix_auction::{Assignment, Auctioneer, Capabilities, LossAnalyzer, Task};
 use strix_core::anomaly::CusumConfig;
+use strix_core::cbf::{self, CbfConfig, NoFlyZone};
+use strix_core::ew_response::{EwEngine, EwEvent, EwResponse, EwResponsePlan};
+use strix_core::formation::{self, FormationConfig, FormationType};
 use strix_core::hysteresis::{HysteresisConfig, HysteresisGate};
 use strix_core::intent::{self, IntentConfig, IntentSignals};
 use strix_core::particle_nav::ParticleNavFilter;
 use strix_core::regime::{detect_regime, DetectionConfig, RegimeSignals};
+use strix_core::roe::{EngagementAuth, EngagementContext, RoeEngine, ThreatClassification};
 use strix_core::threat_tracker::ThreatTracker;
 use strix_core::Regime;
 use strix_mesh::gossip::GossipEngine;
@@ -55,6 +63,18 @@ pub struct SwarmConfig {
     pub intent_config: IntentConfig,
     /// Base fear level F ∈ [0,1]. Overridden by FearAdapter when present.
     pub fear: f64,
+    /// Formation type for the swarm (None = disabled).
+    pub formation_type: Option<FormationType>,
+    /// Formation geometry and control law parameters.
+    pub formation_config: FormationConfig,
+    /// Rules of engagement engine.
+    pub roe_engine: RoeEngine,
+    /// Control barrier function config (None = disabled).
+    pub cbf_config: Option<CbfConfig>,
+    /// Static no-fly zones for CBF.
+    pub no_fly_zones: Vec<NoFlyZone>,
+    /// Maximum age (seconds) before stale EW events are cleared.
+    pub ew_stale_age: f64,
 }
 
 impl Default for SwarmConfig {
@@ -77,6 +97,12 @@ impl Default for SwarmConfig {
             hysteresis_config: HysteresisConfig::default(),
             intent_config: IntentConfig::default(),
             fear: 0.0,
+            formation_type: Some(FormationType::Vee),
+            formation_config: FormationConfig::default(),
+            roe_engine: RoeEngine::default(),
+            cbf_config: Some(CbfConfig::default()),
+            no_fly_zones: Vec::new(),
+            ew_stale_age: 120.0,
         }
     }
 }
@@ -106,9 +132,22 @@ pub struct SwarmDecision {
     pub max_intent_score: f64,
     /// Current fear level F ∈ [0,1] (0 = aggressive, 1 = maximum caution).
     pub fear_level: f64,
+    /// Formation quality score ∈ [0, 1] (1.0 = perfect formation, 0.0 = scattered).
+    /// None if formation is disabled.
+    pub formation_quality: Option<f64>,
+    /// Per-drone formation correction vectors (formation slot → drone).
+    pub formation_corrections: HashMap<u32, Vector3<f64>>,
+    /// Number of engagement requests denied by ROE this tick.
+    pub roe_denials: u32,
+    /// Number of engagement requests that require human escalation.
+    pub roe_escalations: u32,
+    /// Number of active EW threats being tracked.
+    pub ew_active_threats: usize,
+    /// Number of CBF safety constraints active this tick.
+    pub cbf_active_constraints: u32,
 }
 
-/// The swarm orchestrator — chains all 5 STRIX crates together.
+/// The swarm orchestrator — chains all STRIX crates together.
 pub struct SwarmOrchestrator {
     /// Per-drone particle filters (GPS-denied navigation).
     pub nav_filters: HashMap<u32, ParticleNavFilter>,
@@ -155,6 +194,20 @@ pub struct SwarmOrchestrator {
     sim_time: f64,
     /// Config.
     pub config: SwarmConfig,
+
+    // ── Island modules ───────────────────────────────────────────────────
+    /// Current formation type (None = formation disabled).
+    pub formation_type: Option<FormationType>,
+    /// Formation geometry config.
+    pub formation_config: FormationConfig,
+    /// Rules of engagement engine.
+    pub roe_engine: RoeEngine,
+    /// Electronic warfare response engine.
+    pub ew_engine: EwEngine,
+    /// CBF config (None = disabled).
+    pub cbf_config: Option<CbfConfig>,
+    /// Active no-fly zones.
+    pub no_fly_zones: Vec<NoFlyZone>,
 }
 
 impl SwarmOrchestrator {
@@ -213,6 +266,13 @@ impl SwarmOrchestrator {
             gossip_version: 0,
             tick_count: 0,
             sim_time: 0.0,
+            // Capture island module configs before moving config
+            formation_type: config.formation_type,
+            formation_config: config.formation_config.clone(),
+            roe_engine: config.roe_engine.clone(),
+            ew_engine: EwEngine::new(),
+            cbf_config: config.cbf_config.clone(),
+            no_fly_zones: config.no_fly_zones.clone(),
             config,
         }
     }
@@ -248,6 +308,39 @@ impl SwarmOrchestrator {
             threat_id,
             ThreatTracker::new(threat_id, self.config.n_threat_particles, position),
         );
+    }
+
+    // ── Island module configuration ──────────────────────────────────────
+
+    /// Change the swarm formation type. Pass None to disable formation control.
+    pub fn set_formation(&mut self, formation: Option<FormationType>) {
+        self.formation_type = formation;
+    }
+
+    /// Update the weapons posture. Returns the new posture.
+    pub fn set_weapons_posture(
+        &mut self,
+        posture: strix_core::roe::WeaponsPosture,
+    ) -> strix_core::roe::WeaponsPosture {
+        self.roe_engine.set_posture(posture)
+    }
+
+    /// Report an electronic warfare detection event.
+    ///
+    /// The response plan is generated immediately and stored. The tick loop
+    /// will apply the response actions on the next call to [`tick()`].
+    pub fn report_ew_event(&mut self, event: EwEvent) -> EwResponsePlan {
+        self.ew_engine.respond(event)
+    }
+
+    /// Add a no-fly zone for the CBF safety filter.
+    pub fn add_no_fly_zone(&mut self, nfz: NoFlyZone) {
+        self.no_fly_zones.push(nfz);
+    }
+
+    /// Enable or disable CBF safety filtering.
+    pub fn set_cbf(&mut self, config: Option<CbfConfig>) {
+        self.cbf_config = config;
     }
 
     /// Mark a drone as lost and trigger anti-fragile response.
@@ -352,8 +445,67 @@ impl SwarmOrchestrator {
             crate::fear_adapter::modulate_detection_config(&self.config.detection_config, f);
         let fear_noise = self.base_noise_cfg.scaled_by_fear(f);
 
+        // ── 0.5 EW threat scan + response application ─────────────────────
+        // Clear stale EW events and apply any active threat responses.
+        self.ew_engine
+            .clear_stale_events(self.sim_time, self.config.ew_stale_age);
+        let ew_active_threats = self.ew_engine.active_threats().len();
+
+        // Compute aggregate EW effects for this tick.
+        let mut ew_noise_multiplier = 1.0_f64;
+        let mut ew_force_evade = false;
+        let mut ew_gossip_override: Option<(usize, bool)> = None;
+
+        for event in self.ew_engine.active_threats() {
+            // Re-derive responses from active events (stateless — based on threat type/severity).
+            let responses = self.ew_engine.compute_responses_readonly(event);
+            for action in &responses {
+                match action {
+                    EwResponse::ExpandNavigationNoise { noise_multiplier } => {
+                        ew_noise_multiplier = ew_noise_multiplier.max(*noise_multiplier);
+                    }
+                    EwResponse::ForceEvade { .. } => {
+                        ew_force_evade = true;
+                    }
+                    EwResponse::GossipFallback {
+                        reduced_fanout,
+                        priority_only,
+                    } => {
+                        ew_gossip_override = Some((*reduced_fanout, *priority_only));
+                    }
+                    EwResponse::MarkEwZone {
+                        bearing,
+                        range,
+                        penalty_weight,
+                    } => {
+                        // Deposit threat pheromone in the EW zone direction.
+                        // Approximate position from bearing + range relative to fleet centroid.
+                        let bearing_rad = bearing.to_radians();
+                        let ew_pos =
+                            Position3D([bearing_rad.sin() * range, bearing_rad.cos() * range, 0.0]);
+                        self.pheromones.deposit(&Pheromone {
+                            position: ew_pos,
+                            ptype: PheromoneType::Threat,
+                            intensity: *penalty_weight,
+                            timestamp: self.sim_time,
+                            depositor: NodeId(0),
+                        });
+                    }
+                    _ => {} // Monitor, InertialFallback, TerrainMask — handled passively
+                }
+            }
+        }
+
+        // Apply EW-modulated noise on top of fear-modulated noise.
+        let tick_noise = if ew_noise_multiplier > 1.0 {
+            fear_noise.scaled_by_ew(ew_noise_multiplier)
+        } else {
+            fear_noise.clone()
+        };
+
         // ── 1. Update particle filters from telemetry ─────────────────────
         let mut fleet_centroid = Vector3::zeros();
+        let mut fleet_heading = Vector3::zeros();
         let mut alive_count = 0usize;
 
         // Pre-compute threat bearings (avoids borrow conflict with nav_filters)
@@ -368,8 +520,8 @@ impl SwarmOrchestrator {
 
         for (id, telem) in telemetry {
             if let Some(filter) = self.nav_filters.get_mut(id) {
-                // Apply fear-scaled noise for this tick.
-                filter.noise_cfg = fear_noise.clone();
+                // Apply fear+EW-scaled noise for this tick.
+                filter.noise_cfg = tick_noise.clone();
 
                 let drone_pos =
                     Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
@@ -426,14 +578,13 @@ impl SwarmOrchestrator {
                 // Store position for next tick's VO delta
                 self.prev_positions.insert(*id, drone_pos);
 
+                let vel = Vector3::new(telem.velocity[0], telem.velocity[1], telem.velocity[2]);
                 fleet_centroid += drone_pos;
+                fleet_heading += vel;
                 alive_count += 1;
 
                 // Update signal history for CUSUM
-                let speed = (telem.velocity[0].powi(2)
-                    + telem.velocity[1].powi(2)
-                    + telem.velocity[2].powi(2))
-                .sqrt();
+                let speed = vel.norm();
                 if let Some(history) = self.signal_histories.get_mut(id) {
                     history.push(speed);
                     if history.len() > 100 {
@@ -445,6 +596,11 @@ impl SwarmOrchestrator {
 
         if alive_count > 0 {
             fleet_centroid /= alive_count as f64;
+            fleet_heading /= alive_count as f64;
+        }
+        // Fallback heading if fleet is stationary.
+        if fleet_heading.norm() < 1e-6 {
+            fleet_heading = Vector3::new(1.0, 0.0, 0.0);
         }
 
         // ── 2. Detect regimes (CUSUM + signals) + intent ─────────────────
@@ -573,6 +729,25 @@ impl SwarmOrchestrator {
             }
         }
 
+        // EW ForceEvade override: if active EW demands evasion, force all drones to EVADE.
+        if ew_force_evade {
+            let drone_ids: Vec<u32> = self.regimes.keys().copied().collect();
+            for drone_id in drone_ids {
+                if self.regimes.get(&drone_id).copied() != Some(Regime::Evade) {
+                    if let Some(gate) = self.hysteresis_gates.get_mut(&drone_id) {
+                        gate.force_transition(Regime::Evade, self.sim_time);
+                    }
+                    let old = self
+                        .regimes
+                        .insert(drone_id, Regime::Evade)
+                        .unwrap_or(Regime::Patrol);
+                    if old != Regime::Evade {
+                        regime_changes.push((drone_id, old, Regime::Evade));
+                    }
+                }
+            }
+        }
+
         // Item B.2: Check attrition risk level — force EVADE if Retreat/Survival.
         {
             let alive = self.nav_filters.len() as u32;
@@ -622,19 +797,172 @@ impl SwarmOrchestrator {
             traces_recorded += 1;
         }
 
+        // ── 2.5 Formation correction ──────────────────────────────────────
+        // Compute desired formation positions and per-drone correction vectors.
+        // Active only in PATROL/ENGAGE regimes — EVADE overrides formation hold.
+        let mut formation_corrections: HashMap<u32, Vector3<f64>> = HashMap::new();
+        let formation_quality;
+
+        if let Some(formation) = self.formation_type {
+            let n_formation_drones: Vec<(u32, Vector3<f64>)> = telemetry
+                .iter()
+                .filter(|(id, _)| {
+                    let regime = self.regimes.get(id).copied().unwrap_or(Regime::Patrol);
+                    regime != Regime::Evade
+                })
+                .map(|(id, t)| {
+                    (
+                        *id,
+                        Vector3::new(t.position[0], t.position[1], t.position[2]),
+                    )
+                })
+                .collect();
+
+            if n_formation_drones.len() >= 2 {
+                let target_positions = formation::compute_formation_positions(
+                    formation,
+                    n_formation_drones.len(),
+                    &fleet_centroid,
+                    &fleet_heading,
+                    &self.formation_config,
+                );
+
+                // Compute correction for each drone in formation.
+                for (slot_idx, (drone_id, drone_pos)) in n_formation_drones.iter().enumerate() {
+                    if let Some((_, target_pos)) = target_positions.get(slot_idx) {
+                        let correction = formation::formation_correction(
+                            drone_pos,
+                            target_pos,
+                            &self.formation_config,
+                        );
+                        if correction.norm() > 1e-6 {
+                            formation_corrections.insert(*drone_id, correction);
+                        }
+                    }
+                }
+
+                // Measure formation quality.
+                formation_quality = Some(formation::formation_quality(
+                    &n_formation_drones,
+                    &target_positions,
+                    &self.formation_config,
+                ));
+            } else {
+                formation_quality = Some(1.0); // trivial formation with 0-1 drones
+            }
+        } else {
+            formation_quality = None;
+        }
+
         // ── 3. Update threat trackers ────────────────────────────────────
         for tracker in self.threat_trackers.values_mut() {
             tracker.step(&fleet_centroid, &[], dt);
+        }
+
+        // ── 3.5 ROE authorization gate ───────────────────────────────────
+        // Check engagement authorization for tasks requiring weapon capability.
+        let mut roe_denials = 0u32;
+        let mut roe_escalations = 0u32;
+        let mut roe_filtered_tasks: Vec<Task> = tasks.to_vec();
+
+        if !tasks.is_empty() && !self.threat_trackers.is_empty() {
+            let mut denied_task_ids = Vec::new();
+
+            for task in tasks {
+                if !task.required_capabilities.has_weapon {
+                    continue; // ROE only gates weapon-bearing tasks
+                }
+
+                // Find nearest threat to this task's location.
+                let task_pos = Vector3::new(task.location.x, task.location.y, task.location.z);
+                if let Some((threat_dist, threat_regime)) = self.nearest_threat_to_point(&task_pos)
+                {
+                    let threat_class = match threat_regime {
+                        strix_core::ThreatRegime::CounterAttack => {
+                            ThreatClassification::ConfirmedHostile
+                        }
+                        strix_core::ThreatRegime::Defend => ThreatClassification::SuspectedHostile,
+                        strix_core::ThreatRegime::Retreat => ThreatClassification::Unknown,
+                    };
+
+                    let hostile_act = threat_regime == strix_core::ThreatRegime::CounterAttack
+                        && threat_dist < 200.0;
+
+                    let ctx = EngagementContext {
+                        threat_class,
+                        threat_distance: threat_dist,
+                        hostile_act,
+                        hostile_intent: threat_regime == strix_core::ThreatRegime::CounterAttack,
+                        collateral_risk: 0.0, // no civilian presence model yet
+                        friendlies_at_risk: 0,
+                        regime: Regime::Engage,
+                    };
+
+                    match self.roe_engine.authorize_engagement(&ctx) {
+                        EngagementAuth::Denied { reason } => {
+                            denied_task_ids.push(task.id);
+                            roe_denials += 1;
+
+                            let trace =
+                                DecisionTrace::new(self.sim_time, DecisionType::RegimeChange)
+                                    .with_inputs(TraceInputs {
+                                        drone_ids: vec![],
+                                        regime: "ROE".to_string(),
+                                        metrics: serde_json::json!({
+                                            "task_id": task.id,
+                                            "threat_distance": threat_dist,
+                                        }),
+                                        context: serde_json::Value::Null,
+                                    })
+                                    .with_output(
+                                        &format!("ROE denied task {}: {}", task.id, reason),
+                                        serde_json::json!({"action": "denied"}),
+                                    )
+                                    .with_confidence(1.0);
+                            self.tracer.record(trace);
+                            traces_recorded += 1;
+                        }
+                        EngagementAuth::EscalationRequired { reason, .. } => {
+                            roe_escalations += 1;
+
+                            let trace =
+                                DecisionTrace::new(self.sim_time, DecisionType::RegimeChange)
+                                    .with_inputs(TraceInputs {
+                                        drone_ids: vec![],
+                                        regime: "ROE".to_string(),
+                                        metrics: serde_json::json!({
+                                            "task_id": task.id,
+                                            "threat_distance": threat_dist,
+                                        }),
+                                        context: serde_json::Value::Null,
+                                    })
+                                    .with_output(
+                                        &format!("ROE escalation for task {}: {}", task.id, reason),
+                                        serde_json::json!({"action": "escalation_required"}),
+                                    )
+                                    .with_confidence(0.7);
+                            self.tracer.record(trace);
+                            traces_recorded += 1;
+                        }
+                        EngagementAuth::Authorized { .. } => {} // pass through
+                    }
+                }
+            }
+
+            // Remove ROE-denied tasks from auction pool.
+            if !denied_task_ids.is_empty() {
+                roe_filtered_tasks.retain(|t| !denied_task_ids.contains(&t.id));
+            }
         }
 
         // ── 4. Run combinatorial auction ─────────────────────────────────
         let should_auction =
             self.tick_count % self.config.auction_interval == 0 || self.auctioneer.needs_reauction;
 
-        if should_auction && !tasks.is_empty() {
+        if should_auction && !roe_filtered_tasks.is_empty() {
             // Item C: Intent-based urgency boost — high threat intent raises
             // urgency of nearby tasks, creating a market-driven tactical response.
-            let mut boosted_tasks: Vec<Task> = tasks.to_vec();
+            let mut boosted_tasks: Vec<Task> = roe_filtered_tasks;
             if max_intent_score > 0.0 {
                 for task in &mut boosted_tasks {
                     // Boost urgency proportional to intent score for all tasks.
@@ -710,10 +1038,21 @@ impl SwarmOrchestrator {
                 .with_confidence(0.9);
             self.tracer.record(trace);
             traces_recorded += 1;
+        } else if should_auction && roe_filtered_tasks.is_empty() && !tasks.is_empty() {
+            // All tasks were ROE-denied — clear assignments.
+            self.assignments.clear();
         }
 
         // ── 5. Propagate via gossip ──────────────────────────────────────
         self.gossip_version += 1;
+
+        // Apply EW gossip degradation if active.
+        if let Some((reduced_fanout, _priority_only)) = ew_gossip_override {
+            self.gossip.set_fanout(reduced_fanout);
+        } else {
+            self.gossip.set_fanout(self.config.gossip_fanout);
+        }
+
         for (id, telem) in telemetry {
             let regime = self.regimes.get(id).copied().unwrap_or(Regime::Patrol);
             self.gossip.update_self_state(
@@ -758,6 +1097,63 @@ impl SwarmOrchestrator {
                 timestamp: self.sim_time,
                 depositor: NodeId(0),
             });
+        }
+
+        // ── 6.5 CBF safety clamp ─────────────────────────────────────────
+        // Apply control barrier functions to clamp velocities for safety.
+        let mut cbf_active_constraints = 0u32;
+
+        if let Some(ref base_cbf) = self.cbf_config {
+            let cbf_cfg = base_cbf.with_fear(f);
+
+            // Collect all drone positions for neighbor-aware safety.
+            let all_positions: Vec<(u32, Vector3<f64>)> = telemetry
+                .iter()
+                .map(|(id, t)| {
+                    (
+                        *id,
+                        Vector3::new(t.position[0], t.position[1], t.position[2]),
+                    )
+                })
+                .collect();
+
+            for (drone_id, drone_pos) in &all_positions {
+                // Neighbor positions = all drones except this one.
+                let neighbors: Vec<Vector3<f64>> = all_positions
+                    .iter()
+                    .filter(|(id, _)| id != drone_id)
+                    .map(|(_, pos)| *pos)
+                    .collect();
+
+                // Desired velocity = telemetry velocity + formation correction.
+                let base_vel = telemetry
+                    .iter()
+                    .find(|(id, _)| id == drone_id)
+                    .map(|(_, t)| Vector3::new(t.velocity[0], t.velocity[1], t.velocity[2]))
+                    .unwrap_or_else(Vector3::zeros);
+
+                let formation_adj = formation_corrections
+                    .get(drone_id)
+                    .copied()
+                    .unwrap_or_else(Vector3::zeros);
+
+                let desired_vel = base_vel + formation_adj;
+
+                let result = cbf::cbf_filter(
+                    drone_pos,
+                    &desired_vel,
+                    &neighbors,
+                    &self.no_fly_zones,
+                    &cbf_cfg,
+                );
+
+                if result.any_active {
+                    cbf_active_constraints += result.active_count;
+                    // Update formation corrections with CBF-adjusted values.
+                    let total_correction = result.safe_velocity - base_vel;
+                    formation_corrections.insert(*drone_id, total_correction);
+                }
+            }
         }
 
         // ── 7. Track fear signals + record outcome ──────────────────────
@@ -810,6 +1206,12 @@ impl SwarmOrchestrator {
             pheromone_cells: self.pheromones.active_cells(),
             max_intent_score,
             fear_level: f,
+            formation_quality,
+            formation_corrections,
+            roe_denials,
+            roe_escalations,
+            ew_active_threats,
+            cbf_active_constraints,
         }
     }
 
@@ -844,5 +1246,32 @@ impl SwarmOrchestrator {
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .unwrap_or((f64::MAX, 0.0))
+    }
+
+    /// Find nearest threat distance and regime relative to a point.
+    fn nearest_threat_to_point(
+        &self,
+        point: &Vector3<f64>,
+    ) -> Option<(f64, strix_core::ThreatRegime)> {
+        self.threat_trackers
+            .values()
+            .map(|t| {
+                let (pos, _vel, probs) = t.estimate_threat();
+                let dist = (pos - point).norm();
+                // Determine dominant regime from probabilities.
+                let regime_idx = probs
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.total_cmp(b))
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                let regime = match regime_idx {
+                    1 => strix_core::ThreatRegime::CounterAttack,
+                    2 => strix_core::ThreatRegime::Retreat,
+                    _ => strix_core::ThreatRegime::Defend,
+                };
+                (dist, regime)
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
     }
 }
