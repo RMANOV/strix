@@ -1,0 +1,1 @@
+"""STRIX Demo — Renderer components."""
