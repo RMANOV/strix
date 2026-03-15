@@ -453,4 +453,30 @@ mod tests {
             assert!(w[0].score >= w[1].score);
         }
     }
+
+    #[test]
+    fn test_fear_modulated_bid_scoring() {
+        let c = BidComponents {
+            proximity: 0.1,
+            capability: 1.0,
+            energy: 0.8,
+            risk_exposure: 0.2,
+            urgency_bonus: 0.5,
+        };
+        // At F=0, should equal calculate_bid
+        let score_f0 = calculate_bid_with_fear(&c, 0.0);
+        let score_base = calculate_bid(&c);
+        assert!((score_f0 - score_base).abs() < 1e-12);
+
+        // At F=1: risk_weight=7, proximity_weight=2.5
+        let score_f1 = calculate_bid_with_fear(&c, 1.0);
+        let expected_f1 = 0.5 * 10.0 + 1.0 * 3.0 + 0.1 * 2.5 + 0.8 * 2.0 - 0.2 * 7.0;
+        assert!((score_f1 - expected_f1).abs() < 1e-12);
+
+        // Fear should reduce score when there's risk exposure
+        assert!(
+            score_f1 < score_f0,
+            "higher fear should reduce score when risk > 0"
+        );
+    }
 }

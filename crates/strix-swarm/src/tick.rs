@@ -139,6 +139,7 @@ pub struct SwarmOrchestrator {
     /// Per-drone previous closing rates for closing acceleration (Item B.3).
     prev_closing_rates: HashMap<u32, f64>,
     /// Optional PhiSim fear adapter for adaptive risk modulation.
+    #[cfg(feature = "phi-sim")]
     pub fear_adapter: Option<crate::fear_adapter::FearAdapter>,
     /// Previous tick's max intent score (for fear computation).
     last_intent_score: f64,
@@ -204,6 +205,7 @@ impl SwarmOrchestrator {
             threat_distance_histories,
             hysteresis_gates,
             prev_closing_rates: HashMap::new(),
+            #[cfg(feature = "phi-sim")]
             fear_adapter: None,
             last_intent_score: 0.0,
             last_cusum_breaks: 0,
@@ -331,6 +333,7 @@ impl SwarmOrchestrator {
         let mut traces_recorded = 0u32;
 
         // ── 0. Compute fear level F ────────────────────────────────────────
+        #[cfg(feature = "phi-sim")]
         let f = if let Some(adapter) = &mut self.fear_adapter {
             adapter.update(
                 self.nav_filters.len() as u32,
@@ -341,6 +344,8 @@ impl SwarmOrchestrator {
         } else {
             self.config.fear
         };
+        #[cfg(not(feature = "phi-sim"))]
+        let f = self.config.fear;
 
         // Pre-compute fear-modulated configs used throughout this tick.
         let fear_detection_config =
@@ -759,6 +764,7 @@ impl SwarmOrchestrator {
         self.last_intent_score = max_intent_score;
         self.last_cusum_breaks = cusum_break_count;
 
+        #[cfg(feature = "phi-sim")]
         if let Some(adapter) = &mut self.fear_adapter {
             // Outcome = weighted survival rate + task assignment rate.
             let alive = self.nav_filters.len() as f64;

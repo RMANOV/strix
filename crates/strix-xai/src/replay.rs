@@ -238,13 +238,105 @@ pub fn build_replay(mission_id: &str, recorder: &TraceRecorder) -> MissionReplay
     }
 }
 
-/// Simple what-if analysis: re-evaluate a trace with a modified confidence
-/// threshold and return whether the original decision would still hold.
+// ---------------------------------------------------------------------------
+// What-if types
+// ---------------------------------------------------------------------------
+
+/// Parameters that can be modified in a what-if scenario.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WhatIfParams {
+    /// Modified confidence threshold (original decision must exceed this to proceed).
+    pub confidence_threshold: Option<f64>,
+    /// Modified fear level F ∈ [0,1] — affects risk weighting.
+    pub fear_override: Option<f64>,
+    /// Modified number of available drones.
+    pub drone_count_override: Option<usize>,
+    /// Modified threat distance (meters).
+    pub threat_distance_override: Option<f64>,
+}
+
+/// Result of a what-if analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhatIfResult {
+    /// The original action that was taken.
+    pub original_action: String,
+    /// The original confidence.
+    pub original_confidence: f64,
+    /// Whether the decision would still be executed under modified parameters.
+    pub would_proceed: bool,
+    /// What would happen instead if the decision is rejected.
+    pub fallback: String,
+    /// Impact assessment — how the modified params change the decision landscape.
+    pub impact: WhatIfImpact,
+}
+
+/// Quantified impact of parameter changes on the decision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhatIfImpact {
+    /// Confidence delta: positive means more confident under new params.
+    pub confidence_delta: f64,
+    /// Risk assessment change description.
+    pub risk_change: String,
+    /// Overall recommendation.
+    pub recommendation: WhatIfRecommendation,
+}
+
+/// Overall recommendation produced by a what-if analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WhatIfRecommendation {
+    /// Original decision holds under modified parameters.
+    Confirm,
+    /// Original decision is marginal — review recommended.
+    Review,
+    /// Original decision would be overridden.
+    Override,
+}
+
+// ---------------------------------------------------------------------------
+// What-if engine
+// ---------------------------------------------------------------------------
+
+/// Parametric what-if analysis: re-evaluate a trace with modified parameters.
 ///
-/// This is a placeholder for a full what-if engine that would re-run the
-/// decision logic with altered parameters.
-pub fn what_if(trace: &DecisionTrace, confidence_threshold: f64) -> WhatIfResult {
-    let would_proceed = trace.confidence >= confidence_threshold;
+/// Computes an effective confidence by applying fear, drone-count, and
+/// threat-distance modifiers on top of the original confidence, then
+/// compares against the (optionally overridden) threshold to determine
+/// whether the original decision would still proceed.
+pub fn what_if(trace: &DecisionTrace, params: &WhatIfParams) -> WhatIfResult {
+    let threshold = params.confidence_threshold.unwrap_or(0.0);
+    let would_proceed_original = trace.confidence >= threshold;
+
+    // Compute effective confidence based on parameter modifications.
+    let mut effective_confidence = trace.confidence;
+
+    // Fear override affects confidence: higher fear reduces confidence in aggressive actions.
+    if let Some(fear) = params.fear_override {
+        let fear = fear.clamp(0.0, 1.0);
+        let is_aggressive = matches!(
+            trace.decision_type,
+            DecisionType::TaskAssignment | DecisionType::ThreatResponse
+        );
+        if is_aggressive {
+            effective_confidence *= 1.0 - fear * 0.3; // up to 30% confidence reduction
+        }
+    }
+
+    // Drone count affects confidence: fewer drones reduces confidence.
+    if let Some(count) = params.drone_count_override {
+        let original_count = trace.inputs.drone_ids.len().max(1);
+        let ratio = count as f64 / original_count as f64;
+        effective_confidence *= ratio.clamp(0.5, 1.5);
+    }
+
+    // Threat distance affects confidence: closer threats reduce confidence.
+    if let Some(dist) = params.threat_distance_override {
+        if dist < 500.0 {
+            effective_confidence *= dist / 500.0;
+        }
+    }
+
+    let confidence_delta = effective_confidence - trace.confidence;
+
     let best_alternative = trace
         .alternatives_considered
         .iter()
@@ -255,30 +347,49 @@ pub fn what_if(trace: &DecisionTrace, confidence_threshold: f64) -> WhatIfResult
         })
         .cloned();
 
+    let recommendation = if effective_confidence >= threshold && would_proceed_original {
+        WhatIfRecommendation::Confirm
+    } else if effective_confidence >= threshold * 0.8 {
+        WhatIfRecommendation::Review
+    } else {
+        WhatIfRecommendation::Override
+    };
+
+    let risk_change = if confidence_delta > 0.05 {
+        "Risk decreased — parameters favor this decision".to_string()
+    } else if confidence_delta < -0.05 {
+        "Risk increased — decision becomes marginal".to_string()
+    } else {
+        "Risk unchanged — parameters have minimal effect".to_string()
+    };
+
     WhatIfResult {
         original_action: trace.output.action.clone(),
         original_confidence: trace.confidence,
-        threshold: confidence_threshold,
-        would_proceed,
+        would_proceed: effective_confidence >= threshold,
         fallback: best_alternative
             .map(|a| a.description)
             .unwrap_or_else(|| "No alternative available".to_string()),
+        impact: WhatIfImpact {
+            confidence_delta,
+            risk_change,
+            recommendation,
+        },
     }
 }
 
-/// Result of a what-if analysis.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WhatIfResult {
-    /// The original action that was taken.
-    pub original_action: String,
-    /// The original confidence.
-    pub original_confidence: f64,
-    /// The threshold applied in this what-if scenario.
-    pub threshold: f64,
-    /// Whether the decision would still be executed under the new threshold.
-    pub would_proceed: bool,
-    /// What would happen instead if the decision is rejected.
-    pub fallback: String,
+/// Simple what-if: just a confidence threshold check.
+///
+/// Convenience wrapper around [`what_if`] for the common case of only
+/// varying the confidence threshold.
+pub fn what_if_simple(trace: &DecisionTrace, confidence_threshold: f64) -> WhatIfResult {
+    what_if(
+        trace,
+        &WhatIfParams {
+            confidence_threshold: Some(confidence_threshold),
+            ..Default::default()
+        },
+    )
 }
 
 /// Compare two sets of traces side-by-side.
@@ -418,13 +529,199 @@ mod tests {
             .with_alternative("Send 2 drones", 0.65, "Less coverage");
 
         // With threshold below confidence — should proceed
-        let result = what_if(&trace, 0.5);
+        let result = what_if_simple(&trace, 0.5);
         assert!(result.would_proceed);
 
         // With threshold above confidence — should not proceed
-        let result = what_if(&trace, 0.9);
+        let result = what_if_simple(&trace, 0.9);
         assert!(!result.would_proceed);
         assert_eq!(result.fallback, "Send 2 drones");
+    }
+
+    #[test]
+    fn fear_override_reduces_confidence_for_aggressive_actions() {
+        // ThreatResponse is an aggressive action type
+        let trace = DecisionTrace::new(1.0, DecisionType::ThreatResponse)
+            .with_inputs(crate::trace::TraceInputs {
+                drone_ids: vec![1, 2, 3],
+                regime: "ENGAGE".into(),
+                metrics: serde_json::Value::Null,
+                context: serde_json::Value::Null,
+            })
+            .with_output("Intercept target", serde_json::Value::Null)
+            .with_confidence(0.9);
+
+        // Max fear (1.0) should reduce confidence by 30%: 0.9 * 0.7 = 0.63
+        let result = what_if(
+            &trace,
+            &WhatIfParams {
+                fear_override: Some(1.0),
+                ..Default::default()
+            },
+        );
+        let expected = 0.9 * 0.7;
+        assert!(
+            (result.original_confidence - 0.9).abs() < 1e-9,
+            "original_confidence should be unchanged"
+        );
+        assert!(
+            (result.impact.confidence_delta - (expected - 0.9)).abs() < 1e-6,
+            "delta should be {:.4}, got {:.4}",
+            expected - 0.9,
+            result.impact.confidence_delta
+        );
+        // With no threshold, effective_confidence >= 0.0, so would_proceed
+        assert!(result.would_proceed);
+        assert_eq!(result.impact.recommendation, WhatIfRecommendation::Confirm);
+
+        // Non-aggressive action (RegimeChange) should be unaffected by fear
+        let trace_regime = DecisionTrace::new(1.0, DecisionType::RegimeChange)
+            .with_output("Switch to EVADE", serde_json::Value::Null)
+            .with_confidence(0.9);
+
+        let result_regime = what_if(
+            &trace_regime,
+            &WhatIfParams {
+                fear_override: Some(1.0),
+                ..Default::default()
+            },
+        );
+        assert!(
+            result_regime.impact.confidence_delta.abs() < 1e-9,
+            "non-aggressive action should not be affected by fear override"
+        );
+    }
+
+    #[test]
+    fn drone_count_override_scales_confidence() {
+        // Trace with 4 drones, confidence 0.8
+        let trace = DecisionTrace::new(1.0, DecisionType::TaskAssignment)
+            .with_inputs(crate::trace::TraceInputs {
+                drone_ids: vec![1, 2, 3, 4],
+                regime: "PATROL".into(),
+                metrics: serde_json::Value::Null,
+                context: serde_json::Value::Null,
+            })
+            .with_output("Sweep sector", serde_json::Value::Null)
+            .with_confidence(0.8);
+
+        // Halving the drone count: ratio = 2/4 = 0.5, effective = 0.8 * 0.5 = 0.4
+        let result_half = what_if(
+            &trace,
+            &WhatIfParams {
+                drone_count_override: Some(2),
+                ..Default::default()
+            },
+        );
+        let expected_half = 0.8 * 0.5;
+        assert!(
+            (result_half.impact.confidence_delta - (expected_half - 0.8)).abs() < 1e-9,
+            "halving drones: delta should be {:.4}, got {:.4}",
+            expected_half - 0.8,
+            result_half.impact.confidence_delta
+        );
+
+        // Doubling the drone count: ratio = 8/4 = 2.0, clamped to 1.5, effective = 0.8 * 1.5 = 1.2
+        let result_double = what_if(
+            &trace,
+            &WhatIfParams {
+                drone_count_override: Some(8),
+                ..Default::default()
+            },
+        );
+        let expected_double = 0.8 * 1.5;
+        assert!(
+            (result_double.impact.confidence_delta - (expected_double - 0.8)).abs() < 1e-9,
+            "doubling drones (clamped): delta should be {:.4}, got {:.4}",
+            expected_double - 0.8,
+            result_double.impact.confidence_delta
+        );
+    }
+
+    #[test]
+    fn threat_distance_override_reduces_confidence_when_close() {
+        let trace = DecisionTrace::new(1.0, DecisionType::ThreatResponse)
+            .with_inputs(crate::trace::TraceInputs {
+                drone_ids: vec![1],
+                regime: "ENGAGE".into(),
+                metrics: serde_json::Value::Null,
+                context: serde_json::Value::Null,
+            })
+            .with_output("Engage threat", serde_json::Value::Null)
+            .with_confidence(1.0);
+
+        // Distance 250 m: ratio = 250/500 = 0.5, effective = 1.0 * 0.5 = 0.5
+        let result_close = what_if(
+            &trace,
+            &WhatIfParams {
+                threat_distance_override: Some(250.0),
+                ..Default::default()
+            },
+        );
+        assert!(
+            (result_close.impact.confidence_delta - (-0.5)).abs() < 1e-9,
+            "250m distance should halve confidence"
+        );
+
+        // Distance 600 m (>= 500): no adjustment, delta = 0
+        let result_far = what_if(
+            &trace,
+            &WhatIfParams {
+                threat_distance_override: Some(600.0),
+                ..Default::default()
+            },
+        );
+        assert!(
+            result_far.impact.confidence_delta.abs() < 1e-9,
+            "distance >= 500m should not affect confidence"
+        );
+    }
+
+    #[test]
+    fn recommendation_logic() {
+        // confidence=0.9, threshold=0.8 → effective=0.9 >= 0.8 and original proceeds → Confirm
+        let trace_confirm = DecisionTrace::new(1.0, DecisionType::RegimeChange)
+            .with_output("Switch regime", serde_json::Value::Null)
+            .with_confidence(0.9);
+        let result = what_if(
+            &trace_confirm,
+            &WhatIfParams {
+                confidence_threshold: Some(0.8),
+                ..Default::default()
+            },
+        );
+        assert_eq!(result.impact.recommendation, WhatIfRecommendation::Confirm);
+        assert!(result.would_proceed);
+
+        // confidence=0.75, threshold=0.9, no modifiers → effective=0.75, threshold*0.8=0.72
+        // 0.75 >= 0.72 → Review (effective >= threshold*0.8 but not >= threshold)
+        let trace_review = DecisionTrace::new(1.0, DecisionType::RegimeChange)
+            .with_output("Marginal switch", serde_json::Value::Null)
+            .with_confidence(0.75);
+        let result = what_if(
+            &trace_review,
+            &WhatIfParams {
+                confidence_threshold: Some(0.9),
+                ..Default::default()
+            },
+        );
+        assert_eq!(result.impact.recommendation, WhatIfRecommendation::Review);
+        assert!(!result.would_proceed);
+
+        // confidence=0.5, threshold=0.9, no modifiers → effective=0.5, threshold*0.8=0.72
+        // 0.5 < 0.72 → Override
+        let trace_override = DecisionTrace::new(1.0, DecisionType::RegimeChange)
+            .with_output("Weak decision", serde_json::Value::Null)
+            .with_confidence(0.5);
+        let result = what_if(
+            &trace_override,
+            &WhatIfParams {
+                confidence_threshold: Some(0.9),
+                ..Default::default()
+            },
+        );
+        assert_eq!(result.impact.recommendation, WhatIfRecommendation::Override);
+        assert!(!result.would_proceed);
     }
 
     #[test]

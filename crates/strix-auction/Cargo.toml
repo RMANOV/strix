@@ -14,3 +14,10 @@ serde.workspace = true
 serde_json.workspace = true
 rand.workspace = true
 thiserror.workspace = true
+
+[[bench]]
+name = "auction"
+harness = false
+
+[dev-dependencies]
+criterion.workspace = true

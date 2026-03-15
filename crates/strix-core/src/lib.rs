@@ -20,11 +20,14 @@
 
 pub mod anomaly;
 pub mod cbf;
+pub mod ew_response;
 pub mod fleet_metrics;
+pub mod formation;
 pub mod hysteresis;
 pub mod intent;
 pub mod particle_nav;
 pub mod regime;
+pub mod roe;
 pub mod state;
 pub mod temporal;
 pub mod threat_tracker;

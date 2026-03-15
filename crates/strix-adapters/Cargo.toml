@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 description = "Platform adapters: MAVLink, ROS2, Simulator (Puppet Master layer)"
 
+[features]
+default = []
+# Enable real MAVLink hardware connection (PX4 / ArduPilot via UDP/TCP/Serial).
+# Without this feature the MAVLink adapter uses stub behaviour (no external deps).
+mavlink-hw = ["dep:mavlink"]
+
 [dependencies]
 strix-core = { path = "../strix-core" }
 nalgebra.workspace = true
@@ -12,3 +18,4 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
+mavlink = { version = "0.17", features = ["ardupilotmega"], optional = true }

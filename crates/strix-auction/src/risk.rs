@@ -425,4 +425,37 @@ mod tests {
         let z025 = standard_normal_quantile(0.025);
         assert!((z025 + 1.96).abs() < 0.01, "z(0.025) = {z025}");
     }
+
+    #[test]
+    fn test_fear_adjusted_risk_level() {
+        // At F=0, 15% attrition = Cautious
+        assert_eq!(
+            RiskLevel::from_attrition_with_fear(0.15, 0.0),
+            RiskLevel::Cautious
+        );
+
+        // At F=1, 15% attrition + 15% fear shift = 30% effective → Retreat
+        assert_eq!(
+            RiskLevel::from_attrition_with_fear(0.15, 1.0),
+            RiskLevel::Retreat
+        );
+
+        // At F=0.5, 20% attrition + 7.5% = 27.5% → Defensive
+        assert_eq!(
+            RiskLevel::from_attrition_with_fear(0.20, 0.5),
+            RiskLevel::Defensive
+        );
+
+        // At F=1, 35% + 15% = 50% → Survival
+        assert_eq!(
+            RiskLevel::from_attrition_with_fear(0.35, 1.0),
+            RiskLevel::Survival
+        );
+
+        // Fear should be clamped - F=2.0 should behave like F=1.0
+        assert_eq!(
+            RiskLevel::from_attrition_with_fear(0.15, 2.0),
+            RiskLevel::from_attrition_with_fear(0.15, 1.0)
+        );
+    }
 }
