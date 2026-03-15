@@ -1,0 +1,16 @@
+[package]
+name = "strix-playground"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Battlefield simulation playground for Strix drone swarm testing"
+
+[dependencies]
+strix-core = { path = "../strix-core" }
+strix-swarm = { path = "../strix-swarm" }
+strix-adapters = { path = "../strix-adapters" }
+strix-auction = { path = "../strix-auction" }
+strix-mesh = { path = "../strix-mesh" }
+nalgebra.workspace = true
+serde.workspace = true
+serde_json.workspace = true

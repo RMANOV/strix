@@ -662,6 +662,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "strix-playground"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "serde",
+ "serde_json",
+ "strix-adapters",
+ "strix-auction",
+ "strix-core",
+ "strix-mesh",
+ "strix-swarm",
+]
+
+[[package]]
 name = "strix-python"
 version = "0.1.0"
 dependencies = [
