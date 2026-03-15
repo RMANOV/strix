@@ -54,6 +54,8 @@ pub struct Bidder {
     /// Kill-zone penalty map: `(center, radius, penalty_weight)`.
     /// Populated by the antifragile module after losses.
     pub kill_zone_penalties: Vec<(Position, f64, f64)>,
+    /// Fear level F ∈ [0,1] — modulates risk aversion in bid scoring.
+    pub fear: f64,
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -67,6 +69,7 @@ impl Bidder {
             drone,
             sub_swarm_id: None,
             kill_zone_penalties: Vec::new(),
+            fear: 0.0,
         }
     }
 
@@ -79,6 +82,12 @@ impl Bidder {
     /// Add kill-zone penalties (from antifragile loss analysis).
     pub fn with_kill_zone_penalties(mut self, penalties: Vec<(Position, f64, f64)>) -> Self {
         self.kill_zone_penalties = penalties;
+        self
+    }
+
+    /// Set fear level for risk-adjusted bidding.
+    pub fn with_fear(mut self, fear: f64) -> Self {
+        self.fear = fear;
         self
     }
 
@@ -100,7 +109,7 @@ impl Bidder {
         }
 
         let components = self.compute_components(task, threats);
-        let score = calculate_bid(&components);
+        let score = calculate_bid_with_fear(&components, self.fear);
 
         Some(Bid {
             drone_id: self.drone.id,
@@ -164,14 +173,26 @@ impl Bidder {
     }
 }
 
-/// Composite bid scoring function.
+/// Composite bid scoring function (fear-neutral, F=0).
 ///
 /// ```text
 /// total = urgency*10 + capability*3 + proximity*5 + energy*2 - risk*4
 /// ```
 pub fn calculate_bid(c: &BidComponents) -> f64 {
-    c.urgency_bonus * 10.0 + c.capability * 3.0 + c.proximity * 5.0 + c.energy * 2.0
-        - c.risk_exposure * 4.0
+    calculate_bid_with_fear(c, 0.0)
+}
+
+/// Fear-modulated bid scoring.
+///
+/// Higher fear → risk weight increases (4→7), proximity bonus decreases (5→2.5).
+/// Captures the trading intuition: scared traders demand more risk premium
+/// and value distance-to-safety over proximity-to-task.
+pub fn calculate_bid_with_fear(c: &BidComponents, fear: f64) -> f64 {
+    let f = fear.clamp(0.0, 1.0);
+    let risk_weight = 4.0 + f * 3.0; // 4→7
+    let proximity_weight = 5.0 - f * 2.5; // 5→2.5
+    c.urgency_bonus * 10.0 + c.capability * 3.0 + c.proximity * proximity_weight + c.energy * 2.0
+        - c.risk_exposure * risk_weight
 }
 
 /// Compute capability match as fraction of required capabilities that the drone has.

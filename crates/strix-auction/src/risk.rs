@@ -50,6 +50,15 @@ impl RiskLevel {
         }
     }
 
+    /// Fear-adjusted attrition check: F shifts effective attrition up.
+    ///
+    /// At F=1.0, retreat triggers at ~15% attrition (not 30%) and
+    /// survival at ~35% (not 50%). A fearful swarm preserves assets earlier.
+    pub fn from_attrition_with_fear(rate: f64, fear: f64) -> Self {
+        let f = fear.clamp(0.0, 1.0);
+        Self::from_attrition(rate + f * 0.15)
+    }
+
     /// Suggested regime for the fleet at this risk level.
     pub fn suggested_regime(&self) -> Regime {
         match self {

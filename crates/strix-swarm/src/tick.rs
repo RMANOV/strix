@@ -53,6 +53,8 @@ pub struct SwarmConfig {
     pub hysteresis_config: HysteresisConfig,
     /// Intent detection pipeline configuration.
     pub intent_config: IntentConfig,
+    /// Base fear level F ∈ [0,1]. Overridden by FearAdapter when present.
+    pub fear: f64,
 }
 
 impl Default for SwarmConfig {
@@ -74,6 +76,7 @@ impl Default for SwarmConfig {
             },
             hysteresis_config: HysteresisConfig::default(),
             intent_config: IntentConfig::default(),
+            fear: 0.0,
         }
     }
 }
@@ -101,6 +104,8 @@ pub struct SwarmDecision {
     pub pheromone_cells: usize,
     /// Maximum threat intent score across all drones this tick [-1, 1].
     pub max_intent_score: f64,
+    /// Current fear level F ∈ [0,1] (0 = aggressive, 1 = maximum caution).
+    pub fear_level: f64,
 }
 
 /// The swarm orchestrator — chains all 5 STRIX crates together.
@@ -133,6 +138,14 @@ pub struct SwarmOrchestrator {
     hysteresis_gates: HashMap<u32, HysteresisGate>,
     /// Per-drone previous closing rates for closing acceleration (Item B.3).
     prev_closing_rates: HashMap<u32, f64>,
+    /// Optional PhiSim fear adapter for adaptive risk modulation.
+    pub fear_adapter: Option<crate::fear_adapter::FearAdapter>,
+    /// Previous tick's max intent score (for fear computation).
+    last_intent_score: f64,
+    /// Previous tick's CUSUM break count (for fear computation).
+    last_cusum_breaks: u32,
+    /// Base process noise config (captured at creation, used as fear-scaling reference).
+    base_noise_cfg: strix_core::particle_nav::ProcessNoiseConfig,
     /// Gossip version counter.
     gossip_version: u64,
     /// Tick counter.
@@ -191,6 +204,10 @@ impl SwarmOrchestrator {
             threat_distance_histories,
             hysteresis_gates,
             prev_closing_rates: HashMap::new(),
+            fear_adapter: None,
+            last_intent_score: 0.0,
+            last_cusum_breaks: 0,
+            base_noise_cfg: strix_core::particle_nav::ProcessNoiseConfig::default(),
             gossip_version: 0,
             tick_count: 0,
             sim_time: 0.0,
@@ -313,6 +330,23 @@ impl SwarmOrchestrator {
         self.sim_time += dt;
         let mut traces_recorded = 0u32;
 
+        // ── 0. Compute fear level F ────────────────────────────────────────
+        let f = if let Some(adapter) = &mut self.fear_adapter {
+            adapter.update(
+                self.nav_filters.len() as u32,
+                self.loss_analyzer.total_losses(),
+                self.last_intent_score,
+                self.last_cusum_breaks,
+            )
+        } else {
+            self.config.fear
+        };
+
+        // Pre-compute fear-modulated configs used throughout this tick.
+        let fear_detection_config =
+            crate::fear_adapter::modulate_detection_config(&self.config.detection_config, f);
+        let fear_noise = self.base_noise_cfg.scaled_by_fear(f);
+
         // ── 1. Update particle filters from telemetry ─────────────────────
         let mut fleet_centroid = Vector3::zeros();
         let mut alive_count = 0usize;
@@ -329,6 +363,9 @@ impl SwarmOrchestrator {
 
         for (id, telem) in telemetry {
             if let Some(filter) = self.nav_filters.get_mut(id) {
+                // Apply fear-scaled noise for this tick.
+                filter.noise_cfg = fear_noise.clone();
+
                 let drone_pos =
                     Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
 
@@ -416,6 +453,7 @@ impl SwarmOrchestrator {
 
         let mut regime_changes = Vec::new();
         let mut max_intent_score = 0.0_f64;
+        let mut cusum_break_count = 0u32;
         for (id, telem) in telemetry {
             let regime = self.regimes.get(id).copied().unwrap_or(Regime::Patrol);
             let drone_pos = Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
@@ -448,6 +486,10 @@ impl SwarmOrchestrator {
                     }
                 })
                 .unwrap_or((false, 0));
+
+            if cusum_triggered {
+                cusum_break_count += 1;
+            }
 
             // Item B.3: Compute closing acceleration = d(closing_rate)/dt.
             let prev_cr = self
@@ -511,7 +553,7 @@ impl SwarmOrchestrator {
                 closing_rate,
             };
 
-            let proposed_regime = detect_regime(&signals, regime, &self.config.detection_config);
+            let proposed_regime = detect_regime(&signals, regime, &fear_detection_config);
 
             // Item A: Route through hysteresis gate instead of direct apply.
             let approved_regime = if let Some(gate) = self.hysteresis_gates.get_mut(id) {
@@ -531,7 +573,7 @@ impl SwarmOrchestrator {
             let alive = self.nav_filters.len() as u32;
             let initial = (alive + self.loss_analyzer.total_losses() as u32).max(1);
             let attrition_rate = 1.0 - (alive as f64 / initial as f64);
-            let risk_level = strix_auction::RiskLevel::from_attrition(attrition_rate);
+            let risk_level = strix_auction::RiskLevel::from_attrition_with_fear(attrition_rate, f);
             if matches!(
                 risk_level,
                 strix_auction::RiskLevel::Retreat | strix_auction::RiskLevel::Survival
@@ -593,7 +635,7 @@ impl SwarmOrchestrator {
                     // Boost urgency proportional to intent score for all tasks.
                     // The auction market naturally reallocates drones toward
                     // high-urgency tasks without requiring regime changes.
-                    task.urgency *= 1.0 + max_intent_score;
+                    task.urgency *= 1.0 + max_intent_score * (1.0 + f);
                 }
             }
 
@@ -626,8 +668,9 @@ impl SwarmOrchestrator {
                 })
                 .collect();
 
-            let kill_zone_penalties = self.loss_analyzer.kill_zone_penalties();
+            let kill_zone_penalties = self.loss_analyzer.kill_zone_penalties_with_fear(f);
 
+            self.auctioneer.fear = f;
             let result = self.auctioneer.run_auction(
                 &auction_drones,
                 &boosted_tasks,
@@ -712,7 +755,24 @@ impl SwarmOrchestrator {
             });
         }
 
-        // ── 7. Build decision ────────────────────────────────────────────
+        // ── 7. Track fear signals + record outcome ──────────────────────
+        self.last_intent_score = max_intent_score;
+        self.last_cusum_breaks = cusum_break_count;
+
+        if let Some(adapter) = &mut self.fear_adapter {
+            // Outcome = weighted survival rate + task assignment rate.
+            let alive = self.nav_filters.len() as f64;
+            let initial = (alive + self.loss_analyzer.total_losses() as f64).max(1.0);
+            let survival = alive / initial;
+            let assignment_rate = if !tasks.is_empty() {
+                self.assignments.len() as f64 / tasks.len() as f64
+            } else {
+                1.0
+            };
+            adapter.record_outcome(survival * 0.6 + assignment_rate * 0.4);
+        }
+
+        // ── 8. Build decision ────────────────────────────────────────────
         let positions: HashMap<u32, Vector3<f64>> = telemetry
             .iter()
             .map(|(id, t)| {
@@ -743,6 +803,7 @@ impl SwarmOrchestrator {
             gossip_convergence: self.gossip.convergence_estimate(),
             pheromone_cells: self.pheromones.active_cells(),
             max_intent_score,
+            fear_level: f,
         }
     }
 

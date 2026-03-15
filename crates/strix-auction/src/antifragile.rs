@@ -261,6 +261,20 @@ impl LossAnalyzer {
             .collect()
     }
 
+    /// Fear-amplified kill zone penalties.
+    ///
+    /// Higher fear amplifies penalty weights: SAM 0.8→2.0 at F=1.0.
+    /// The amplified weight can exceed 1.0 — clamping happens at the
+    /// `risk_exposure` level in the bidder.
+    pub fn kill_zone_penalties_with_fear(&self, fear: f64) -> Vec<(Position, f64, f64)> {
+        let f = fear.clamp(0.0, 1.0);
+        let multiplier = 1.0 + f * 1.5; // 1.0→2.5 (SAM: 0.8*2.5=2.0)
+        self.kill_zones
+            .iter()
+            .map(|kz| (kz.center, kz.radius, kz.penalty * multiplier))
+            .collect()
+    }
+
     /// Anti-fragility score: how much the swarm has learned from losses.
     ///
     /// Returns a value >= 0.0. Higher means more adapted.

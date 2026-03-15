@@ -10,6 +10,8 @@
 //! subsystem and runs them in the correct sequence each tick.
 
 pub mod convert;
+pub mod fear_adapter;
 pub mod tick;
 
+pub use fear_adapter::FearAdapter;
 pub use tick::{SwarmConfig, SwarmDecision, SwarmOrchestrator};

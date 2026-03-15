@@ -40,6 +40,8 @@ pub struct Auctioneer {
     pub min_bid_threshold: f64,
     /// Whether a re-auction is needed (set by external events).
     pub needs_reauction: bool,
+    /// Fear level F ∈ [0,1] — passed to bidders for risk-adjusted scoring.
+    pub fear: f64,
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -51,6 +53,7 @@ impl Default for Auctioneer {
         Self {
             min_bid_threshold: 0.0,
             needs_reauction: false,
+            fear: 0.0,
         }
     }
 }
@@ -120,7 +123,7 @@ impl Auctioneer {
     ) -> Vec<Bid> {
         let mut all_bids = Vec::new();
         for drone in drones {
-            let mut bidder = Bidder::new(drone.clone());
+            let mut bidder = Bidder::new(drone.clone()).with_fear(self.fear);
             if let Some(&ssid) = sub_swarm_map.get(&drone.id) {
                 bidder = bidder.with_sub_swarm(ssid);
             }

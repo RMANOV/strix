@@ -44,6 +44,22 @@ impl Default for CbfConfig {
     }
 }
 
+impl CbfConfig {
+    /// Modulate safety parameters by fear level F ∈ [0,1].
+    ///
+    /// Higher fear → wider separation (5m→15m), stronger corrections (10→25 m/s),
+    /// earlier intervention (alpha 1→2).
+    pub fn with_fear(&self, f: f64) -> Self {
+        let f = f.clamp(0.0, 1.0);
+        Self {
+            min_separation: self.min_separation + f * 10.0, // 5→15m
+            max_correction: self.max_correction + f * 15.0, // 10→25 m/s
+            alpha: self.alpha + f * 1.0,                    // 1→2
+            ..*self
+        }
+    }
+}
+
 /// Spherical no-fly zone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NoFlyZone {

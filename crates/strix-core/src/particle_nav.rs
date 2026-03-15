@@ -69,6 +69,33 @@ impl Default for ProcessNoiseConfig {
     }
 }
 
+impl ProcessNoiseConfig {
+    /// Scale noise profiles by fear level F ∈ [0,1].
+    ///
+    /// Higher fear → PATROL noise tightens (disciplined flight, tighter formation),
+    /// EVADE noise amplifies (chaotic evasion is harder to target).
+    pub fn scaled_by_fear(&self, f: f64) -> Self {
+        let f = f.clamp(0.0, 1.0);
+        let patrol_scale = 1.0 - f * 0.5; // reduce by up to 50%
+        let engage_scale = 1.0 + f * 0.3; // increase by up to 30%
+        let evade_scale = 1.0 + f; // double at max fear
+        Self {
+            patrol: RegimeNoise {
+                pos_noise: self.patrol.pos_noise.map(|n| n * patrol_scale),
+                vel_noise: self.patrol.vel_noise.map(|n| n * patrol_scale),
+            },
+            engage: RegimeNoise {
+                pos_noise: self.engage.pos_noise.map(|n| n * engage_scale),
+                vel_noise: self.engage.vel_noise.map(|n| n * engage_scale),
+            },
+            evade: RegimeNoise {
+                pos_noise: self.evade.pos_noise.map(|n| n * evade_scale),
+                vel_noise: self.evade.vel_noise.map(|n| n * evade_scale),
+            },
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 6D Particle Prediction
 // ---------------------------------------------------------------------------

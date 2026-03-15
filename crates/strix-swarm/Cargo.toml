@@ -11,6 +11,7 @@ strix-auction = { path = "../strix-auction" }
 strix-mesh = { path = "../strix-mesh" }
 strix-adapters = { path = "../strix-adapters" }
 strix-xai = { path = "../strix-xai" }
+phi-sim = { path = "../../../phi-sim" }
 nalgebra.workspace = true
 ndarray.workspace = true
 rand.workspace = true
