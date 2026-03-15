@@ -173,6 +173,15 @@ impl EwEngine {
             .retain(|e| current_time - e.timestamp < max_age);
     }
 
+    /// Amplified severity multiplier using FearAxes.speed.
+    /// speed ∈ [1.0, 3.0]:
+    ///   speed=1.0 → baseline multiplier
+    ///   speed=3.0 → multiplier × 1.5 (50% amplification at max fear)
+    pub fn severity_with_fear(&self, base_multiplier: f64, speed: f64) -> f64 {
+        let s = speed.clamp(1.0, 3.0);
+        base_multiplier * (1.0 + (s - 1.0) * 0.25) // 1.0→1.0, 3.0→1.5
+    }
+
     // -----------------------------------------------------------------------
     // Internal dispatch
     // -----------------------------------------------------------------------
@@ -725,6 +734,38 @@ mod tests {
         assert!(plan.summary.contains("Radar lock"));
         assert!(plan.summary.contains("severe"));
         assert!(plan.summary.contains("response action"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Fear-modulated severity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_severity_with_fear_no_fear() {
+        let engine = EwEngine::new();
+        let result = engine.severity_with_fear(2.0, 1.0);
+        assert!((result - 2.0).abs() < 1e-10, "speed=1.0 should not amplify");
+    }
+
+    #[test]
+    fn test_severity_with_fear_max_fear() {
+        let engine = EwEngine::new();
+        let result = engine.severity_with_fear(2.0, 3.0);
+        assert!(
+            (result - 3.0).abs() < 1e-10,
+            "speed=3.0 should give 1.5x amplification: 2.0 * 1.5 = 3.0"
+        );
+    }
+
+    #[test]
+    fn test_severity_with_fear_clamps() {
+        let engine = EwEngine::new();
+        let r1 = engine.severity_with_fear(2.0, 0.0); // clamps to 1.0
+        let r2 = engine.severity_with_fear(2.0, 1.0);
+        assert!((r1 - r2).abs() < 1e-10);
+        let r3 = engine.severity_with_fear(2.0, 5.0); // clamps to 3.0
+        let r4 = engine.severity_with_fear(2.0, 3.0);
+        assert!((r3 - r4).abs() < 1e-10);
     }
 
     // -----------------------------------------------------------------------

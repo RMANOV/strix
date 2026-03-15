@@ -458,6 +458,10 @@ mod tests {
                 regime: regime.into(),
                 metrics: serde_json::Value::Null,
                 context: serde_json::Value::Null,
+                fear_level: None,
+                courage_level: None,
+                tension: None,
+                calibration_quality: None,
             })
             .with_output(action, serde_json::Value::Null)
             .with_confidence(0.8)
@@ -547,6 +551,10 @@ mod tests {
                 regime: "ENGAGE".into(),
                 metrics: serde_json::Value::Null,
                 context: serde_json::Value::Null,
+                fear_level: None,
+                courage_level: None,
+                tension: None,
+                calibration_quality: None,
             })
             .with_output("Intercept target", serde_json::Value::Null)
             .with_confidence(0.9);
@@ -601,6 +609,10 @@ mod tests {
                 regime: "PATROL".into(),
                 metrics: serde_json::Value::Null,
                 context: serde_json::Value::Null,
+                fear_level: None,
+                courage_level: None,
+                tension: None,
+                calibration_quality: None,
             })
             .with_output("Sweep sector", serde_json::Value::Null)
             .with_confidence(0.8);
@@ -646,6 +658,10 @@ mod tests {
                 regime: "ENGAGE".into(),
                 metrics: serde_json::Value::Null,
                 context: serde_json::Value::Null,
+                fear_level: None,
+                courage_level: None,
+                tension: None,
+                calibration_quality: None,
             })
             .with_output("Engage threat", serde_json::Value::Null)
             .with_confidence(1.0);

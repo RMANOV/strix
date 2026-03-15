@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::bidder::{Bid, Bidder};
+use crate::bidder::{Bid, Bidder, ScenarioContext};
 use crate::{Assignment, DroneState, Task, ThreatState};
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -42,6 +42,9 @@ pub struct Auctioneer {
     pub needs_reauction: bool,
     /// Fear level F ∈ [0,1] — passed to bidders for risk-adjusted scoring.
     pub fear: f64,
+    /// Per-drone scenario contexts from phi-sim (doom/upside/confidence).
+    /// Set before `run_auction` to inject scenario-enriched bid scoring.
+    pub scenario_contexts: HashMap<u32, ScenarioContext>,
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -54,6 +57,7 @@ impl Default for Auctioneer {
             min_bid_threshold: 0.0,
             needs_reauction: false,
             fear: 0.0,
+            scenario_contexts: HashMap::new(),
         }
     }
 }
@@ -100,6 +104,16 @@ impl Auctioneer {
         result
     }
 
+    /// Set scenario context for a specific drone (from phi-sim decisions).
+    pub fn set_scenario_context(&mut self, drone_id: u32, ctx: ScenarioContext) {
+        self.scenario_contexts.insert(drone_id, ctx);
+    }
+
+    /// Clear all scenario contexts (e.g. between auction rounds).
+    pub fn clear_scenario_contexts(&mut self) {
+        self.scenario_contexts.clear();
+    }
+
     /// Signal that conditions have changed and a re-auction is warranted.
     pub fn trigger_reauction(&mut self) {
         self.needs_reauction = true;
@@ -129,6 +143,9 @@ impl Auctioneer {
             }
             if !kill_zone_penalties.is_empty() {
                 bidder = bidder.with_kill_zone_penalties(kill_zone_penalties.to_vec());
+            }
+            if let Some(ctx) = self.scenario_contexts.get(&drone.id) {
+                bidder = bidder.with_scenario_context(ctx.clone());
             }
             let bids = bidder.bid_on_tasks(tasks, threats);
             all_bids.extend(bids);

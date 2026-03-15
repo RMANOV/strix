@@ -56,6 +56,19 @@ pub struct Bidder {
     pub kill_zone_penalties: Vec<(Position, f64, f64)>,
     /// Fear level F ∈ [0,1] — modulates risk aversion in bid scoring.
     pub fear: f64,
+    /// Optional phi-sim scenario context for scenario-enriched bidding.
+    pub scenario_context: Option<ScenarioContext>,
+}
+
+/// Per-drone scenario data from phi-sim (doom/upside/confidence).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioContext {
+    /// Doom-case expected value (typically negative).
+    pub doom_value: f64,
+    /// Upside-case expected value (typically positive).
+    pub upside_value: f64,
+    /// Decision confidence [0, 1].
+    pub confidence: f64,
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -70,6 +83,7 @@ impl Bidder {
             sub_swarm_id: None,
             kill_zone_penalties: Vec::new(),
             fear: 0.0,
+            scenario_context: None,
         }
     }
 
@@ -91,6 +105,12 @@ impl Bidder {
         self
     }
 
+    /// Set scenario context for scenario-enriched bid scoring.
+    pub fn with_scenario_context(mut self, ctx: ScenarioContext) -> Self {
+        self.scenario_context = Some(ctx);
+        self
+    }
+
     /// Evaluate a single task and produce a sealed [`Bid`].
     ///
     /// Returns `None` if the drone is ineligible (dead, dark-pool filtered, etc.).
@@ -109,7 +129,17 @@ impl Bidder {
         }
 
         let components = self.compute_components(task, threats);
-        let score = calculate_bid_with_fear(&components, self.fear);
+        let score = if let Some(ref ctx) = self.scenario_context {
+            calculate_bid_with_scenarios(
+                &components,
+                self.fear,
+                ctx.doom_value,
+                ctx.upside_value,
+                ctx.confidence,
+            )
+        } else {
+            calculate_bid_with_fear(&components, self.fear)
+        };
 
         Some(Bid {
             drone_id: self.drone.id,
@@ -193,6 +223,24 @@ pub fn calculate_bid_with_fear(c: &BidComponents, fear: f64) -> f64 {
     let proximity_weight = 5.0 - f * 2.5; // 5→2.5
     c.urgency_bonus * 10.0 + c.capability * 3.0 + c.proximity * proximity_weight + c.energy * 2.0
         - c.risk_exposure * risk_weight
+}
+
+/// Scenario-enriched bid scoring.
+///
+/// When phi-sim scenarios are available, incorporate doom/upside/confidence:
+/// - doom_value (negative) → additional risk penalty
+/// - upside_value (positive) → opportunity bonus
+/// - confidence → score multiplier
+pub fn calculate_bid_with_scenarios(
+    c: &BidComponents,
+    fear: f64,
+    doom_value: f64,
+    upside_value: f64,
+    confidence: f64,
+) -> f64 {
+    let base = calculate_bid_with_fear(c, fear);
+    let scenario_adjust = upside_value * 0.3 + doom_value * fear.clamp(0.0, 1.0) * 0.5;
+    base * confidence.clamp(0.3, 1.0) + scenario_adjust
 }
 
 /// Compute capability match as fraction of required capabilities that the drone has.
@@ -477,6 +525,85 @@ mod tests {
         assert!(
             score_f1 < score_f0,
             "higher fear should reduce score when risk > 0"
+        );
+    }
+
+    #[test]
+    fn test_calculate_bid_with_scenarios_no_doom() {
+        let c = BidComponents {
+            proximity: 0.1,
+            capability: 1.0,
+            energy: 0.8,
+            risk_exposure: 0.2,
+            urgency_bonus: 0.5,
+        };
+        let base = calculate_bid_with_fear(&c, 0.3);
+        let scenario = calculate_bid_with_scenarios(&c, 0.3, 0.0, 0.0, 1.0);
+        assert!(
+            (scenario - base).abs() < 1e-9,
+            "zero doom/upside with confidence=1 should equal base"
+        );
+    }
+
+    #[test]
+    fn test_calculate_bid_with_scenarios_doom_reduces() {
+        let c = BidComponents {
+            proximity: 0.1,
+            capability: 1.0,
+            energy: 0.8,
+            risk_exposure: 0.2,
+            urgency_bonus: 0.5,
+        };
+        let no_doom = calculate_bid_with_scenarios(&c, 0.5, 0.0, 0.0, 1.0);
+        let with_doom = calculate_bid_with_scenarios(&c, 0.5, -2.0, 0.0, 1.0);
+        assert!(with_doom < no_doom, "doom should reduce bid score");
+    }
+
+    #[test]
+    fn test_calculate_bid_with_scenarios_upside_increases() {
+        let c = BidComponents {
+            proximity: 0.1,
+            capability: 1.0,
+            energy: 0.8,
+            risk_exposure: 0.2,
+            urgency_bonus: 0.5,
+        };
+        let no_upside = calculate_bid_with_scenarios(&c, 0.5, 0.0, 0.0, 1.0);
+        let with_upside = calculate_bid_with_scenarios(&c, 0.5, 0.0, 2.0, 1.0);
+        assert!(with_upside > no_upside, "upside should increase bid score");
+    }
+
+    #[test]
+    fn test_calculate_bid_with_scenarios_low_confidence_dampens() {
+        let c = BidComponents {
+            proximity: 0.1,
+            capability: 1.0,
+            energy: 0.8,
+            risk_exposure: 0.0,
+            urgency_bonus: 0.5,
+        };
+        let high_conf = calculate_bid_with_scenarios(&c, 0.0, 0.0, 0.0, 1.0);
+        let low_conf = calculate_bid_with_scenarios(&c, 0.0, 0.0, 0.0, 0.3);
+        assert!(
+            low_conf < high_conf,
+            "low confidence should dampen bid score"
+        );
+    }
+
+    #[test]
+    fn test_bidder_with_scenario_context() {
+        let drone = sample_drone(1, 0.0, 0.0);
+        let task = sample_task(1, 10.0, 10.0);
+        let ctx = ScenarioContext {
+            doom_value: -1.0,
+            upside_value: 0.5,
+            confidence: 0.8,
+        };
+        let bidder = Bidder::new(drone).with_scenario_context(ctx);
+        let bid = bidder.evaluate_task(&task, &[]).unwrap();
+        assert!(
+            bid.score > 0.0,
+            "bid with scenario context should produce positive score"
         );
     }
 }

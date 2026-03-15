@@ -14,5 +14,5 @@ pub mod fear_adapter;
 pub mod tick;
 
 #[cfg(feature = "phi-sim")]
-pub use fear_adapter::FearAdapter;
+pub use fear_adapter::{DroneFearInputs, SwarmFearAdapter};
 pub use tick::{SwarmConfig, SwarmDecision, SwarmOrchestrator};

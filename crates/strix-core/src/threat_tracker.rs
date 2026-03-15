@@ -51,6 +51,22 @@ impl Default for ThreatNoiseConfig {
     }
 }
 
+impl ThreatNoiseConfig {
+    /// Amplify threat tracking uncertainty under fear.
+    /// Higher fear → wider uncertainty bounds.
+    pub fn scaled_by_fear(&self, f: f64) -> Self {
+        let f = f.clamp(0.0, 1.0);
+        Self {
+            defend_pos_noise: self.defend_pos_noise * (1.0 + f * 0.3),
+            defend_vel_noise: self.defend_vel_noise * (1.0 + f * 0.3),
+            counter_pos_noise: self.counter_pos_noise * (1.0 + f * 0.5),
+            counter_vel_noise: self.counter_vel_noise * (1.0 + f * 0.5),
+            retreat_pos_noise: self.retreat_pos_noise * (1.0 + f * 0.2),
+            retreat_vel_noise: self.retreat_vel_noise * (1.0 + f * 0.2),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Threat sensor observations
 // ---------------------------------------------------------------------------
@@ -524,6 +540,34 @@ mod tests {
         let history: Vec<f64> = (0..20).map(|i| 10.0 + i as f64 * 2.0).collect();
         let m = threat_momentum_score(&history, 20);
         assert!(m > 0.0);
+    }
+
+    // ── Fear-scaled noise ──────────────────────────────────────────────
+
+    #[test]
+    fn test_threat_noise_scaled_by_fear_zero() {
+        let cfg = ThreatNoiseConfig::default();
+        let scaled = cfg.scaled_by_fear(0.0);
+        assert!((scaled.defend_pos_noise - cfg.defend_pos_noise).abs() < 1e-12);
+        assert!((scaled.counter_pos_noise - cfg.counter_pos_noise).abs() < 1e-12);
+        assert!((scaled.retreat_pos_noise - cfg.retreat_pos_noise).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_threat_noise_scaled_by_fear_one() {
+        let cfg = ThreatNoiseConfig::default();
+        let scaled = cfg.scaled_by_fear(1.0);
+        assert!((scaled.defend_pos_noise - cfg.defend_pos_noise * 1.3).abs() < 1e-12);
+        assert!((scaled.counter_pos_noise - cfg.counter_pos_noise * 1.5).abs() < 1e-12);
+        assert!((scaled.retreat_pos_noise - cfg.retreat_pos_noise * 1.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_threat_noise_scaled_by_fear_clamps() {
+        let cfg = ThreatNoiseConfig::default();
+        let s1 = cfg.scaled_by_fear(-0.5);
+        let s2 = cfg.scaled_by_fear(0.0);
+        assert!((s1.defend_pos_noise - s2.defend_pos_noise).abs() < 1e-12);
     }
 
     #[test]

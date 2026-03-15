@@ -145,6 +145,15 @@ pub struct SwarmDecision {
     pub ew_active_threats: usize,
     /// Number of CBF safety constraints active this tick.
     pub cbf_active_constraints: u32,
+    // ── Phi-sim intelligence fields ─────────────────────────────────────
+    /// Collective courage level [0, 1].
+    pub courage_level: f64,
+    /// Collective tension (C-F)/(1+F*C).
+    pub tension: f64,
+    /// Per-drone fear levels (drone_id → F).
+    pub per_drone_fear: HashMap<u32, f64>,
+    /// Phi-sim calibration quality [0, 1] (0 if phi-sim disabled).
+    pub calibration_quality: f64,
 }
 
 /// The swarm orchestrator — chains all STRIX crates together.
@@ -179,7 +188,7 @@ pub struct SwarmOrchestrator {
     prev_closing_rates: HashMap<u32, f64>,
     /// Optional PhiSim fear adapter for adaptive risk modulation.
     #[cfg(feature = "phi-sim")]
-    pub fear_adapter: Option<crate::fear_adapter::FearAdapter>,
+    pub fear_adapter: Option<crate::fear_adapter::SwarmFearAdapter>,
     /// Previous tick's max intent score (for fear computation).
     last_intent_score: f64,
     /// Previous tick's CUSUM break count (for fear computation).
@@ -300,6 +309,11 @@ impl SwarmOrchestrator {
             ),
         );
         self.gossip.add_peer(NodeId(id));
+
+        #[cfg(feature = "phi-sim")]
+        if let Some(adapter) = &mut self.fear_adapter {
+            adapter.register_drone(id);
+        }
     }
 
     /// Register a new threat to track.
@@ -387,6 +401,11 @@ impl SwarmOrchestrator {
         self.prev_closing_rates.remove(&drone_id);
         self.gossip.remove_peer(NodeId(drone_id));
 
+        #[cfg(feature = "phi-sim")]
+        if let Some(adapter) = &mut self.fear_adapter {
+            adapter.remove_drone(drone_id);
+        }
+
         // Remove assignments for this drone
         self.assignments.retain(|a| a.drone_id != drone_id);
 
@@ -405,6 +424,10 @@ impl SwarmOrchestrator {
                     "antifragile_score": self.loss_analyzer.antifragile_score(),
                 }),
                 context: serde_json::json!({"lost_drone_id": drone_id}),
+                fear_level: None,
+                courage_level: None,
+                tension: None,
+                calibration_quality: None,
             })
             .with_output(
                 &format!("Drone {} lost — re-auctioning tasks", drone_id),
@@ -428,17 +451,65 @@ impl SwarmOrchestrator {
         // ── 0. Compute fear level F ────────────────────────────────────────
         #[cfg(feature = "phi-sim")]
         let f = if let Some(adapter) = &mut self.fear_adapter {
-            adapter.update(
-                self.nav_filters.len() as u32,
-                self.loss_analyzer.total_losses(),
-                self.last_intent_score,
+            let alive = self.nav_filters.len() as u32;
+            let initial = (alive + self.loss_analyzer.total_losses() as u32).max(1);
+            let fleet_attrition = 1.0 - (alive as f64 / initial as f64);
+            let is_auction_tick = self.tick_count % self.config.auction_interval == 0;
+
+            // Build per-drone fear inputs from available telemetry.
+            let per_drone: Vec<(u32, crate::fear_adapter::DroneFearInputs)> = telemetry
+                .iter()
+                .map(|(id, telem)| {
+                    let speed = (telem.velocity[0].powi(2)
+                        + telem.velocity[1].powi(2)
+                        + telem.velocity[2].powi(2))
+                    .sqrt();
+                    let regime = self
+                        .regimes
+                        .get(id)
+                        .copied()
+                        .unwrap_or(strix_core::Regime::Patrol);
+                    (
+                        *id,
+                        crate::fear_adapter::DroneFearInputs {
+                            threat_distance: 1000.0, // default; refined in later ticks
+                            closing_rate: self.last_intent_score.min(0.0),
+                            cusum_triggered: self.last_cusum_breaks > 0,
+                            regime,
+                            speed,
+                            fleet_coherence: 1.0, // TODO: wire from formation quality
+                        },
+                    )
+                })
+                .collect();
+
+            adapter.update_fear(
+                &per_drone,
+                fleet_attrition,
                 self.last_cusum_breaks,
-            )
+                is_auction_tick,
+            );
+            adapter.collective_fear()
         } else {
             self.config.fear
         };
         #[cfg(not(feature = "phi-sim"))]
         let f = self.config.fear;
+
+        // Extract collective phi-sim signals for module modulation.
+        #[cfg(feature = "phi-sim")]
+        let (collective_c, collective_t) = if let Some(adapter) = &self.fear_adapter {
+            (adapter.collective_courage(), adapter.collective_tension())
+        } else {
+            (0.0, 0.0)
+        };
+        #[cfg(not(feature = "phi-sim"))]
+        let (collective_c, collective_t) = (0.0, 0.0);
+
+        // Derive fear axes as plain f64s for module modulation (mirrors FearAxes::from_fear).
+        let fear_threshold = 1.0 - f * 0.7; // [0.3, 1.0]
+        let fear_speed = 1.0 + f * 2.0; // [1.0, 3.0]
+        let fear_bias = f; // [0.0, 1.0]
 
         // Pre-compute fear-modulated configs used throughout this tick.
         let fear_detection_config =
@@ -496,9 +567,14 @@ impl SwarmOrchestrator {
             }
         }
 
+        // Amplify EW severity by fear (scared swarm reacts more aggressively to EW).
+        let fear_ew_multiplier = self
+            .ew_engine
+            .severity_with_fear(ew_noise_multiplier, fear_speed);
+
         // Apply EW-modulated noise on top of fear-modulated noise.
-        let tick_noise = if ew_noise_multiplier > 1.0 {
-            fear_noise.scaled_by_ew(ew_noise_multiplier)
+        let tick_noise = if fear_ew_multiplier > 1.0 {
+            fear_noise.scaled_by_ew(fear_ew_multiplier)
         } else {
             fear_noise.clone()
         };
@@ -784,6 +860,10 @@ impl SwarmOrchestrator {
                     regime: format!("{:?}", old_regime),
                     metrics: serde_json::json!({}),
                     context: serde_json::Value::Null,
+                    fear_level: Some(f),
+                    courage_level: Some(collective_c),
+                    tension: Some(collective_t),
+                    calibration_quality: None,
                 })
                 .with_output(
                     &format!(
@@ -819,12 +899,15 @@ impl SwarmOrchestrator {
                 .collect();
 
             if n_formation_drones.len() >= 2 {
+                // Fear-adjusted formation: high fear → wider spacing, larger deadband.
+                let fear_formation_config = self.formation_config.fear_adjusted(fear_threshold);
+
                 let target_positions = formation::compute_formation_positions(
                     formation,
                     n_formation_drones.len(),
                     &fleet_centroid,
                     &fleet_heading,
-                    &self.formation_config,
+                    &fear_formation_config,
                 );
 
                 // Compute correction for each drone in formation.
@@ -833,7 +916,7 @@ impl SwarmOrchestrator {
                         let correction = formation::formation_correction(
                             drone_pos,
                             target_pos,
-                            &self.formation_config,
+                            &fear_formation_config,
                         );
                         if correction.norm() > 1e-6 {
                             formation_corrections.insert(*drone_id, correction);
@@ -845,7 +928,7 @@ impl SwarmOrchestrator {
                 formation_quality = Some(formation::formation_quality(
                     &n_formation_drones,
                     &target_positions,
-                    &self.formation_config,
+                    &fear_formation_config,
                 ));
             } else {
                 formation_quality = Some(1.0); // trivial formation with 0-1 drones
@@ -913,6 +996,10 @@ impl SwarmOrchestrator {
                                             "threat_distance": threat_dist,
                                         }),
                                         context: serde_json::Value::Null,
+                                        fear_level: None,
+                                        courage_level: None,
+                                        tension: None,
+                                        calibration_quality: None,
                                     })
                                     .with_output(
                                         &format!("ROE denied task {}: {}", task.id, reason),
@@ -935,6 +1022,10 @@ impl SwarmOrchestrator {
                                             "threat_distance": threat_dist,
                                         }),
                                         context: serde_json::Value::Null,
+                                        fear_level: None,
+                                        courage_level: None,
+                                        tension: None,
+                                        calibration_quality: None,
                                     })
                                     .with_output(
                                         &format!("ROE escalation for task {}: {}", task.id, reason),
@@ -947,6 +1038,32 @@ impl SwarmOrchestrator {
                         EngagementAuth::Authorized { .. } => {} // pass through
                     }
                 }
+            }
+
+            // ROE tension advisory: log posture suggestion based on phi-sim tension.
+            if let Some(suggested) = self.roe_engine.tension_posture_suggestion(collective_t) {
+                let trace = DecisionTrace::new(self.sim_time, DecisionType::RegimeChange)
+                    .with_inputs(TraceInputs {
+                        drone_ids: vec![],
+                        regime: "ROE_TENSION".to_string(),
+                        metrics: serde_json::json!({
+                            "tension": collective_t,
+                            "current_posture": format!("{:?}", self.roe_engine.posture),
+                            "suggested_posture": format!("{:?}", suggested),
+                        }),
+                        context: serde_json::Value::Null,
+                        fear_level: Some(f),
+                        courage_level: Some(collective_c),
+                        tension: Some(collective_t),
+                        calibration_quality: None,
+                    })
+                    .with_output(
+                        &format!("Tension {:.2} suggests {:?}", collective_t, suggested),
+                        serde_json::json!({"suggested": format!("{:?}", suggested)}),
+                    )
+                    .with_confidence(0.6);
+                self.tracer.record(trace);
+                traces_recorded += 1;
             }
 
             // Remove ROE-denied tasks from auction pool.
@@ -1003,6 +1120,24 @@ impl SwarmOrchestrator {
 
             let kill_zone_penalties = self.loss_analyzer.kill_zone_penalties_with_fear(f);
 
+            // Inject per-drone scenario contexts from phi-sim into the auctioneer.
+            self.auctioneer.clear_scenario_contexts();
+            #[cfg(feature = "phi-sim")]
+            if let Some(adapter) = &self.fear_adapter {
+                for drone in &auction_drones {
+                    if let Some(decision) = adapter.decision_for_drone(drone.id) {
+                        self.auctioneer.set_scenario_context(
+                            drone.id,
+                            strix_auction::bidder::ScenarioContext {
+                                doom_value: decision.doom_value,
+                                upside_value: decision.upside_value,
+                                confidence: decision.confidence,
+                            },
+                        );
+                    }
+                }
+            }
+
             self.auctioneer.fear = f;
             let result = self.auctioneer.run_auction(
                 &auction_drones,
@@ -1026,6 +1161,10 @@ impl SwarmOrchestrator {
                         "unassigned": result.unassigned_tasks.len(),
                     }),
                     context: serde_json::Value::Null,
+                    fear_level: Some(f),
+                    courage_level: Some(collective_c),
+                    tension: Some(collective_t),
+                    calibration_quality: None,
                 })
                 .with_output(
                     &format!(
@@ -1046,11 +1185,12 @@ impl SwarmOrchestrator {
         // ── 5. Propagate via gossip ──────────────────────────────────────
         self.gossip_version += 1;
 
-        // Apply EW gossip degradation if active.
+        // Apply fear-modulated gossip fanout, then EW override (whichever is lower).
+        let fear_fanout = crate::fear_adapter::modulate_gossip_fanout(self.config.gossip_fanout, f);
         if let Some((reduced_fanout, _priority_only)) = ew_gossip_override {
-            self.gossip.set_fanout(reduced_fanout);
+            self.gossip.set_fanout(reduced_fanout.min(fear_fanout));
         } else {
-            self.gossip.set_fanout(self.config.gossip_fanout);
+            self.gossip.set_fanout(fear_fanout);
         }
 
         for (id, telem) in telemetry {
@@ -1077,23 +1217,25 @@ impl SwarmOrchestrator {
         // ── 6. Update pheromone field ────────────────────────────────────
         self.pheromones.evaporate(self.sim_time);
 
-        // Deposit "explored" pheromones at drone positions
+        // Deposit "explored" pheromones at drone positions (reduced under fear).
+        let explored_intensity = 1.0 - fear_bias * 0.3; // 1.0→0.7 at max fear
         for (id, telem) in telemetry {
             self.pheromones.deposit(&Pheromone {
                 position: Position3D(telem.position),
                 ptype: PheromoneType::Explored,
-                intensity: 1.0,
+                intensity: explored_intensity,
                 timestamp: self.sim_time,
                 depositor: NodeId(*id),
             });
         }
 
-        // Deposit "threat" pheromones at kill zones
+        // Deposit "threat" pheromones at kill zones (amplified under fear).
+        let threat_intensity_scale = 1.0 + fear_bias * 2.0; // 1.0→3.0 at max fear
         for kz in &self.loss_analyzer.kill_zones {
             self.pheromones.deposit(&Pheromone {
                 position: Position3D([kz.center.x, kz.center.y, kz.center.z]),
                 ptype: PheromoneType::Threat,
-                intensity: kz.penalty * 5.0,
+                intensity: kz.penalty * 5.0 * threat_intensity_scale,
                 timestamp: self.sim_time,
                 depositor: NodeId(0),
             });
@@ -1194,6 +1336,21 @@ impl SwarmOrchestrator {
             })
             .collect();
 
+        // Collect per-drone fear levels and calibration from phi-sim.
+        #[cfg(feature = "phi-sim")]
+        let (per_drone_fear, calibration_quality) = if let Some(adapter) = &self.fear_adapter {
+            let pdf: HashMap<u32, f64> = telemetry
+                .iter()
+                .map(|(id, _)| (*id, adapter.fear_level(*id)))
+                .collect();
+            let cal = adapter.calibration().overall();
+            (pdf, cal)
+        } else {
+            (HashMap::new(), 0.0)
+        };
+        #[cfg(not(feature = "phi-sim"))]
+        let (per_drone_fear, calibration_quality) = (HashMap::new(), 0.0);
+
         SwarmDecision {
             assignments: self.assignments.clone(),
             regimes: self.regimes.clone(),
@@ -1212,6 +1369,10 @@ impl SwarmOrchestrator {
             roe_escalations,
             ew_active_threats,
             cbf_active_constraints,
+            courage_level: collective_c,
+            tension: collective_t,
+            per_drone_fear,
+            calibration_quality,
         }
     }
 

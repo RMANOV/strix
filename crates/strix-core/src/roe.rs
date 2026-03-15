@@ -280,6 +280,30 @@ impl RoeEngine {
     pub fn can_transition(&self, _to: WeaponsPosture) -> bool {
         true
     }
+
+    /// Suggest a weapons posture based on phi-sim's opponent process tension.
+    ///
+    /// T = (C-F)/(1+F*C):
+    ///   T < -0.3  → WeaponsHold  (fear dominates → be cautious)
+    ///   T ∈ [-0.3, 0.1] → WeaponsTight (balanced)
+    ///   T > 0.1   → WeaponsFree  (courage dominates → be aggressive)
+    ///
+    /// Returns None if the suggested posture matches the current one.
+    /// This is advisory only — the tick loop logs the suggestion but does NOT auto-switch.
+    pub fn tension_posture_suggestion(&self, tension: f64) -> Option<WeaponsPosture> {
+        let suggested = if tension < -0.3 {
+            WeaponsPosture::WeaponsHold
+        } else if tension > 0.1 {
+            WeaponsPosture::WeaponsFree
+        } else {
+            WeaponsPosture::WeaponsTight
+        };
+        if suggested != self.posture {
+            Some(suggested)
+        } else {
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -611,5 +635,51 @@ mod tests {
         let json = serde_json::to_string(&auth).expect("serialize");
         let decoded: EngagementAuth = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, auth);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tension-based posture suggestion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_tension_posture_suggestion_hold() {
+        let engine = RoeEngine::new(WeaponsPosture::WeaponsTight);
+        let suggestion = engine.tension_posture_suggestion(-0.5);
+        assert_eq!(suggestion, Some(WeaponsPosture::WeaponsHold));
+    }
+
+    #[test]
+    fn test_tension_posture_suggestion_free() {
+        let engine = RoeEngine::new(WeaponsPosture::WeaponsTight);
+        let suggestion = engine.tension_posture_suggestion(0.3);
+        assert_eq!(suggestion, Some(WeaponsPosture::WeaponsFree));
+    }
+
+    #[test]
+    fn test_tension_posture_suggestion_tight() {
+        let engine = RoeEngine::new(WeaponsPosture::WeaponsHold);
+        let suggestion = engine.tension_posture_suggestion(0.0);
+        assert_eq!(suggestion, Some(WeaponsPosture::WeaponsTight));
+    }
+
+    #[test]
+    fn test_tension_posture_suggestion_no_change() {
+        let engine = RoeEngine::new(WeaponsPosture::WeaponsTight);
+        let suggestion = engine.tension_posture_suggestion(0.0); // tight zone
+        assert_eq!(
+            suggestion, None,
+            "should return None when suggestion matches current posture"
+        );
+    }
+
+    #[test]
+    fn test_tension_posture_suggestion_boundary() {
+        let engine = RoeEngine::new(WeaponsPosture::WeaponsFree);
+        // Exactly at -0.3 boundary → should be in tight zone
+        let suggestion = engine.tension_posture_suggestion(-0.3);
+        assert_eq!(suggestion, Some(WeaponsPosture::WeaponsTight));
+        // Exactly at 0.1 → should be in tight zone
+        let suggestion2 = engine.tension_posture_suggestion(0.1);
+        assert_eq!(suggestion2, Some(WeaponsPosture::WeaponsTight));
     }
 }

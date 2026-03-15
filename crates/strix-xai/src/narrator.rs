@@ -362,6 +362,10 @@ mod tests {
                     "risk_budget": 0.15,
                 }),
                 context: serde_json::Value::Null,
+                fear_level: None,
+                courage_level: None,
+                tension: None,
+                calibration_quality: None,
             })
             .with_step(
                 1,
@@ -398,6 +402,10 @@ mod tests {
                 regime: "PATROL".into(),
                 metrics: serde_json::json!({"cusum_stat": 4.2}),
                 context: serde_json::Value::Null,
+                fear_level: None,
+                courage_level: None,
+                tension: None,
+                calibration_quality: None,
             })
             .with_step(
                 1,
@@ -462,6 +470,10 @@ mod tests {
                 regime: "ENGAGE".into(),
                 metrics: serde_json::json!({}),
                 context: serde_json::json!({"lost_drone_id": 1}),
+                fear_level: None,
+                courage_level: None,
+                tension: None,
+                calibration_quality: None,
             })
             .with_step(
                 1,
@@ -489,6 +501,10 @@ mod tests {
                 regime: "ENGAGE".into(),
                 metrics: serde_json::json!({"threat_probability": 0.91}),
                 context: serde_json::Value::Null,
+                fear_level: None,
+                courage_level: None,
+                tension: None,
+                calibration_quality: None,
             })
             .with_output("Evade north-east", serde_json::Value::Null)
             .with_confidence(0.95);

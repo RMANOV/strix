@@ -84,6 +84,15 @@ pub struct TraceInputs {
     pub metrics: serde_json::Value,
     /// Additional context (sensor readings, comms state, etc.).
     pub context: serde_json::Value,
+    // ── Phi-sim intelligence fields (None when phi-sim feature is disabled) ──
+    /// Fear level at decision time [0, 1].
+    pub fear_level: Option<f64>,
+    /// Courage level at decision time [0, 1].
+    pub courage_level: Option<f64>,
+    /// Opponent process tension (C-F)/(1+F*C).
+    pub tension: Option<f64>,
+    /// Phi-sim model calibration quality [0, 1].
+    pub calibration_quality: Option<f64>,
 }
 
 /// The output of the decision.
@@ -280,6 +289,10 @@ impl DecisionTrace {
                 regime: String::new(),
                 metrics: serde_json::Value::Null,
                 context: serde_json::Value::Null,
+                fear_level: None,
+                courage_level: None,
+                tension: None,
+                calibration_quality: None,
             },
             reasoning: Vec::new(),
             output: TraceOutput {
@@ -348,6 +361,10 @@ mod tests {
                 regime: "Patrol".into(),
                 metrics: serde_json::json!({"threat_prob": 0.73}),
                 context: serde_json::Value::Null,
+                fear_level: None,
+                courage_level: None,
+                tension: None,
+                calibration_quality: None,
             })
             .with_step(1, "Evaluated threat probability", serde_json::json!(0.73))
             .with_step(
@@ -459,5 +476,51 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(recorder.query(&query).len(), 5);
+    }
+
+    #[test]
+    fn test_trace_inputs_phi_sim_fields_serialize() {
+        let inputs = TraceInputs {
+            drone_ids: vec![1],
+            regime: "Patrol".into(),
+            metrics: serde_json::Value::Null,
+            context: serde_json::Value::Null,
+            fear_level: Some(0.42),
+            courage_level: Some(0.65),
+            tension: Some(-0.15),
+            calibration_quality: Some(0.88),
+        };
+        let json = serde_json::to_string(&inputs).unwrap();
+        assert!(json.contains("0.42"), "fear_level should serialize");
+        assert!(json.contains("0.65"), "courage_level should serialize");
+        assert!(json.contains("-0.15"), "tension should serialize");
+        assert!(
+            json.contains("0.88"),
+            "calibration_quality should serialize"
+        );
+
+        // Round-trip
+        let decoded: TraceInputs = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.fear_level, Some(0.42));
+        assert_eq!(decoded.courage_level, Some(0.65));
+    }
+
+    #[test]
+    fn test_trace_inputs_phi_sim_fields_none_serialize() {
+        let inputs = TraceInputs {
+            drone_ids: vec![],
+            regime: "Patrol".into(),
+            metrics: serde_json::Value::Null,
+            context: serde_json::Value::Null,
+            fear_level: None,
+            courage_level: None,
+            tension: None,
+            calibration_quality: None,
+        };
+        let json = serde_json::to_string(&inputs).unwrap();
+        // None fields should serialize as null
+        let decoded: TraceInputs = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.fear_level, None);
+        assert_eq!(decoded.tension, None);
     }
 }

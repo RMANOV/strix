@@ -84,6 +84,23 @@ impl Default for FormationConfig {
     }
 }
 
+impl FormationConfig {
+    /// Return a copy with spacing/deadband modulated by FearAxes.threshold.
+    /// threshold ∈ [0.3, 1.0]:
+    ///   threshold=1.0 → spacing×0.8, deadband×0.5 (tight, disciplined)
+    ///   threshold=0.3 → spacing×1.5, deadband×2.0 (loose, survival-oriented)
+    pub fn fear_adjusted(&self, threshold: f64) -> Self {
+        let t = threshold.clamp(0.3, 1.0);
+        let spacing_scale = 1.8 - t; // 1.0→0.8, 0.3→1.5
+        let deadband_scale = 2.5 - 2.0 * t; // 1.0→0.5, 0.3→1.9
+        Self {
+            spacing: self.spacing * spacing_scale,
+            deadband: self.deadband * deadband_scale,
+            ..self.clone()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Geometry helpers
 // ---------------------------------------------------------------------------
@@ -887,6 +904,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Wedge is tighter than Vee ──────────────────────────────────────────
+
+    // ── Fear-adjusted formation ─────────────────────────────────────────
+
+    #[test]
+    fn test_fear_adjusted_high_threshold() {
+        let config = default_config();
+        let adjusted = config.fear_adjusted(1.0);
+        assert!((adjusted.spacing - config.spacing * 0.8).abs() < 1e-9);
+        assert!((adjusted.deadband - config.deadband * 0.5).abs() < 1e-9);
+        assert_eq!(adjusted.vee_angle_deg, config.vee_angle_deg); // unchanged
+        assert_eq!(adjusted.max_correction_speed, config.max_correction_speed); // unchanged
+    }
+
+    #[test]
+    fn test_fear_adjusted_low_threshold() {
+        let config = default_config();
+        let adjusted = config.fear_adjusted(0.3);
+        assert!((adjusted.spacing - config.spacing * 1.5).abs() < 1e-9);
+        assert!((adjusted.deadband - config.deadband * 1.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_fear_adjusted_clamps() {
+        let config = default_config();
+        let a1 = config.fear_adjusted(0.0); // clamps to 0.3
+        let a2 = config.fear_adjusted(0.3);
+        assert!((a1.spacing - a2.spacing).abs() < 1e-9);
     }
 
     // ── Wedge is tighter than Vee ──────────────────────────────────────────
