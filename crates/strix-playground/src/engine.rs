@@ -402,6 +402,18 @@ impl Engine {
                 ));
             }
         }
+
+        // Record temporal anomalies from multi-horizon managers.
+        #[cfg(feature = "temporal")]
+        for (horizon, direction, _value) in &decision.temporal_anomalies {
+            self.timeline.push(TimelineEntry::new(
+                self.sim_time,
+                TimelineEventType::TemporalAnomaly {
+                    horizon: horizon.clone(),
+                    direction: *direction,
+                },
+            ));
+        }
     }
 
     // ── Snapshot for JSON export ──────────────────────────────────────────
@@ -524,6 +536,19 @@ impl Engine {
             .filter(|e| matches!(e.event_type, TimelineEventType::ForcedEvade { .. }))
             .count();
 
+        #[cfg(feature = "temporal")]
+        let temporal_anomaly_count = self
+            .timeline
+            .iter()
+            .filter(|e| matches!(e.event_type, TimelineEventType::TemporalAnomaly { .. }))
+            .count();
+        #[cfg(feature = "temporal")]
+        let temporal_constraint_count = self
+            .timeline
+            .iter()
+            .filter(|e| matches!(e.event_type, TimelineEventType::TemporalConstraint { .. }))
+            .count();
+
         let max_intent_score = self
             .timeline
             .iter()
@@ -566,6 +591,10 @@ impl Engine {
                 battery_min
             },
             battery_mean,
+            #[cfg(feature = "temporal")]
+            temporal_anomaly_count,
+            #[cfg(feature = "temporal")]
+            temporal_constraint_count,
         };
 
         let tick_data = if self.config.record_snapshots {

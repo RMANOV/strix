@@ -36,6 +36,9 @@ use strix_xai::trace::{DecisionTrace, DecisionType, TraceInputs, TraceRecorder};
 
 use crate::convert;
 
+#[cfg(feature = "temporal")]
+use strix_core::temporal::{HorizonConstraint, TemporalManager};
+
 /// Configuration for the swarm orchestrator.
 #[derive(Debug, Clone)]
 pub struct SwarmConfig {
@@ -154,6 +157,8 @@ pub struct SwarmDecision {
     pub per_drone_fear: HashMap<u32, f64>,
     /// Phi-sim calibration quality [0, 1] (0 if phi-sim disabled).
     pub calibration_quality: f64,
+    /// Multi-horizon temporal anomalies: (horizon_name, direction, cusum_value).
+    pub temporal_anomalies: Vec<(String, i32, f64)>,
 }
 
 /// The swarm orchestrator — chains all STRIX crates together.
@@ -217,6 +222,9 @@ pub struct SwarmOrchestrator {
     pub cbf_config: Option<CbfConfig>,
     /// Active no-fly zones.
     pub no_fly_zones: Vec<NoFlyZone>,
+    /// Per-drone multi-horizon temporal managers (replaces nav_filter step when active).
+    #[cfg(feature = "temporal")]
+    pub temporal_managers: HashMap<u32, TemporalManager>,
 }
 
 impl SwarmOrchestrator {
@@ -282,6 +290,14 @@ impl SwarmOrchestrator {
             ew_engine: EwEngine::new(),
             cbf_config: config.cbf_config.clone(),
             no_fly_zones: config.no_fly_zones.clone(),
+            #[cfg(feature = "temporal")]
+            temporal_managers: {
+                let mut tm = HashMap::new();
+                for &id in drone_ids {
+                    tm.insert(id, TemporalManager::new(Vector3::zeros()));
+                }
+                tm
+            },
             config,
         }
     }
@@ -309,6 +325,10 @@ impl SwarmOrchestrator {
             ),
         );
         self.gossip.add_peer(NodeId(id));
+
+        #[cfg(feature = "temporal")]
+        self.temporal_managers
+            .insert(id, TemporalManager::new(position));
 
         #[cfg(feature = "phi-sim")]
         if let Some(adapter) = &mut self.fear_adapter {
@@ -400,6 +420,9 @@ impl SwarmOrchestrator {
         self.hysteresis_gates.remove(&drone_id);
         self.prev_closing_rates.remove(&drone_id);
         self.gossip.remove_peer(NodeId(drone_id));
+
+        #[cfg(feature = "temporal")]
+        self.temporal_managers.remove(&drone_id);
 
         #[cfg(feature = "phi-sim")]
         if let Some(adapter) = &mut self.fear_adapter {
@@ -594,78 +617,93 @@ impl SwarmOrchestrator {
             })
             .collect();
 
+        #[cfg(feature = "temporal")]
+        let mut temporal_constraints: HashMap<u32, HorizonConstraint> = HashMap::new();
+
         for (id, telem) in telemetry {
-            if let Some(filter) = self.nav_filters.get_mut(id) {
-                // Apply fear+EW-scaled noise for this tick.
+            if !self.nav_filters.contains_key(id) {
+                continue;
+            }
+
+            // Apply fear+EW-scaled noise for this tick.
+            {
+                let filter = self.nav_filters.get_mut(id).unwrap();
                 filter.noise_cfg = tick_noise.clone();
+            }
 
-                let drone_pos =
-                    Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
+            let drone_pos = Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
 
-                // ── Multi-sensor fusion: build observations from telemetry ──
-                let mut obs = Vec::with_capacity(4);
+            // ── Multi-sensor fusion: build observations from telemetry ──
+            let mut obs = Vec::with_capacity(4);
 
-                // 1. Barometer — constrains vertical position
-                obs.push(strix_core::Observation::Barometer {
-                    altitude: -telem.position[2], // NED: z down, altitude up
-                    timestamp: telem.timestamp,
-                });
+            // 1. Barometer — constrains vertical position
+            obs.push(strix_core::Observation::Barometer {
+                altitude: -telem.position[2], // NED: z down, altitude up
+                timestamp: telem.timestamp,
+            });
 
-                // 2. IMU (velocity as pseudo-acceleration) — constrains velocity
-                obs.push(strix_core::Observation::Imu {
-                    acceleration: Vector3::new(
-                        telem.velocity[0],
-                        telem.velocity[1],
-                        telem.velocity[2],
-                    ),
-                    gyro: None,
-                    timestamp: telem.timestamp,
-                });
+            // 2. IMU (velocity as pseudo-acceleration) — constrains velocity
+            obs.push(strix_core::Observation::Imu {
+                acceleration: Vector3::new(telem.velocity[0], telem.velocity[1], telem.velocity[2]),
+                gyro: None,
+                timestamp: telem.timestamp,
+            });
 
-                // 3. Magnetometer — constrains heading from yaw
-                let yaw = telem.attitude[2];
-                obs.push(strix_core::Observation::Magnetometer {
-                    heading: Vector3::new(yaw.cos(), yaw.sin(), 0.0),
-                    timestamp: telem.timestamp,
-                });
+            // 3. Magnetometer — constrains heading from yaw
+            let yaw = telem.attitude[2];
+            obs.push(strix_core::Observation::Magnetometer {
+                heading: Vector3::new(yaw.cos(), yaw.sin(), 0.0),
+                timestamp: telem.timestamp,
+            });
 
-                // 4. Visual Odometry — position delta from previous tick
-                if let Some(prev) = self.prev_positions.get(id) {
-                    let delta = drone_pos - prev;
-                    // Only use VO if the drone actually moved (avoids noise on stationary)
-                    if delta.norm() > 0.01 {
-                        obs.push(strix_core::Observation::VisualOdometry {
-                            delta_position: delta,
-                            confidence: 0.7,
-                            timestamp: telem.timestamp,
-                        });
-                    }
+            // 4. Visual Odometry — position delta from previous tick
+            if let Some(prev) = self.prev_positions.get(id) {
+                let delta = drone_pos - prev;
+                // Only use VO if the drone actually moved (avoids noise on stationary)
+                if delta.norm() > 0.01 {
+                    obs.push(strix_core::Observation::VisualOdometry {
+                        delta_position: delta,
+                        confidence: 0.7,
+                        timestamp: telem.timestamp,
+                    });
                 }
-                // ── End multi-sensor fusion ─────────────────────────────────
+            }
+            // ── End multi-sensor fusion ─────────────────────────────────
 
-                let bearing = threat_bearings
-                    .get(id)
-                    .copied()
-                    .unwrap_or_else(Vector3::zeros);
+            let bearing = threat_bearings
+                .get(id)
+                .copied()
+                .unwrap_or_else(Vector3::zeros);
 
-                // Run particle filter step with fused observations
+            // Run particle filter step with fused observations
+            #[cfg(feature = "temporal")]
+            {
+                let tm = self.temporal_managers.get_mut(id).unwrap();
+                let (_pos, _vel, _probs, constraint) = tm.step(&obs, &bearing, 1.0);
+                if let Some(c) = constraint {
+                    temporal_constraints.insert(*id, c);
+                }
+            }
+            #[cfg(not(feature = "temporal"))]
+            {
+                let filter = self.nav_filters.get_mut(id).unwrap();
                 let (_pos, _vel, _probs) = filter.step(&obs, &bearing, 1.0, dt);
+            }
 
-                // Store position for next tick's VO delta
-                self.prev_positions.insert(*id, drone_pos);
+            // Store position for next tick's VO delta
+            self.prev_positions.insert(*id, drone_pos);
 
-                let vel = Vector3::new(telem.velocity[0], telem.velocity[1], telem.velocity[2]);
-                fleet_centroid += drone_pos;
-                fleet_heading += vel;
-                alive_count += 1;
+            let vel = Vector3::new(telem.velocity[0], telem.velocity[1], telem.velocity[2]);
+            fleet_centroid += drone_pos;
+            fleet_heading += vel;
+            alive_count += 1;
 
-                // Update signal history for CUSUM
-                let speed = vel.norm();
-                if let Some(history) = self.signal_histories.get_mut(id) {
-                    history.push(speed);
-                    if history.len() > 100 {
-                        history.drain(..50);
-                    }
+            // Update signal history for CUSUM
+            let speed = vel.norm();
+            if let Some(history) = self.signal_histories.get_mut(id) {
+                history.push(speed);
+                if history.len() > 100 {
+                    history.drain(..50);
                 }
             }
         }
@@ -677,6 +715,23 @@ impl SwarmOrchestrator {
         // Fallback heading if fleet is stationary.
         if fleet_heading.norm() < 1e-6 {
             fleet_heading = Vector3::new(1.0, 0.0, 0.0);
+        }
+
+        // Temporal: blend strategic waypoints into fleet centroid.
+        #[cfg(feature = "temporal")]
+        if !temporal_constraints.is_empty() {
+            let mut strategic_waypoint = Vector3::zeros();
+            let mut total_confidence = 0.0;
+            for c in temporal_constraints.values() {
+                strategic_waypoint += c.waypoint * c.confidence;
+                total_confidence += c.confidence;
+            }
+            if total_confidence > 0.0 {
+                strategic_waypoint /= total_confidence;
+                // Blend capped at 0.3 to prevent strategic override.
+                let blend = (total_confidence / temporal_constraints.len() as f64).min(0.3);
+                fleet_centroid = fleet_centroid * (1.0 - blend) + strategic_waypoint * blend;
+            }
         }
 
         // ── 2. Detect regimes (CUSUM + signals) + intent ─────────────────
@@ -790,7 +845,27 @@ impl SwarmOrchestrator {
                 closing_rate,
             };
 
-            let proposed_regime = detect_regime(&signals, regime, &fear_detection_config);
+            // Temporal: bias regime detection when constraint suggests EVADE.
+            #[cfg(feature = "temporal")]
+            let detection_cfg_ref = {
+                if let Some(c) = temporal_constraints.get(id) {
+                    if c.suggested_regime == Regime::Evade && c.confidence > 0.6 {
+                        let mut cfg = fear_detection_config.clone();
+                        // Widen evade envelope: lower threshold for Evade detection.
+                        cfg.evade_distance *= 1.0 + c.confidence * 0.5;
+                        cfg.closing_rate_threshold *= 1.0 - c.confidence * 0.3;
+                        cfg
+                    } else {
+                        fear_detection_config.clone()
+                    }
+                } else {
+                    fear_detection_config.clone()
+                }
+            };
+            #[cfg(not(feature = "temporal"))]
+            let detection_cfg_ref = fear_detection_config.clone();
+
+            let proposed_regime = detect_regime(&signals, regime, &detection_cfg_ref);
 
             // Item A: Route through hysteresis gate instead of direct apply.
             let approved_regime = if let Some(gate) = self.hysteresis_gates.get_mut(id) {
@@ -1089,6 +1164,19 @@ impl SwarmOrchestrator {
                 }
             }
 
+            // Temporal: boost urgency for tasks near constraint waypoints.
+            #[cfg(feature = "temporal")]
+            for task in &mut boosted_tasks {
+                for c in temporal_constraints.values() {
+                    let task_pos = Vector3::new(task.location.x, task.location.y, task.location.z);
+                    let dist = (task_pos - c.waypoint).norm();
+                    if dist < 200.0 {
+                        let proximity = 1.0 - dist / 200.0;
+                        task.urgency *= 1.0 + proximity * c.confidence * 0.5;
+                    }
+                }
+            }
+
             // Build auction drone states from telemetry
             let auction_drones: Vec<strix_auction::DroneState> = telemetry
                 .iter()
@@ -1302,6 +1390,19 @@ impl SwarmOrchestrator {
         self.last_intent_score = max_intent_score;
         self.last_cusum_breaks = cusum_break_count;
 
+        #[cfg(feature = "temporal")]
+        let temporal_anomalies: Vec<(String, i32, f64)> = self
+            .temporal_managers
+            .values()
+            .flat_map(|tm| {
+                tm.check_all_anomalies()
+                    .into_iter()
+                    .map(|(name, _is_break, dir, val)| (name, dir, val))
+            })
+            .collect();
+        #[cfg(not(feature = "temporal"))]
+        let temporal_anomalies: Vec<(String, i32, f64)> = Vec::new();
+
         #[cfg(feature = "phi-sim")]
         if let Some(adapter) = &mut self.fear_adapter {
             // Outcome = weighted survival rate + task assignment rate.
@@ -1373,6 +1474,7 @@ impl SwarmOrchestrator {
             tension: collective_t,
             per_drone_fear,
             calibration_quality,
+            temporal_anomalies,
         }
     }
 

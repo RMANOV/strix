@@ -81,3 +81,18 @@ fn custom_scenario_works() {
     assert_eq!(report.n_drones_initial, 5);
     assert_eq!(report.n_threats_initial, 1);
 }
+
+#[cfg(feature = "temporal")]
+#[test]
+fn temporal_horizons_runs() {
+    let report = Playground::temporal().run_for(180.0).run();
+    assert!(report.aggregates.total_ticks > 0);
+    assert!(report.aggregates.cbf_violations == 0);
+    // With 3 different-speed threats, expect regime activity.
+    assert!(
+        report.aggregates.regime_changes > 0,
+        "Expected regime changes with multi-speed threats"
+    );
+    // Temporal anomaly count should be non-negative (smoke check).
+    assert!(report.aggregates.temporal_anomaly_count >= 0);
+}

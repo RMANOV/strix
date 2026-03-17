@@ -49,6 +49,16 @@ pub enum TimelineEventType {
     },
     WindChanged,
     NfzAdded,
+    #[cfg(feature = "temporal")]
+    TemporalAnomaly {
+        horizon: String,
+        direction: i32,
+    },
+    #[cfg(feature = "temporal")]
+    TemporalConstraint {
+        count: usize,
+        suggested_regime: String,
+    },
 }
 
 /// A single timestamped diagnostic event.
@@ -116,6 +126,21 @@ impl fmt::Display for TimelineEntry {
             }
             TimelineEventType::WindChanged => write!(f, "Wind changed"),
             TimelineEventType::NfzAdded => write!(f, "NFZ added"),
+            #[cfg(feature = "temporal")]
+            TimelineEventType::TemporalAnomaly { horizon, direction } => {
+                write!(f, "TEMPORAL ANOMALY: {} dir={}", horizon, direction)
+            }
+            #[cfg(feature = "temporal")]
+            TimelineEventType::TemporalConstraint {
+                count,
+                suggested_regime,
+            } => {
+                write!(
+                    f,
+                    "Temporal: {} constraints, suggest {}",
+                    count, suggested_regime
+                )
+            }
         }
     }
 }
@@ -142,6 +167,10 @@ pub struct Aggregates {
     pub forced_evade_count: usize,
     pub battery_min: f64,
     pub battery_mean: f64,
+    #[cfg(feature = "temporal")]
+    pub temporal_anomaly_count: usize,
+    #[cfg(feature = "temporal")]
+    pub temporal_constraint_count: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +264,11 @@ impl fmt::Display for BattleReport {
             "  Battery min/mean:  {:.3} / {:.3}",
             a.battery_min, a.battery_mean
         )?;
+        #[cfg(feature = "temporal")]
+        {
+            writeln!(f, "  Temporal anomalies: {}", a.temporal_anomaly_count)?;
+            writeln!(f, "  Temporal constraints: {}", a.temporal_constraint_count)?;
+        }
         writeln!(f)?;
 
         // Per-drone

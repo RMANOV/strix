@@ -90,4 +90,31 @@ impl Playground {
             .lose_drone_at(50.0, 5)
             .lose_drone_at(75.0, 10)
     }
+
+    /// **Temporal Horizons**: 15 drones, multi-speed threats exercise all 3 horizons.
+    ///
+    /// - Slow threat (3 m/s) → detected by H3 strategic (60s horizon)
+    /// - Fast threat (12 m/s) → detected by H1 tactical (0.1s horizon)
+    /// - Orbital threat (5 m/s, circling) → detected by H2 operational (5s horizon)
+    /// - GPS denial 60–120s, drone loss at 90s
+    /// - 180s duration exercises full cascade
+    ///
+    /// Tests: multi-horizon anomaly detection, constraint cascade, regime bias.
+    #[cfg(feature = "temporal")]
+    pub fn temporal() -> Self {
+        let mut pg = Playground::new()
+            .name("Temporal Horizons")
+            .drones(15)
+            .altitude(-50.0)
+            .threats(vec![
+                ThreatSpec::approaching(600.0, 3.0),  // slow → H3
+                ThreatSpec::approaching(300.0, 12.0), // fast → H1
+                ThreatSpec::circling(400.0, 5.0),     // orbital → H2
+            ])
+            .cbf(CbfConfig::default())
+            .jam_at_sec(60.0)
+            .restore_gps_at(120.0);
+        pg = pg.lose_drone_at(90.0, 0);
+        pg
+    }
 }

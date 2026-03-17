@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "Battlefield simulation playground for Strix drone swarm testing"
 
+[features]
+temporal = ["strix-swarm/temporal"]
+
 [dependencies]
 strix-core = { path = "../strix-core" }
 strix-swarm = { path = "../strix-swarm" }
