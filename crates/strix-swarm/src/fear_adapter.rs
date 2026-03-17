@@ -535,6 +535,7 @@ pub fn modulate_detection_config(
 /// | `bias`         | Spacing multiplier: 1.0 + bias * 0.5 (up to +50%)   |
 /// | `speed`        | Correction speed multiplier: 1.0 / speed             |
 /// | `threshold`    | Deadband shrinks: threshold * base (tighter holding) |
+#[cfg(feature = "phi-sim")]
 pub fn modulate_formation_config(
     base: &strix_core::formation::FormationConfig,
     axes: &phi_sim::types::FearAxes,
@@ -560,6 +561,7 @@ pub fn modulate_formation_config(
 ///
 /// Returns `base_multiplier * (1.0 + bias * 0.5)`, scaled by the speed axis
 /// to react faster under high fear.
+#[cfg(feature = "phi-sim")]
 pub fn modulate_ew_severity(base_multiplier: f64, axes: &phi_sim::types::FearAxes) -> f64 {
     // bias [0,1] amplifies the response by up to 50%.
     // speed [1.0, 3.0] further amplifies: sqrt(speed) to avoid over-scaling.
@@ -572,6 +574,7 @@ pub fn modulate_ew_severity(base_multiplier: f64, axes: &phi_sim::types::FearAxe
 /// aggressively) with slower decay (longer memory of threats).
 ///
 /// Returns `(modulated_intensity, modulated_decay)`.
+#[cfg(feature = "phi-sim")]
 pub fn modulate_pheromone(
     intensity: f64,
     decay: f64,

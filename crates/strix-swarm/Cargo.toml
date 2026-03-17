@@ -6,7 +6,7 @@ license.workspace = true
 description = "Integration orchestrator: chains all STRIX crates into a unified swarm tick loop"
 
 [features]
-default = ["phi-sim"]
+default = []
 phi-sim = ["dep:phi-sim"]
 temporal = []
 
