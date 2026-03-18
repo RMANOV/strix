@@ -232,9 +232,7 @@ impl Auctioneer {
                     .sum();
                 cost_matrix[di][si] = -total_score;
             }
-            for si in slot_task_ids.len()..n {
-                cost_matrix[di][si] = 0.0;
-            }
+            cost_matrix[di][slot_task_ids.len()..n].fill(0.0);
         }
         for row in cost_matrix.iter_mut().skip(drone_ids.len()) {
             row.fill(0.0);

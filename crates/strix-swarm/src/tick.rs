@@ -1148,8 +1148,8 @@ impl SwarmOrchestrator {
         }
 
         // ── 4. Run combinatorial auction ─────────────────────────────────
-        let should_auction =
-            self.tick_count % self.config.auction_interval == 0 || self.auctioneer.needs_reauction;
+        let should_auction = self.tick_count.is_multiple_of(self.config.auction_interval)
+            || self.auctioneer.needs_reauction;
 
         if should_auction && !roe_filtered_tasks.is_empty() {
             // Item C: Intent-based urgency boost — high threat intent raises

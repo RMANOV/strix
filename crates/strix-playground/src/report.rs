@@ -290,9 +290,8 @@ impl fmt::Display for BattleReport {
         }
         writeln!(f)?;
 
-        if self.tick_data.is_some() {
-            let n = self.tick_data.as_ref().unwrap().len();
-            writeln!(f, "  [JSON tick data: {} snapshots available]", n)?;
+        if let Some(data) = &self.tick_data {
+            writeln!(f, "  [JSON tick data: {} snapshots available]", data.len())?;
         }
 
         writeln!(f, "=== END REPORT ===")
