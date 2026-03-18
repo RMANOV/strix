@@ -80,7 +80,7 @@ impl Engine {
         let next_threat_id = threats.iter().map(|t| t.id).max().unwrap_or(0) + 1;
 
         let mut sorted_events = events;
-        sorted_events.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap());
+        sorted_events.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
 
         Self {
             fleet,

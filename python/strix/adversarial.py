@@ -219,7 +219,7 @@ class AdversarialEngine:
         Classification is the regime with the highest weighted vote
         across all particles for that track.
         """
-        targets = {threat_id: self._tracks[threat_id]} if threat_id else self._tracks
+        targets = {threat_id: self._tracks[threat_id]} if threat_id is not None else self._tracks
         result = {}
         for tid, particles in targets.items():
             probs = self._regime_probabilities(particles)
@@ -233,7 +233,7 @@ class AdversarialEngine:
         Uses the weighted mean velocity toward the centroid.
         Returns inf if the threat is moving away or stationary.
         """
-        targets = {threat_id: self._tracks[threat_id]} if threat_id else self._tracks
+        targets = {threat_id: self._tracks[threat_id]} if threat_id is not None else self._tracks
         result = {}
         for tid, particles in targets.items():
             est = self._estimate(tid, particles)

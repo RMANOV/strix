@@ -30,7 +30,9 @@ pub fn transition_regimes(
         let u = random_uniform[i];
 
         let mut cum_prob = 0.0;
-        let mut new_regime = 2u8;
+        // Default to current regime (not EVADE) if floating-point cumsum
+        // doesn't reach u due to rounding. Prevents bias toward EVADE.
+        let mut new_regime = r as u8;
 
         for (j, &prob) in transition_matrix[r].iter().enumerate() {
             cum_prob += prob;

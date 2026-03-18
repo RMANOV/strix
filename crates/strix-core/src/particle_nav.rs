@@ -367,7 +367,20 @@ pub fn update_weights_6d(
         }
     }
 
-    // Normalise with underflow protection (same as original).
+    // Detect filter collapse: if max raw weight is effectively zero,
+    // all particles are terrible fits. The 1e-300 rescue below will
+    // produce uniform weights and ESS=N (hiding the collapse from
+    // the resampler). Log a warning so upstream can detect this.
+    let max_raw = weights.iter().cloned().fold(0.0_f64, f64::max);
+    if max_raw < 1e-100 {
+        tracing::warn!(
+            max_weight = max_raw,
+            n_particles = weights.len(),
+            "particle filter collapse: all weights near zero, resetting to uniform"
+        );
+    }
+
+    // Normalise with underflow protection.
     for w in weights.iter_mut() {
         *w += 1e-300;
     }

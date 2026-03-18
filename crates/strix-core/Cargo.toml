@@ -17,6 +17,7 @@ rand.workspace = true
 rand_distr.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [[bench]]
 name = "particle_filter"

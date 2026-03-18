@@ -573,12 +573,15 @@ class MissionBrain:
 
         # Convert assignments to decisions
         decisions: list[Decision] = []
+        # Build a lookup from task_id to task for O(1) access.
+        task_by_id = {t.id: t for t in auction_tasks}
+
         for assignment in result.assignments:
-            # Find the corresponding task's location
+            # Find the corresponding task's location by ID (not index).
             task_pos = None
-            if assignment.task_id < len(auction_tasks):
-                t = auction_tasks[assignment.task_id]
-                task_pos = Vec3(t.id, 0, 0)  # placeholder — get from plan
+            if assignment.task_id in task_by_id:
+                t = task_by_id[assignment.task_id]
+                task_pos = Vec3(t.position[0], t.position[1], t.position[2])
             if self._active_plan and assignment.task_id < len(self._active_plan.assignments):
                 plan_assignment = self._active_plan.assignments[assignment.task_id]
                 task_pos = plan_assignment.target_position

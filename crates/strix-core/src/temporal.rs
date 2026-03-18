@@ -11,6 +11,8 @@
 //! Information cascades downward: H3 sets constraints for H2, H2
 //! provides waypoints for H1.
 
+use std::collections::VecDeque;
+
 use nalgebra::Vector3;
 
 use crate::anomaly::{self, CusumConfig};
@@ -90,7 +92,7 @@ pub struct HorizonFilter {
     /// The underlying particle navigation filter.
     pub filter: ParticleNavFilter,
     /// Rolling history of estimated positions (for CUSUM / Hurst).
-    pub position_history: Vec<f64>,
+    pub position_history: VecDeque<f64>,
     /// Maximum history length.
     pub max_history: usize,
     /// Current best-estimate position.
@@ -108,7 +110,7 @@ impl HorizonFilter {
         Self {
             config,
             filter,
-            position_history: Vec::with_capacity(200),
+            position_history: VecDeque::with_capacity(200),
             max_history: 200,
             current_position: initial_pos,
             current_velocity: Vector3::zeros(),
@@ -132,9 +134,9 @@ impl HorizonFilter {
         self.regime_probs = probs;
 
         // Record position norm for CUSUM monitoring.
-        self.position_history.push(pos.norm());
+        self.position_history.push_back(pos.norm());
         if self.position_history.len() > self.max_history {
-            self.position_history.remove(0);
+            self.position_history.pop_front();
         }
 
         (pos, vel, probs)
@@ -142,8 +144,11 @@ impl HorizonFilter {
 
     /// Check for anomalies at this horizon's time scale.
     pub fn check_anomaly(&self) -> (bool, i32, f64) {
+        // VecDeque may not be contiguous; make_contiguous requires &mut,
+        // so collect into a temp Vec for CUSUM.
+        let history: Vec<f64> = self.position_history.iter().copied().collect();
         anomaly::cusum_test(
-            &self.position_history,
+            &history,
             self.config.cusum_config.threshold_h,
             self.config.cusum_config.min_samples,
         )
@@ -398,7 +403,7 @@ mod tests {
         let cfg = tactical_config();
         let mut h = HorizonFilter::new(cfg, Vector3::zeros());
         // Inject a constant position history manually.
-        h.position_history = vec![10.0; 50];
+        h.position_history = VecDeque::from(vec![10.0; 50]);
         let (is_break, _, _) = h.check_anomaly();
         assert!(!is_break);
     }

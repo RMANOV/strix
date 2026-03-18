@@ -173,29 +173,28 @@ pub fn volatility_compression(
         return (1.0, false, false);
     }
 
-    let mut short_sum = 0.0_f64;
-    let mut short_sum_sq = 0.0_f64;
-    for val in &returns[short_start..returns_n] {
-        short_sum += val;
-        short_sum_sq += val * val;
-    }
-    let short_mean = short_sum / short_count as f64;
-    let short_var = (short_sum_sq / short_count as f64) - (short_mean * short_mean);
-    let short_vol = (f64::max(short_var, 0.0) + 1e-12).sqrt();
+    // Two-pass variance to avoid catastrophic cancellation (E[X²]-E[X]² is unstable).
+    let short_slice = &returns[short_start..returns_n];
+    let short_mean = short_slice.iter().sum::<f64>() / short_count as f64;
+    let short_var = short_slice
+        .iter()
+        .map(|v| (v - short_mean) * (v - short_mean))
+        .sum::<f64>()
+        / short_count as f64;
+    let short_vol = (short_var + 1e-12).sqrt();
 
-    // Long-term volatility.
+    // Long-term volatility (two-pass).
     let long_start = returns_n.saturating_sub(long_window);
     let long_count = returns_n - long_start;
 
-    let mut long_sum = 0.0_f64;
-    let mut long_sum_sq = 0.0_f64;
-    for val in &returns[long_start..returns_n] {
-        long_sum += val;
-        long_sum_sq += val * val;
-    }
-    let long_mean = long_sum / long_count as f64;
-    let long_var = (long_sum_sq / long_count as f64) - (long_mean * long_mean);
-    let long_vol = (f64::max(long_var, 0.0) + 1e-12).sqrt();
+    let long_slice = &returns[long_start..returns_n];
+    let long_mean = long_slice.iter().sum::<f64>() / long_count as f64;
+    let long_var = long_slice
+        .iter()
+        .map(|v| (v - long_mean) * (v - long_mean))
+        .sum::<f64>()
+        / long_count as f64;
+    let long_vol = (long_var + 1e-12).sqrt();
 
     if long_vol < 1e-10 {
         return (1.0, false, false);
@@ -231,12 +230,12 @@ pub fn threat_density_contours(
     assert_eq!(n, weights.len());
 
     if n == 0 {
-        return (f64::NAN, f64::NAN, f64::NAN);
+        return (0.0, 0.0, 0.0);
     }
 
     let total_weight: f64 = weights.iter().sum();
     if total_weight <= 0.0 {
-        return (f64::NAN, f64::NAN, f64::NAN);
+        return (0.0, 0.0, 0.0);
     }
 
     // Weighted centroid distance (≈ VWAP).

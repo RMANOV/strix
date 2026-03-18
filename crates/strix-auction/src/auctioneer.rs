@@ -215,11 +215,12 @@ impl Auctioneer {
 
         let n = drone_ids.len().max(slot_task_ids.len());
 
-        // Build cost matrix.
+        // Build cost matrix. Filter NaN bid scores to prevent corruption.
         let max_score = bids
             .iter()
             .map(|b| b.score)
-            .fold(f64::NEG_INFINITY, f64::max);
+            .filter(|s| s.is_finite())
+            .fold(0.0_f64, f64::max);
         let big_penalty = (max_score.abs() + 1.0) * 10.0;
 
         let mut cost_matrix = vec![vec![0.0f64; n]; n];
@@ -228,7 +229,14 @@ impl Auctioneer {
                 // Super-task score = sum of individual bid scores.
                 let total_score: f64 = slot
                     .iter()
-                    .map(|&tid| bid_map.get(&(did, tid)).copied().unwrap_or(-big_penalty))
+                    .map(|&tid| {
+                        let s = bid_map.get(&(did, tid)).copied().unwrap_or(-big_penalty);
+                        if s.is_finite() {
+                            s
+                        } else {
+                            -big_penalty
+                        }
+                    })
                     .sum();
                 cost_matrix[di][si] = -total_score;
             }

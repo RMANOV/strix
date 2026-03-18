@@ -389,7 +389,7 @@ pub fn formation_quality(
             .iter()
             .enumerate()
             .map(|(i, slot)| (i, (drone_pos - *slot).norm()))
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
             .unwrap(); // safe: unmatched is non-empty
 
         unmatched.swap_remove(best_idx);

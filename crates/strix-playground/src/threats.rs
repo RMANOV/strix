@@ -76,7 +76,7 @@ impl ThreatActor {
 
             ThreatBehavior::Circling { speed, radius } => {
                 // Orbit centroid at fixed radius.
-                let angular_speed = speed / radius;
+                let angular_speed = speed / radius.max(0.01);
                 self.orbit_angle += angular_speed * dt;
                 let target = Vector3::new(
                     fleet_centroid.x + radius * self.orbit_angle.cos(),

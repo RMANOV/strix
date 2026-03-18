@@ -173,6 +173,11 @@ impl LossAnalyzer {
     /// Returns the list of orphaned task IDs that need immediate re-auction.
     pub fn record_loss(&mut self, record: LossRecord) -> Vec<u32> {
         let orphans = record.orphaned_tasks.clone();
+        // Cap loss_records to prevent unbounded memory growth.
+        const MAX_LOSS_RECORDS: usize = 1024;
+        if self.loss_records.len() >= MAX_LOSS_RECORDS {
+            self.loss_records.remove(0);
+        }
         self.loss_records.push(record.clone());
         self.adapt_from_loss(&record);
         orphans
@@ -212,6 +217,12 @@ impl LossAnalyzer {
         }
 
         // 2. Add regime adjustment — increase EVADE probability near kill zone.
+        // Cap regime_adjustments to prevent unbounded memory growth in long missions.
+        const MAX_REGIME_ADJUSTMENTS: usize = 256;
+        if self.regime_adjustments.len() >= MAX_REGIME_ADJUSTMENTS {
+            // Remove oldest adjustment to make room.
+            self.regime_adjustments.remove(0);
+        }
         self.regime_adjustments.push(RegimeAdjustment {
             near: record.position,
             radius: record.classification.default_kill_zone_radius() * 1.5,

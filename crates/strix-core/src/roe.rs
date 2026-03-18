@@ -160,20 +160,14 @@ impl RoeEngine {
     /// Evaluate an engagement request against current ROE.
     ///
     /// Decision priority (highest to lowest):
-    /// 1. Self-defense override — hostile act + override enabled → **Authorized**
-    /// 2. Protected classification — friendly/civilian → **Denied**
+    /// 1. Protected classification — friendly/civilian → **Denied** (absolute, overrides everything)
+    /// 2. Self-defense override — hostile act + override enabled → **Authorized**
     /// 3. Collateral risk cap exceeded → **EscalationRequired**
     /// 4. Below minimum engagement distance → **EscalationRequired**
     /// 5. Posture-specific rules
     pub fn authorize_engagement(&self, ctx: &EngagementContext) -> EngagementAuth {
-        // 1. Self-defense override: hostile act + self_defense_override → always authorized.
-        if self.self_defense_override && ctx.hostile_act {
-            return EngagementAuth::Authorized {
-                conditions: vec!["Self-defense: hostile act confirmed".into()],
-            };
-        }
-
-        // 2. Never engage friendlies or civilians.
+        // 1. ABSOLUTE GUARD: Never engage friendlies or civilians, even in self-defense.
+        // This check MUST come before self-defense override to prevent fratricide.
         if matches!(
             ctx.threat_class,
             ThreatClassification::Friendly | ThreatClassification::Civilian
@@ -183,6 +177,13 @@ impl RoeEngine {
                     "Target classified as {:?} — engagement prohibited",
                     ctx.threat_class
                 ),
+            };
+        }
+
+        // 2. Self-defense override: hostile act + self_defense_override → authorized.
+        if self.self_defense_override && ctx.hostile_act {
+            return EngagementAuth::Authorized {
+                conditions: vec!["Self-defense: hostile act confirmed".into()],
             };
         }
 
@@ -681,5 +682,40 @@ mod tests {
         // Exactly at 0.1 → should be in tight zone
         let suggestion2 = engine.tension_posture_suggestion(0.1);
         assert_eq!(suggestion2, Some(WeaponsPosture::WeaponsTight));
+    }
+
+    // -----------------------------------------------------------------------
+    // Critical regression: self-defense MUST NOT override protected classification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_self_defense_does_not_override_friendly_protection() {
+        // Even under hostile_act + self_defense_override, engaging a Friendly is DENIED.
+        let engine = RoeEngine::new(WeaponsPosture::WeaponsFree);
+        let ctx = EngagementContext {
+            threat_class: ThreatClassification::Friendly,
+            hostile_act: true, // under fire, but target is friendly
+            ..baseline_ctx()
+        };
+        let auth = engine.authorize_engagement(&ctx);
+        assert!(
+            matches!(auth, EngagementAuth::Denied { .. }),
+            "self-defense override MUST NOT authorize engagement of friendly targets"
+        );
+    }
+
+    #[test]
+    fn test_self_defense_does_not_override_civilian_protection() {
+        let engine = RoeEngine::new(WeaponsPosture::WeaponsFree);
+        let ctx = EngagementContext {
+            threat_class: ThreatClassification::Civilian,
+            hostile_act: true, // under fire, but target is civilian
+            ..baseline_ctx()
+        };
+        let auth = engine.authorize_engagement(&ctx);
+        assert!(
+            matches!(auth, EngagementAuth::Denied { .. }),
+            "self-defense override MUST NOT authorize engagement of civilian targets"
+        );
     }
 }

@@ -194,6 +194,13 @@ impl GossipEngine {
         );
     }
 
+    /// Prune stale threats older than `max_age` relative to `now`.
+    /// Also removes resolved threats. Call periodically to prevent unbounded growth.
+    pub fn prune_threats(&mut self, now: f64, max_age: f64) {
+        self.known_threats
+            .retain(|_, t| !t.resolved && (now - t.timestamp) < max_age);
+    }
+
     // -----------------------------------------------------------------------
     // Gossip round
     // -----------------------------------------------------------------------

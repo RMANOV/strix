@@ -477,7 +477,7 @@ impl SwarmOrchestrator {
             let alive = self.nav_filters.len() as u32;
             let initial = (alive + self.loss_analyzer.total_losses() as u32).max(1);
             let fleet_attrition = 1.0 - (alive as f64 / initial as f64);
-            let is_auction_tick = self.tick_count % self.config.auction_interval == 0;
+            let is_auction_tick = self.tick_count % self.config.auction_interval.max(1) == 0;
 
             // Build per-drone fear inputs from available telemetry.
             let per_drone: Vec<(u32, crate::fear_adapter::DroneFearInputs)> = telemetry
@@ -1062,7 +1062,7 @@ impl SwarmOrchestrator {
                             roe_denials += 1;
 
                             let trace =
-                                DecisionTrace::new(self.sim_time, DecisionType::RegimeChange)
+                                DecisionTrace::new(self.sim_time, DecisionType::ThreatResponse)
                                     .with_inputs(TraceInputs {
                                         drone_ids: vec![],
                                         regime: "ROE".to_string(),
@@ -1085,10 +1085,13 @@ impl SwarmOrchestrator {
                             traces_recorded += 1;
                         }
                         EngagementAuth::EscalationRequired { reason, .. } => {
+                            // Escalated tasks MUST NOT proceed to auction without
+                            // human approval — filter them just like denied tasks.
+                            denied_task_ids.push(task.id);
                             roe_escalations += 1;
 
                             let trace =
-                                DecisionTrace::new(self.sim_time, DecisionType::RegimeChange)
+                                DecisionTrace::new(self.sim_time, DecisionType::ThreatResponse)
                                     .with_inputs(TraceInputs {
                                         drone_ids: vec![],
                                         regime: "ROE".to_string(),
@@ -1148,8 +1151,9 @@ impl SwarmOrchestrator {
         }
 
         // ── 4. Run combinatorial auction ─────────────────────────────────
-        let should_auction = self.tick_count.is_multiple_of(self.config.auction_interval)
-            || self.auctioneer.needs_reauction;
+        let auction_interval = self.config.auction_interval.max(1);
+        let should_auction =
+            self.tick_count.is_multiple_of(auction_interval) || self.auctioneer.needs_reauction;
 
         if should_auction && !roe_filtered_tasks.is_empty() {
             // Item C: Intent-based urgency boost — high threat intent raises
@@ -1301,6 +1305,9 @@ impl SwarmOrchestrator {
                 self.sim_time,
             );
         }
+
+        // Prune stale threats to prevent unbounded gossip memory growth.
+        self.gossip.prune_threats(self.sim_time, 300.0);
 
         // ── 6. Update pheromone field ────────────────────────────────────
         self.pheromones.evaporate(self.sim_time);

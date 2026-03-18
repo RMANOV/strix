@@ -106,19 +106,19 @@ impl SimulatedBus {
 
     /// Register a node on the bus.
     pub fn register(&self, node: NodeId) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.inboxes.entry(node).or_default();
     }
 
     /// Create a partition between two nodes.
     pub fn partition(&self, a: NodeId, b: NodeId) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.partitions.push((a, b));
     }
 
     /// Remove a partition.
     pub fn heal_partition(&self, a: NodeId, b: NodeId) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner
             .partitions
             .retain(|&(x, y)| !((x == a && y == b) || (x == b && y == a)));
@@ -126,7 +126,7 @@ impl SimulatedBus {
 
     /// Check if two nodes are partitioned.
     fn is_partitioned(&self, a: NodeId, b: NodeId) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner
             .partitions
             .iter()
@@ -135,20 +135,20 @@ impl SimulatedBus {
 
     /// Deliver a message to a node's inbox.
     fn deliver(&self, target: NodeId, msg: MeshMessage) -> Result<(), CommError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.inboxes.entry(target).or_default().push_back(msg);
         Ok(())
     }
 
     /// Pop next message from a node's inbox.
     fn pop(&self, node: NodeId) -> Option<MeshMessage> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.inboxes.get_mut(&node)?.pop_front()
     }
 
     /// Get all registered nodes.
     fn all_nodes(&self) -> Vec<NodeId> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.inboxes.keys().copied().collect()
     }
 }

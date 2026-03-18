@@ -99,11 +99,20 @@ impl CellData {
 
     /// Deposit and return new concentration.
     fn deposit(&mut self, ptype: PheromoneType, amount: f64, now: f64, decay_rate: f64) -> f64 {
+        // Guard against out-of-order timestamps that would roll back
+        // last_update and corrupt future evaporation calculations.
+        let last = self
+            .last_update
+            .get(&ptype)
+            .copied()
+            .unwrap_or(f64::NEG_INFINITY);
+        let effective_now = now.max(last);
+
         // First evaporate existing.
-        let current = self.get(ptype, now, decay_rate);
+        let current = self.get(ptype, effective_now, decay_rate);
         let new_val = current + amount;
         self.concentrations.insert(ptype, new_val);
-        self.last_update.insert(ptype, now);
+        self.last_update.insert(ptype, effective_now);
         new_val
     }
 
