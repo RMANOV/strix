@@ -418,8 +418,8 @@ impl ThreatTracker {
             let u: f64 = rng.gen();
             let mut cum_prob = 0.0;
             let mut new_regime = 2u8;
-            for j in 0..3 {
-                cum_prob += tm[r][j];
+            for (j, &prob) in tm[r].iter().enumerate() {
+                cum_prob += prob;
                 if u < cum_prob {
                     new_regime = j as u8;
                     break;

@@ -248,7 +248,10 @@ impl TemporalManager {
         let mut constraint = None;
 
         // Strategic update (least frequent).
-        if self.step_count % (self.tactical_per_operational * self.operational_per_strategic) == 0 {
+        if self
+            .step_count
+            .is_multiple_of(self.tactical_per_operational * self.operational_per_strategic)
+        {
             self.strategic.step(observations, threat_bearing, vel_gain);
             // Strategic provides constraint to operational.
             constraint = Some(HorizonConstraint {
@@ -264,7 +267,10 @@ impl TemporalManager {
         }
 
         // Operational update.
-        if self.step_count % self.tactical_per_operational == 0 {
+        if self
+            .step_count
+            .is_multiple_of(self.tactical_per_operational)
+        {
             // Apply strategic constraint as a virtual observation if available.
             self.operational
                 .step(observations, threat_bearing, vel_gain);

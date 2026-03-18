@@ -32,8 +32,8 @@ pub fn transition_regimes(
         let mut cum_prob = 0.0;
         let mut new_regime = 2u8;
 
-        for j in 0..3 {
-            cum_prob += transition_matrix[r][j];
+        for (j, &prob) in transition_matrix[r].iter().enumerate() {
+            cum_prob += prob;
             if u < cum_prob {
                 new_regime = j as u8;
                 break;
@@ -165,8 +165,8 @@ pub fn blend_transition_matrices(
         // Renormalise row.
         let sum: f64 = result[i].iter().sum();
         if sum > 1e-12 {
-            for j in 0..3 {
-                result[i][j] /= sum;
+            for val in &mut result[i] {
+                *val /= sum;
             }
         }
     }

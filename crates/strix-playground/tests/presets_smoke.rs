@@ -93,6 +93,4 @@ fn temporal_horizons_runs() {
         report.aggregates.regime_changes > 0,
         "Expected regime changes with multi-speed threats"
     );
-    // Temporal anomaly count should be non-negative (smoke check).
-    assert!(report.aggregates.temporal_anomaly_count >= 0);
 }

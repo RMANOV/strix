@@ -1,0 +1,7 @@
+# Advisories to ignore in `cargo audit` / rustsec/audit-check
+[advisories]
+ignore = [
+    # gix-features SHA-1 collision (transitive via phi-sim -> burn -> burn-dataset -> gix-tempfile)
+    # phi-sim is optional and never compiled in CI; tracked upstream
+    "RUSTSEC-2025-0021",
+]
