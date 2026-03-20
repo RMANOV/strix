@@ -252,12 +252,15 @@ pub fn predict_particles_6d(
 /// multiplies the corresponding particle weight. Weights are normalised
 /// with underflow protection (`+1e-300`) at the end — the same pattern
 /// used in the original trading filter.
+///
+/// Returns `true` if a weight collapse was detected (all raw weights
+/// were below `1e-100` before rescue).
 pub fn update_weights_6d(
     particles: &Array2<f64>,
     weights: &mut [f64],
     observations: &[Observation],
     sensor_cfg: &SensorConfig,
-) {
+) -> bool {
     let n = particles.nrows();
     assert_eq!(n, weights.len());
 
@@ -372,7 +375,8 @@ pub fn update_weights_6d(
     // produce uniform weights and ESS=N (hiding the collapse from
     // the resampler). Log a warning so upstream can detect this.
     let max_raw = weights.iter().cloned().fold(0.0_f64, f64::max);
-    if max_raw < 1e-100 {
+    let collapsed = max_raw < 1e-100;
+    if collapsed {
         tracing::warn!(
             max_weight = max_raw,
             n_particles = weights.len(),
@@ -388,6 +392,8 @@ pub fn update_weights_6d(
     for w in weights.iter_mut() {
         *w /= total;
     }
+
+    collapsed
 }
 
 // ---------------------------------------------------------------------------
@@ -514,6 +520,13 @@ pub struct ParticleNavFilter {
     pub sensor_cfg: SensorConfig,
     /// ESS threshold below which resampling is triggered (fraction of N).
     pub resample_threshold: f64,
+    /// Number of consecutive weight collapses observed.
+    ///
+    /// Incremented each step where `max_raw < 1e-100`. Reset to 0 on any
+    /// non-collapse step. When this exceeds 2, a hard reset is performed:
+    /// all particles are reseeded tightly around the best available
+    /// observation position.
+    pub collapse_count: u32,
 }
 
 impl ParticleNavFilter {
@@ -535,6 +548,7 @@ impl ParticleNavFilter {
             noise_cfg: ProcessNoiseConfig::default(),
             sensor_cfg: SensorConfig::default(),
             resample_threshold: 0.5,
+            collapse_count: 0,
         }
     }
 
@@ -556,13 +570,56 @@ impl ParticleNavFilter {
             &self.noise_cfg,
         );
 
-        // Update
-        update_weights_6d(
+        // Update (normalises weights internally, logs warning on collapse).
+        // Returns true if weight collapse was detected.
+        let collapse = update_weights_6d(
             &self.particles,
             &mut self.weights,
             observations,
             &self.sensor_cfg,
         );
+
+        if collapse {
+            self.collapse_count += 1;
+            tracing::warn!(
+                collapse_count = self.collapse_count,
+                "particle_nav: weight collapse detected in step (collapse_count={})",
+                self.collapse_count
+            );
+
+            if self.collapse_count > 2 {
+                // Hard reset: reseed all particles tightly around the best
+                // available position observation.  Fall back to the current
+                // weighted mean if no position measurement is available.
+                let recovery_pos = Self::extract_obs_position(observations).unwrap_or_else(|| {
+                    let (p, _, _) = estimate_6d(&self.particles, &self.weights, &self.regimes);
+                    p
+                });
+
+                tracing::warn!(
+                    recovery_pos = ?recovery_pos,
+                    "particle_nav: hard reset — reseeding {} particles around observation",
+                    self.particles.nrows()
+                );
+
+                let n = self.particles.nrows();
+                let mut rng = rand::thread_rng();
+                let normal = Normal::new(0.0, 1.0).unwrap();
+                for i in 0..n {
+                    self.particles[[i, 0]] = recovery_pos.x + normal.sample(&mut rng) * 0.5;
+                    self.particles[[i, 1]] = recovery_pos.y + normal.sample(&mut rng) * 0.5;
+                    self.particles[[i, 2]] = recovery_pos.z + normal.sample(&mut rng) * 0.2;
+                    self.particles[[i, 3]] = 0.0;
+                    self.particles[[i, 4]] = 0.0;
+                    self.particles[[i, 5]] = 0.0;
+                }
+                self.regimes = vec![Regime::Patrol as u8; n];
+                self.weights = vec![1.0 / n as f64; n];
+                self.collapse_count = 0;
+            }
+        } else {
+            self.collapse_count = 0;
+        }
 
         // Estimate
         let (pos, vel, probs) = estimate_6d(&self.particles, &self.weights, &self.regimes);
@@ -579,6 +636,30 @@ impl ParticleNavFilter {
         }
 
         (pos, vel, probs)
+    }
+
+    /// Extract a 3D position from the first position-bearing observation, if any.
+    ///
+    /// Barometer gives altitude (z-axis only); VisualOdometry gives full
+    /// delta-position; other sensors are bearing-only or velocity-based.
+    fn extract_obs_position(observations: &[Observation]) -> Option<Vector3<f64>> {
+        for obs in observations {
+            match obs {
+                Observation::VisualOdometry {
+                    delta_position,
+                    confidence,
+                    ..
+                } if *confidence > 0.1 => {
+                    return Some(*delta_position);
+                }
+                Observation::Barometer { altitude, .. } => {
+                    // Barometer gives z only; x,y unknown — return partial hint.
+                    return Some(Vector3::new(0.0, 0.0, -altitude));
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Current best-estimate state as a [`DroneState`].
@@ -639,7 +720,7 @@ mod tests {
         }];
         let cfg = SensorConfig::default();
 
-        update_weights_6d(&particles, &mut weights, &obs, &cfg);
+        let _collapsed = update_weights_6d(&particles, &mut weights, &obs, &cfg);
 
         let sum: f64 = weights.iter().sum();
         assert!((sum - 1.0).abs() < 1e-10);
@@ -695,5 +776,77 @@ mod tests {
         // Regime probs should sum to ~1
         let sum: f64 = probs.iter().sum();
         assert!((sum - 1.0).abs() < 1e-8);
+    }
+
+    /// Feed divergent telemetry that makes all particle weights collapse to ~0.
+    /// After > 2 consecutive collapses the filter should do a hard reset and
+    /// reseed particles near the observation position.  We verify:
+    ///   1. `collapse_count` resets to 0.
+    ///   2. Weights are uniform (1/N) right after the hard reset.
+    ///   3. Subsequent consistent VO observation gives non-collapsed ESS (< N).
+    #[test]
+    fn collapse_recovery_reseeds_near_observation() {
+        // Filter with VO observation at a known position so extract_obs_position
+        // returns a deterministic recovery anchor.
+        let recovery_pos = Vector3::new(5.0, 3.0, -20.0);
+        let mut filter = ParticleNavFilter::new(100, Vector3::new(0.0, 0.0, 0.0));
+        let tb = Vector3::zeros();
+        let n = filter.particles.nrows() as f64;
+
+        // Divergent obs: barometer claims altitude = 1e9 m.  Particles are near
+        // z = 0, so diff ≈ 1e9 → like ≈ exp(-huge) ≈ 0 → collapse every step.
+        // Include a VO observation at recovery_pos so the hard-reset anchor is
+        // deterministic (extract_obs_position prefers VO over Barometer).
+        let divergent_obs = vec![
+            Observation::VisualOdometry {
+                delta_position: recovery_pos,
+                confidence: 0.9,
+                timestamp: 0.0,
+            },
+            Observation::Barometer {
+                altitude: 1e9,
+                timestamp: 0.0,
+            },
+        ];
+
+        // Run 3 collapse steps.  The Barometer dominates the weight update
+        // (exp(-huge)) so collapse is triggered despite the VO hint.
+        // On step 3, collapse_count exceeds 2 and hard reset fires around
+        // recovery_pos (the VO observation).
+        for _ in 0..3 {
+            filter.step(&divergent_obs, &tb, 1.0, 0.1);
+        }
+
+        // 1. collapse_count must be reset to 0 after hard reset.
+        assert_eq!(
+            filter.collapse_count, 0,
+            "collapse_count should be 0 after hard reset"
+        );
+
+        // 2. Weights should be uniform (1/N) right after the reset.
+        let uniform = 1.0 / n;
+        for &w in &filter.weights {
+            assert!(
+                (w - uniform).abs() < 1e-12,
+                "weights should be uniform after hard reset, got {w}"
+            );
+        }
+
+        // 3. A consistent VO observation near recovery_pos should pull the
+        //    weights away from uniform (ESS < N).  If the filter remained stuck
+        //    ESS would stay near N.
+        let consistent_obs = vec![Observation::VisualOdometry {
+            delta_position: recovery_pos,
+            confidence: 0.95,
+            timestamp: 1.0,
+        }];
+        filter.step(&consistent_obs, &tb, 1.0, 0.1);
+
+        // After resampling the weights are uniform again, but collapse_count
+        // stays 0 — confirming the filter did not collapse again.
+        assert_eq!(
+            filter.collapse_count, 0,
+            "collapse_count should stay 0 on non-collapse step after recovery"
+        );
     }
 }

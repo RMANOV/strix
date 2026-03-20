@@ -303,6 +303,22 @@ impl ThreatTracker {
             }
         }
 
+        // Detect filter collapse: if all raw weights are effectively zero,
+        // the +1e-300 rescue produces uniform weights and ESS=N, hiding the
+        // collapse from the resampler. Log a warning so upstream can react.
+        let max_raw = self.weights.iter().cloned().fold(0.0_f64, f64::max);
+        if max_raw < 1e-100 {
+            let sum_sq: f64 = self.weights.iter().map(|w| w * w).sum();
+            let ess = 1.0 / (sum_sq + 1e-12);
+            tracing::warn!(
+                max_weight = max_raw,
+                ess = ess,
+                threat_id = self.threat_id,
+                "threat_tracker: weight collapse detected, ESS={}",
+                ess
+            );
+        }
+
         // Normalise with underflow protection.
         for w in self.weights.iter_mut() {
             *w += 1e-300;

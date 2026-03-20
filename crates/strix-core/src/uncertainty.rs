@@ -419,6 +419,30 @@ mod tests {
     }
 
     #[test]
+    fn hurst_exactly_20_samples_non_default() {
+        // Random walk with exactly 20 samples — with max_window=20 the early
+        // return guard (`n < max_window`) is not triggered, so we must get a
+        // meaningful (non-default 0.5/0.5) result.
+        let mut values = vec![0.0_f64; 20];
+        let mut rng = 12345u64;
+        for i in 1..20 {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let r = (rng >> 33) as f64 / (1u64 << 31) as f64 - 0.5;
+            values[i] = values[i - 1] + r;
+        }
+        let (h, unc) = hurst_exponent(&values, 5, 20);
+        // Must not be the dead-zone default.
+        assert!(
+            !(h == 0.5 && unc == 0.5),
+            "hurst_exponent returned default (0.5, 0.5) for 20 samples with max_window=20"
+        );
+        // Result must be a valid Hurst exponent in [0, 1].
+        assert!(h >= 0.0 && h <= 1.0, "h={h} out of range");
+    }
+
+    #[test]
     fn volatility_constant_returns_no_compression() {
         let values = vec![1.0; 100];
         let (ratio, compressed, expanding) = volatility_compression(&values, 10, 50);

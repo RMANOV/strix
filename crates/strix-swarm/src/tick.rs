@@ -797,20 +797,23 @@ impl SwarmOrchestrator {
             self.prev_closing_rates.insert(*id, closing_rate);
 
             // Item C: Compute Hurst with uncertainty for intent pipeline.
+            // Adaptive max_window: uses all available data up to 50, eliminating
+            // the blind spot where ticks 20-49 always returned default (0.5, 0.5).
             let (hurst_val, hurst_unc) = self
                 .threat_distance_histories
                 .get(id)
                 .filter(|h| h.len() >= 20)
-                .map(|h| strix_core::uncertainty::hurst_exponent(h, 10, 50))
+                .map(|h| strix_core::uncertainty::hurst_exponent(h, 10, h.len().min(50)))
                 .unwrap_or((0.5, 0.5));
 
             // Intent pipeline uses THREAT distance volatility (threat behavior),
             // while regime detection uses SELF speed volatility (below).
+            // Adaptive long_window mirrors the Hurst fix above.
             let intent_vol_ratio = self
                 .threat_distance_histories
                 .get(id)
                 .filter(|h| h.len() >= 20)
-                .map(|h| strix_core::uncertainty::volatility_compression(h, 10, 50).0)
+                .map(|h| strix_core::uncertainty::volatility_compression(h, 10, h.len().min(50)).0)
                 .unwrap_or(1.0);
 
             // Self-speed volatility for regime detection.
@@ -818,7 +821,7 @@ impl SwarmOrchestrator {
                 .signal_histories
                 .get(id)
                 .filter(|h| h.len() >= 20)
-                .map(|h| strix_core::uncertainty::volatility_compression(h, 10, 50).0)
+                .map(|h| strix_core::uncertainty::volatility_compression(h, 10, h.len().min(50)).0)
                 .unwrap_or(1.0);
 
             // Item C: Run intent detection pipeline.
