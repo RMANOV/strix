@@ -681,8 +681,7 @@ impl SwarmOrchestrator {
             }
 
             // Apply fear+EW-scaled noise for this tick.
-            {
-                let filter = self.nav_filters.get_mut(id).unwrap();
+            if let Some(filter) = self.nav_filters.get_mut(id) {
                 filter.noise_cfg = fear.tick_noise.clone();
             }
 
@@ -733,16 +732,18 @@ impl SwarmOrchestrator {
             // Run particle filter step with fused observations
             #[cfg(feature = "temporal")]
             {
-                let tm = self.temporal_managers.get_mut(id).unwrap();
-                let (_pos, _vel, _probs, constraint) = tm.step(&obs, &bearing, 1.0);
-                if let Some(c) = constraint {
-                    temporal_constraints.insert(*id, c);
+                if let Some(tm) = self.temporal_managers.get_mut(id) {
+                    let (_pos, _vel, _probs, constraint) = tm.step(&obs, &bearing, 1.0);
+                    if let Some(c) = constraint {
+                        temporal_constraints.insert(*id, c);
+                    }
                 }
             }
             #[cfg(not(feature = "temporal"))]
             {
-                let filter = self.nav_filters.get_mut(id).unwrap();
-                let (_pos, _vel, _probs) = filter.step(&obs, &bearing, 1.0, dt);
+                if let Some(filter) = self.nav_filters.get_mut(id) {
+                    let (_pos, _vel, _probs) = filter.step(&obs, &bearing, 1.0, dt);
+                }
             }
 
             // Store position for next tick's VO delta
@@ -923,26 +924,26 @@ impl SwarmOrchestrator {
             };
 
             // Temporal: bias regime detection when constraint suggests EVADE.
+            // Only clone the config when temporal constraint modifies it.
             #[cfg(feature = "temporal")]
-            let detection_cfg_ref = {
-                if let Some(c) = fleet.temporal_constraints.get(id) {
-                    if c.suggested_regime == Regime::Evade && c.confidence > 0.6 {
-                        let mut cfg = fear.fear_detection_config.clone();
-                        // Widen evade envelope: lower threshold for Evade detection.
-                        cfg.evade_distance *= 1.0 + c.confidence * 0.5;
-                        cfg.closing_rate_threshold *= 1.0 - c.confidence * 0.3;
-                        cfg
-                    } else {
-                        fear.fear_detection_config.clone()
-                    }
+            let temporal_cfg_override = fleet.temporal_constraints.get(id).and_then(|c| {
+                if c.suggested_regime == Regime::Evade && c.confidence > 0.6 {
+                    let mut cfg = fear.fear_detection_config.clone();
+                    cfg.evade_distance *= 1.0 + c.confidence * 0.5;
+                    cfg.closing_rate_threshold *= 1.0 - c.confidence * 0.3;
+                    Some(cfg)
                 } else {
-                    fear.fear_detection_config.clone()
+                    None
                 }
-            };
+            });
+            #[cfg(feature = "temporal")]
+            let detection_cfg = temporal_cfg_override
+                .as_ref()
+                .unwrap_or(&fear.fear_detection_config);
             #[cfg(not(feature = "temporal"))]
-            let detection_cfg_ref = fear.fear_detection_config.clone();
+            let detection_cfg = &fear.fear_detection_config;
 
-            let proposed_regime = detect_regime(&signals, regime, &detection_cfg_ref);
+            let proposed_regime = detect_regime(&signals, regime, detection_cfg);
 
             // Item A: Route through hysteresis gate instead of direct apply.
             let approved_regime = if let Some(gate) = self.hysteresis_gates.get_mut(id) {
