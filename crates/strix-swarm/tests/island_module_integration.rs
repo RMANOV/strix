@@ -518,3 +518,116 @@ fn test_roe_escalation_on_close_range_threat() {
         "escalated tasks must not reach auction"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6B: Drone Add/Remove Consistency Test
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Verify that `register_drone` + `handle_drone_loss` maintain consistent
+/// internal state: `nav_filters.len() == regimes.len() == original_count`
+/// throughout the lifecycle, and that ticks do not panic during add/remove.
+#[test]
+fn test_drone_add_remove_consistency() {
+    use strix_auction::{LossClassification, Position as AuctionPosition};
+
+    let original_ids: Vec<u32> = (0..5).collect();
+    let config = SwarmConfig {
+        n_particles: 50,
+        n_threat_particles: 30,
+        ..Default::default()
+    };
+    let mut orch = SwarmOrchestrator::new(&original_ids, config);
+
+    let fleet = SimulatorFleet::new_grid(5, 15.0, SimulatorConfig::default());
+    fleet.arm_all().unwrap();
+    fleet.step_all_n(5);
+
+    // ── Step 1: verify baseline consistency ──────────────────────────────
+    assert_eq!(
+        orch.nav_filters.len(),
+        5,
+        "should have 5 nav filters initially"
+    );
+    assert_eq!(
+        orch.regimes.len(),
+        5,
+        "should have 5 regime entries initially"
+    );
+
+    // Run a few ticks to warm up internal state.
+    let telem = collect_telemetry(&fleet);
+    for _ in 0..3 {
+        orch.tick(&telem, &[], 0.1); // must not panic
+    }
+
+    // ── Step 2: register a new drone (id=10) ─────────────────────────────
+    let new_drone_pos = nalgebra::Vector3::new(30.0, 30.0, -50.0);
+    orch.register_drone(10, new_drone_pos);
+
+    assert_eq!(
+        orch.nav_filters.len(),
+        6,
+        "nav_filters should grow to 6 after register_drone"
+    );
+    assert_eq!(
+        orch.regimes.len(),
+        6,
+        "regimes should grow to 6 after register_drone"
+    );
+
+    // ── Step 3: tick with the new drone present (no telemetry for it —
+    //    that's fine: the tick loop skips drones not in telemetry) ────────
+    orch.tick(&telem, &[], 0.1); // must not panic
+
+    // ── Step 4: remove the new drone via handle_drone_loss ───────────────
+    let loss_pos = AuctionPosition::new(new_drone_pos.x, new_drone_pos.y, new_drone_pos.z);
+    orch.handle_drone_loss(10, loss_pos, LossClassification::Unknown);
+
+    assert_eq!(
+        orch.nav_filters.len(),
+        5,
+        "nav_filters should shrink back to 5 after handle_drone_loss"
+    );
+    assert_eq!(
+        orch.regimes.len(),
+        5,
+        "regimes should shrink back to 5 after handle_drone_loss"
+    );
+
+    // ── Step 5: tick after removal — must not panic ───────────────────────
+    orch.tick(&telem, &[], 0.1);
+
+    // ── Step 6: verify the original 5 drones are still intact ────────────
+    for &id in &original_ids {
+        assert!(
+            orch.nav_filters.contains_key(&id),
+            "original drone {id} must still have a nav filter"
+        );
+        assert!(
+            orch.regimes.contains_key(&id),
+            "original drone {id} must still have a regime entry"
+        );
+    }
+
+    // Removed drone must no longer appear in any tracking structure.
+    assert!(
+        !orch.nav_filters.contains_key(&10),
+        "removed drone 10 must not be in nav_filters"
+    );
+    assert!(
+        !orch.regimes.contains_key(&10),
+        "removed drone 10 must not be in regimes"
+    );
+
+    // Final count invariant: nav_filters == regimes == 5.
+    assert_eq!(
+        orch.nav_filters.len(),
+        orch.regimes.len(),
+        "nav_filters.len() must always equal regimes.len()"
+    );
+    assert_eq!(
+        orch.nav_filters.len(),
+        original_ids.len(),
+        "final count must equal original 5 drones"
+    );
+}

@@ -745,6 +745,146 @@ mod tests {
         assert!((sum - 1.0).abs() < 1e-8);
     }
 
+    // ── 6A: Property-style hardening tests ───────────────────────────────
+
+    /// weights_sum_to_one_after_step: after a full predict-update-resample
+    /// cycle the importance weights must form a valid probability distribution.
+    #[test]
+    fn weights_sum_to_one_after_step() {
+        let mut filter = ParticleNavFilter::new(200, Vector3::new(10.0, -5.0, -30.0));
+        let obs = vec![
+            Observation::Barometer {
+                altitude: 30.0,
+                timestamp: 0.0,
+            },
+            Observation::Imu {
+                acceleration: Vector3::new(0.5, -0.2, 0.1),
+                gyro: None,
+                timestamp: 0.0,
+            },
+        ];
+        let tb = Vector3::new(0.0, 1.0, 0.0);
+        let _result = filter.step(&obs, &tb, 2.0, 0.05);
+
+        let sum: f64 = filter.weights.iter().sum();
+        assert!(
+            (sum - 1.0).abs() < 1e-10,
+            "weights must sum to 1.0 after step, got {sum}"
+        );
+        // All weights must be non-negative.
+        for &w in &filter.weights {
+            assert!(w >= 0.0, "weight must be non-negative, got {w}");
+        }
+    }
+
+    /// ess_in_valid_range: ESS must always satisfy 1 ≤ ESS ≤ N.
+    ///
+    /// ESS = 1 would mean complete particle degeneracy (single particle carries
+    /// all weight); ESS = N means uniform weights (maximum diversity).
+    #[test]
+    fn ess_in_valid_range() {
+        let n = 150usize;
+        let mut filter = ParticleNavFilter::new(n, Vector3::new(0.0, 0.0, -50.0));
+        let obs = vec![Observation::Barometer {
+            altitude: 50.0,
+            timestamp: 0.0,
+        }];
+        let tb = Vector3::zeros();
+        filter.step(&obs, &tb, 1.0, 0.1);
+
+        let ess = effective_sample_size(&filter.weights);
+        assert!(ess >= 1.0 - 1e-9, "ESS must be >= 1.0, got {ess}");
+        assert!(ess <= n as f64 + 1e-9, "ESS must be <= N={n}, got {ess}");
+    }
+
+    /// position_variance_finite: the weighted position variance must be finite
+    /// and non-negative after any step, even with noisy observations.
+    #[test]
+    fn position_variance_finite() {
+        let mut filter = ParticleNavFilter::new(100, Vector3::new(3.0, -7.0, -20.0));
+        // Use multiple sensor types to stress the update step.
+        let obs = vec![
+            Observation::Barometer {
+                altitude: 20.0,
+                timestamp: 0.1,
+            },
+            Observation::Imu {
+                acceleration: Vector3::new(1.0, 0.5, -0.3),
+                gyro: None,
+                timestamp: 0.1,
+            },
+            Observation::Magnetometer {
+                heading: Vector3::new(1.0, 0.0, 0.0),
+                timestamp: 0.1,
+            },
+        ];
+        let tb = Vector3::new(1.0, 0.0, 0.0);
+        let (pos, _vel, _probs) = filter.step(&obs, &tb, 1.0, 0.1);
+
+        let var = position_variance(&filter.particles, &filter.weights, &pos);
+        assert!(
+            var.is_finite(),
+            "position variance must be finite, got {var}"
+        );
+        assert!(
+            var >= 0.0,
+            "position variance must be non-negative, got {var}"
+        );
+        // Individual components must also be finite.
+        assert!(pos.x.is_finite(), "mean x must be finite");
+        assert!(pos.y.is_finite(), "mean y must be finite");
+        assert!(pos.z.is_finite(), "mean z must be finite");
+    }
+
+    /// regime_probabilities_sum_to_one: after a step with real observations
+    /// the regime probability vector must be a valid probability distribution.
+    ///
+    /// This is a more thorough version of the basic check in `nav_filter_step`
+    /// — it verifies the invariant across multiple steps and with diverse sensors.
+    #[test]
+    fn regime_probabilities_sum_to_one_after_step() {
+        let mut filter = ParticleNavFilter::new(100, Vector3::new(0.0, 0.0, -50.0));
+        let observations_sequence = [
+            vec![Observation::Barometer {
+                altitude: 50.0,
+                timestamp: 0.0,
+            }],
+            vec![
+                Observation::Imu {
+                    acceleration: Vector3::new(0.3, 0.1, 0.0),
+                    gyro: None,
+                    timestamp: 0.1,
+                },
+                Observation::Magnetometer {
+                    heading: Vector3::new(0.7071, 0.7071, 0.0),
+                    timestamp: 0.1,
+                },
+            ],
+            vec![Observation::Rangefinder {
+                distance: 50.0,
+                direction: Vector3::new(0.0, 0.0, -1.0),
+                timestamp: 0.2,
+            }],
+        ];
+
+        let tb = Vector3::new(0.5, 0.5, 0.0);
+        for (step, obs) in observations_sequence.iter().enumerate() {
+            let (_pos, _vel, probs) = filter.step(obs, &tb, 1.0, 0.1);
+            let sum: f64 = probs.iter().sum();
+            assert!(
+                (sum - 1.0).abs() < 1e-8,
+                "regime probs must sum to 1.0 at step {step}, got {sum}"
+            );
+            // Each individual probability must be in [0, 1].
+            for (i, &p) in probs.iter().enumerate() {
+                assert!(
+                    (0.0..=1.0 + 1e-10).contains(&p),
+                    "regime prob[{i}]={p} out of [0,1] at step {step}"
+                );
+            }
+        }
+    }
+
     /// Feed divergent telemetry that makes all particle weights collapse to ~0.
     /// After > 2 consecutive collapses the filter should do a hard reset and
     /// reseed particles near the observation position.  We verify:
