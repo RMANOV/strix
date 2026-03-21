@@ -11,11 +11,13 @@
 
 use nalgebra::Vector3;
 use ndarray::Array2;
-use rand::Rng;
 use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 
+use crate::particle_common::{self, normalize_weights};
 use crate::state::{DroneState, Observation, Regime, SensorConfig};
+
+pub use crate::particle_common::effective_sample_size;
 
 // ---------------------------------------------------------------------------
 // Process noise profiles per regime (position, velocity std-devs in m, m/s)
@@ -385,13 +387,7 @@ pub fn update_weights_6d(
     }
 
     // Normalise with underflow protection.
-    for w in weights.iter_mut() {
-        *w += 1e-300;
-    }
-    let total: f64 = weights.iter().sum();
-    for w in weights.iter_mut() {
-        *w /= total;
-    }
+    normalize_weights(weights);
 
     collapsed
 }
@@ -402,8 +398,9 @@ pub fn update_weights_6d(
 
 /// O(N) systematic resampling for 6D particles.
 ///
-/// Returns `(new_particles, new_regimes)` with uniform weights `1/N`.
-/// Same two-pointer algorithm as the original `systematic_resample`.
+/// Returns `(new_particles, new_regimes, new_weights)` with uniform weights
+/// `1/N`.  Delegates to [`particle_common::systematic_resample_6d`] for the
+/// core algorithm.
 pub fn systematic_resample_6d(
     particles: &Array2<f64>,
     regimes: &[u8],
@@ -414,35 +411,11 @@ pub fn systematic_resample_6d(
     assert_eq!(particles.nrows(), n);
     assert_eq!(regimes.len(), n);
 
-    // Cumulative sum of weights.
-    let mut cumsum = vec![0.0_f64; n];
-    cumsum[0] = weights[0];
-    for i in 1..n {
-        cumsum[i] = cumsum[i - 1] + weights[i];
-    }
-    cumsum[n - 1] = 1.0; // pin last element
-
-    let step = 1.0 / n as f64;
-    let start_offset: f64 = rand::thread_rng().gen_range(0.0..step);
-
-    let mut new_particles = Array2::<f64>::zeros((n, 6));
-    let mut new_regimes = vec![0u8; n];
-    let uniform_weight = 1.0 / n as f64;
-
-    let mut j = 0_usize;
-    for i in 0..n {
-        let pos = start_offset + step * i as f64;
-        while j < n - 1 && cumsum[j] < pos {
-            j += 1;
-        }
-        for k in 0..6 {
-            new_particles[[i, k]] = particles[[j, k]];
-        }
-        new_regimes[i] = regimes[j];
-    }
-
-    let uniform_weights = vec![uniform_weight; n];
-    (new_particles, new_regimes, uniform_weights)
+    let mut new_particles = particles.clone();
+    let mut new_regimes = regimes.to_vec();
+    let mut new_weights = weights.to_vec();
+    particle_common::systematic_resample_6d(&mut new_particles, &mut new_weights, &mut new_regimes);
+    (new_particles, new_regimes, new_weights)
 }
 
 // ---------------------------------------------------------------------------
@@ -480,12 +453,6 @@ pub fn estimate_6d(
     }
 
     (mean_pos, mean_vel, regime_probs)
-}
-
-/// Effective Sample Size: `ESS = 1 / sum(w^2)`.
-pub fn effective_sample_size(weights: &[f64]) -> f64 {
-    let sum_sq: f64 = weights.iter().map(|w| w * w).sum();
-    1.0 / (sum_sq + 1e-12)
 }
 
 /// Compute weighted position variance (scalar) across all 3 axes.

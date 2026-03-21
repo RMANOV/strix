@@ -18,6 +18,7 @@ use rand::Rng;
 use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 
+use crate::particle_common::{effective_sample_size, normalize_weights, systematic_resample_6d};
 use crate::state::{ThreatRegime, ThreatState};
 
 // ---------------------------------------------------------------------------
@@ -308,8 +309,7 @@ impl ThreatTracker {
         // collapse from the resampler. Log a warning so upstream can react.
         let max_raw = self.weights.iter().cloned().fold(0.0_f64, f64::max);
         if max_raw < 1e-100 {
-            let sum_sq: f64 = self.weights.iter().map(|w| w * w).sum();
-            let ess = 1.0 / (sum_sq + 1e-12);
+            let ess = effective_sample_size(&self.weights);
             tracing::warn!(
                 max_weight = max_raw,
                 ess = ess,
@@ -320,13 +320,7 @@ impl ThreatTracker {
         }
 
         // Normalise with underflow protection.
-        for w in self.weights.iter_mut() {
-            *w += 1e-300;
-        }
-        let total: f64 = self.weights.iter().sum();
-        for w in self.weights.iter_mut() {
-            *w /= total;
-        }
+        normalize_weights(&mut self.weights);
     }
 
     /// Weighted mean threat position + velocity + regime probabilities.
@@ -363,44 +357,18 @@ impl ThreatTracker {
     /// Resample threat particles when ESS is too low.
     pub fn resample_if_needed(&mut self, ess_threshold_frac: f64) {
         let n = self.weights.len();
-        let sum_sq: f64 = self.weights.iter().map(|w| w * w).sum();
-        let ess = 1.0 / (sum_sq + 1e-12);
+        let ess = effective_sample_size(&self.weights);
         if ess < ess_threshold_frac * n as f64 {
             self.resample();
         }
     }
 
     /// Force a systematic resample.
+    ///
+    /// Delegates to [`particle_common::systematic_resample_6d`] for the
+    /// core O(N) systematic resampling algorithm.
     pub fn resample(&mut self) {
-        let n = self.weights.len();
-        let mut cumsum = vec![0.0_f64; n];
-        cumsum[0] = self.weights[0];
-        for i in 1..n {
-            cumsum[i] = cumsum[i - 1] + self.weights[i];
-        }
-        cumsum[n - 1] = 1.0;
-
-        let step = 1.0 / n as f64;
-        let start: f64 = rand::thread_rng().gen_range(0.0..step);
-
-        let mut new_particles = Array2::<f64>::zeros((n, 6));
-        let mut new_regimes = vec![0u8; n];
-
-        let mut j = 0_usize;
-        for i in 0..n {
-            let pos = start + step * i as f64;
-            while j < n - 1 && cumsum[j] < pos {
-                j += 1;
-            }
-            for k in 0..6 {
-                new_particles[[i, k]] = self.particles[[j, k]];
-            }
-            new_regimes[i] = self.regimes[j];
-        }
-
-        self.particles = new_particles;
-        self.regimes = new_regimes;
-        self.weights = vec![1.0 / n as f64; n];
+        systematic_resample_6d(&mut self.particles, &mut self.weights, &mut self.regimes);
     }
 
     /// Convert the current estimate to a [`ThreatState`].

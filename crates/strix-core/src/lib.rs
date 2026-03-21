@@ -25,6 +25,7 @@ pub mod fleet_metrics;
 pub mod formation;
 pub mod hysteresis;
 pub mod intent;
+pub mod particle_common;
 pub mod particle_nav;
 pub mod regime;
 pub mod roe;

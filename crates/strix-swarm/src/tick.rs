@@ -959,21 +959,7 @@ impl SwarmOrchestrator {
 
         // EW ForceEvade override: if active EW demands evasion, force all drones to EVADE.
         if fear.ew_force_evade {
-            let drone_ids: Vec<u32> = self.regimes.keys().copied().collect();
-            for drone_id in drone_ids {
-                if self.regimes.get(&drone_id).copied() != Some(Regime::Evade) {
-                    if let Some(gate) = self.hysteresis_gates.get_mut(&drone_id) {
-                        gate.force_transition(Regime::Evade, self.sim_time);
-                    }
-                    let old = self
-                        .regimes
-                        .insert(drone_id, Regime::Evade)
-                        .unwrap_or(Regime::Patrol);
-                    if old != Regime::Evade {
-                        regime_changes.push((drone_id, old, Regime::Evade));
-                    }
-                }
-            }
+            self.force_all_evade(&mut regime_changes);
         }
 
         // Item B.2: Check attrition risk level — force EVADE if Retreat/Survival.
@@ -987,21 +973,7 @@ impl SwarmOrchestrator {
                 risk_level,
                 strix_auction::RiskLevel::Retreat | strix_auction::RiskLevel::Survival
             ) {
-                let drone_ids: Vec<u32> = self.regimes.keys().copied().collect();
-                for drone_id in drone_ids {
-                    if self.regimes.get(&drone_id).copied() != Some(Regime::Evade) {
-                        if let Some(gate) = self.hysteresis_gates.get_mut(&drone_id) {
-                            gate.force_transition(Regime::Evade, self.sim_time);
-                        }
-                        let old = self
-                            .regimes
-                            .insert(drone_id, Regime::Evade)
-                            .unwrap_or(Regime::Patrol);
-                        if old != Regime::Evade {
-                            regime_changes.push((drone_id, old, Regime::Evade));
-                        }
-                    }
-                }
+                self.force_all_evade(&mut regime_changes);
             }
         }
 
@@ -1093,28 +1065,7 @@ impl SwarmOrchestrator {
                         EngagementAuth::Denied { reason } => {
                             denied_task_ids.push(task.id);
                             roe_denials += 1;
-
-                            let trace =
-                                DecisionTrace::new(self.sim_time, DecisionType::ThreatResponse)
-                                    .with_inputs(TraceInputs {
-                                        drone_ids: vec![],
-                                        regime: "ROE".to_string(),
-                                        metrics: serde_json::json!({
-                                            "task_id": task.id,
-                                            "threat_distance": threat_dist,
-                                        }),
-                                        context: serde_json::Value::Null,
-                                        fear_level: None,
-                                        courage_level: None,
-                                        tension: None,
-                                        calibration_quality: None,
-                                    })
-                                    .with_output(
-                                        &format!("ROE denied task {}: {}", task.id, reason),
-                                        serde_json::json!({"action": "denied"}),
-                                    )
-                                    .with_confidence(1.0);
-                            self.tracer.record(trace);
+                            self.record_roe_trace(task.id, threat_dist, "denied", &reason, 1.0);
                             traces_recorded += 1;
                         }
                         EngagementAuth::EscalationRequired { reason, .. } => {
@@ -1122,28 +1073,13 @@ impl SwarmOrchestrator {
                             // human approval — filter them just like denied tasks.
                             denied_task_ids.push(task.id);
                             roe_escalations += 1;
-
-                            let trace =
-                                DecisionTrace::new(self.sim_time, DecisionType::ThreatResponse)
-                                    .with_inputs(TraceInputs {
-                                        drone_ids: vec![],
-                                        regime: "ROE".to_string(),
-                                        metrics: serde_json::json!({
-                                            "task_id": task.id,
-                                            "threat_distance": threat_dist,
-                                        }),
-                                        context: serde_json::Value::Null,
-                                        fear_level: None,
-                                        courage_level: None,
-                                        tension: None,
-                                        calibration_quality: None,
-                                    })
-                                    .with_output(
-                                        &format!("ROE escalation for task {}: {}", task.id, reason),
-                                        serde_json::json!({"action": "escalation_required"}),
-                                    )
-                                    .with_confidence(0.7);
-                            self.tracer.record(trace);
+                            self.record_roe_trace(
+                                task.id,
+                                threat_dist,
+                                "escalation_required",
+                                &reason,
+                                0.7,
+                            );
                             traces_recorded += 1;
                         }
                         EngagementAuth::Authorized { .. } => {} // pass through
@@ -1627,6 +1563,56 @@ impl SwarmOrchestrator {
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
+
+    /// Record a ROE decision trace (shared by denial and escalation paths).
+    fn record_roe_trace(
+        &mut self,
+        task_id: u32,
+        threat_dist: f64,
+        action: &str,
+        reason: &str,
+        confidence: f64,
+    ) {
+        let trace = DecisionTrace::new(self.sim_time, DecisionType::ThreatResponse)
+            .with_inputs(TraceInputs {
+                drone_ids: vec![],
+                regime: "ROE".to_string(),
+                metrics: serde_json::json!({
+                    "task_id": task_id,
+                    "threat_distance": threat_dist,
+                }),
+                context: serde_json::Value::Null,
+                fear_level: None,
+                courage_level: None,
+                tension: None,
+                calibration_quality: None,
+            })
+            .with_output(
+                &format!("ROE {} task {}: {}", action, task_id, reason),
+                serde_json::json!({"action": action}),
+            )
+            .with_confidence(confidence);
+        self.tracer.record(trace);
+    }
+
+    /// Force all non-EVADE drones into EVADE regime, bypassing hysteresis.
+    fn force_all_evade(&mut self, regime_changes: &mut Vec<(u32, Regime, Regime)>) {
+        let drone_ids: Vec<u32> = self.regimes.keys().copied().collect();
+        for drone_id in drone_ids {
+            if self.regimes.get(&drone_id).copied() != Some(Regime::Evade) {
+                if let Some(gate) = self.hysteresis_gates.get_mut(&drone_id) {
+                    gate.force_transition(Regime::Evade, self.sim_time);
+                }
+                let old = self
+                    .regimes
+                    .insert(drone_id, Regime::Evade)
+                    .unwrap_or(Regime::Patrol);
+                if old != Regime::Evade {
+                    regime_changes.push((drone_id, old, Regime::Evade));
+                }
+            }
+        }
+    }
 
     fn nearest_threat_bearing(&self, drone_pos: &Vector3<f64>) -> Option<Vector3<f64>> {
         self.threat_trackers
