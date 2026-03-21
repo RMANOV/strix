@@ -472,3 +472,49 @@ fn test_trace_export_json_full_pipeline() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROE Escalation Path (non-zero collateral_risk / close-range threat)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Place a threat closer than min_engagement_distance (50m) to a weapon task.
+/// Under WeaponsTight the ROE distance check should produce EscalationRequired,
+/// which the tick loop counts as `roe_escalations`.
+#[test]
+fn test_roe_escalation_on_close_range_threat() {
+    let ids: Vec<u32> = (0..5).collect();
+    let config = SwarmConfig {
+        auction_interval: 1,
+        n_particles: 50,
+        n_threat_particles: 30,
+        ..Default::default()
+    };
+    let mut orch = SwarmOrchestrator::new(&ids, config);
+    orch.set_weapons_posture(WeaponsPosture::WeaponsTight);
+
+    // Threat placed at (20, 20, 0) — closer than 50m to the weapon task at (20, 20, 50).
+    orch.register_threat(1, Vector3::new(20.0, 20.0, 0.0));
+
+    let fleet = SimulatorFleet::new_grid(5, 15.0, SimulatorConfig::default());
+    fleet.arm_all().unwrap();
+    fleet.step_all_n(10);
+
+    // Weapon task at (20, 20, 50) — distance to threat at (20,20,0) = 50m exactly,
+    // which is NOT below the threshold. Move threat to (20, 20, 10) to be within 40m.
+    orch.register_threat(1, Vector3::new(20.0, 20.0, 10.0));
+
+    let tasks = vec![make_weapon_task(1, [20.0, 20.0, 50.0])];
+
+    let telem = collect_telemetry(&fleet);
+    let decision = orch.tick(&telem, &tasks, 0.1);
+
+    assert!(
+        decision.roe_escalations > 0,
+        "close-range threat should trigger ROE escalation, got 0 escalations"
+    );
+    // Escalated tasks should NOT be assigned.
+    assert!(
+        decision.assignments.is_empty(),
+        "escalated tasks must not reach auction"
+    );
+}

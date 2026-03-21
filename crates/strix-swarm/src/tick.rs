@@ -308,6 +308,10 @@ impl SwarmOrchestrator {
     }
 
     /// Register a new drone mid-simulation.
+    ///
+    /// # Timing contract
+    /// Must be called **between** ticks (not during `tick()`). The new drone
+    /// will be included in the next `tick()` call's telemetry iteration.
     pub fn register_drone(&mut self, id: u32, position: Vector3<f64>) {
         self.nav_filters.insert(
             id,
@@ -378,6 +382,11 @@ impl SwarmOrchestrator {
     }
 
     /// Mark a drone as lost and trigger anti-fragile response.
+    ///
+    /// # Timing contract
+    /// Must be called **between** ticks (not during `tick()`). The drone is
+    /// removed from all tracking structures and its tasks are orphaned for
+    /// re-auction on the next tick.
     pub fn handle_drone_loss(
         &mut self,
         drone_id: u32,
@@ -610,10 +619,10 @@ impl SwarmOrchestrator {
         // Pre-compute threat bearings (avoids borrow conflict with nav_filters)
         let threat_bearings: HashMap<u32, Vector3<f64>> = telemetry
             .iter()
-            .map(|(id, telem)| {
+            .filter_map(|(id, telem)| {
                 let drone_pos =
                     Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
-                (*id, self.nearest_threat_bearing(&drone_pos))
+                self.nearest_threat_bearing(&drone_pos).map(|b| (*id, b))
             })
             .collect();
 
@@ -751,7 +760,9 @@ impl SwarmOrchestrator {
             let drone_pos = Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
 
             // Compute regime signals
-            let (nearest_threat_dist, closing_rate) = self.nearest_threat_metrics(&drone_pos);
+            let (nearest_threat_dist, closing_rate) = self
+                .nearest_threat_metrics(&drone_pos)
+                .unwrap_or((f64::MAX, 0.0));
 
             // Update threat distance history for Hurst exponent computation
             if let Some(tdh) = self.threat_distance_histories.get_mut(id) {
@@ -1054,8 +1065,8 @@ impl SwarmOrchestrator {
                         threat_distance: threat_dist,
                         hostile_act,
                         hostile_intent: threat_regime == strix_core::ThreatRegime::CounterAttack,
-                        collateral_risk: 0.0, // no civilian presence model yet
-                        friendlies_at_risk: 0,
+                        collateral_risk: 0.0, // TODO: wire civilian presence model — escalation paths are tested but not yet live
+                        friendlies_at_risk: 0, // TODO: wire friendly force tracker — escalation paths are tested but not yet live
                         regime: Regime::Engage,
                     };
 
@@ -1490,7 +1501,7 @@ impl SwarmOrchestrator {
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
-    fn nearest_threat_bearing(&self, drone_pos: &Vector3<f64>) -> Vector3<f64> {
+    fn nearest_threat_bearing(&self, drone_pos: &Vector3<f64>) -> Option<Vector3<f64>> {
         self.threat_trackers
             .values()
             .map(|t| {
@@ -1499,10 +1510,9 @@ impl SwarmOrchestrator {
             })
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(pos, _)| convert::threat_bearing(drone_pos, &pos))
-            .unwrap_or_else(Vector3::zeros)
     }
 
-    fn nearest_threat_metrics(&self, drone_pos: &Vector3<f64>) -> (f64, f64) {
+    fn nearest_threat_metrics(&self, drone_pos: &Vector3<f64>) -> Option<(f64, f64)> {
         self.threat_trackers
             .values()
             .map(|t| {
@@ -1518,7 +1528,6 @@ impl SwarmOrchestrator {
                 (dist, closing)
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
-            .unwrap_or((f64::MAX, 0.0))
     }
 
     /// Find nearest threat distance and regime relative to a point.
