@@ -14,7 +14,7 @@ use ndarray::Array2;
 use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 
-use crate::particle_common::{self, normalize_weights};
+use crate::particle_common::{self, gaussian_likelihood, normalize_weights};
 use crate::state::{DroneState, Observation, Regime, SensorConfig};
 
 pub use crate::particle_common::effective_sample_size;
@@ -77,7 +77,11 @@ impl ProcessNoiseConfig {
     /// Higher fear → PATROL noise tightens (disciplined flight, tighter formation),
     /// EVADE noise amplifies (chaotic evasion is harder to target).
     pub fn scaled_by_fear(&self, f: f64) -> Self {
-        let f = f.clamp(0.0, 1.0);
+        let f = if f.is_nan() || f.is_infinite() {
+            0.0
+        } else {
+            f.clamp(0.0, 1.0)
+        };
         let patrol_scale = 1.0 - f * 0.5; // reduce by up to 50%
         let engage_scale = 1.0 + f * 0.3; // increase by up to 30%
         let evade_scale = 1.0 + f; // double at max fear
@@ -147,31 +151,54 @@ pub fn predict_particles_6d(
     dt: f64,
     noise_cfg: &ProcessNoiseConfig,
 ) {
+    let mut scratch: Vec<[f64; 6]> = Vec::new();
+    predict_particles_6d_with_buf(
+        particles,
+        regimes,
+        threat_bearing,
+        vel_gain,
+        dt,
+        noise_cfg,
+        &mut scratch,
+    );
+}
+
+/// Inner implementation of [`predict_particles_6d`] reusing a caller-provided scratch buffer.
+///
+/// The buffer is resized if needed and reused across calls to eliminate per-call heap allocation.
+pub fn predict_particles_6d_with_buf(
+    particles: &mut Array2<f64>,
+    regimes: &[u8],
+    threat_bearing: &Vector3<f64>,
+    vel_gain: f64,
+    dt: f64,
+    noise_cfg: &ProcessNoiseConfig,
+    buf: &mut Vec<[f64; 6]>,
+) {
     let n = particles.nrows();
     assert_eq!(n, regimes.len(), "particle / regime length mismatch");
     assert_eq!(particles.ncols(), 6, "particles must have 6 columns");
 
     let dt_sqrt = dt.max(1e-8).sqrt();
 
-    // Collect rows into owned buffer for safe parallel mutation.
-    let mut buf: Vec<[f64; 6]> = (0..n)
-        .map(|i| {
-            [
-                particles[[i, 0]],
-                particles[[i, 1]],
-                particles[[i, 2]],
-                particles[[i, 3]],
-                particles[[i, 4]],
-                particles[[i, 5]],
-            ]
-        })
-        .collect();
+    // Resize buffer to match particle count (no-op if capacity already sufficient).
+    buf.resize(n, [0.0; 6]);
+    for (i, p) in buf.iter_mut().enumerate() {
+        *p = [
+            particles[[i, 0]],
+            particles[[i, 1]],
+            particles[[i, 2]],
+            particles[[i, 3]],
+            particles[[i, 4]],
+            particles[[i, 5]],
+        ];
+    }
 
     let tb = *threat_bearing;
+    let normal = Normal::new(0.0, 1.0).unwrap();
 
     buf.par_iter_mut().enumerate().for_each(|(i, p)| {
         let mut rng = rand::thread_rng();
-        let normal = Normal::new(0.0, 1.0).unwrap();
 
         let regime = regimes[i];
         let noise = match regime {
@@ -276,7 +303,6 @@ pub fn update_weights_6d(
                 // IMU acceleration → velocity likelihood.
                 // Particle velocity change should be consistent with
                 // observed acceleration.
-                let sigma2 = sensor_cfg.imu_accel_noise * sensor_cfg.imu_accel_noise + 1e-12;
                 for i in 0..n {
                     let vx = particles[[i, 3]];
                     let vy = particles[[i, 4]];
@@ -284,26 +310,22 @@ pub fn update_weights_6d(
                     let diff_sq = (vx - acceleration.x).powi(2)
                         + (vy - acceleration.y).powi(2)
                         + (vz - acceleration.z).powi(2);
-                    let like = (-0.5 * diff_sq / sigma2).exp();
-                    weights[i] *= like;
+                    weights[i] *= gaussian_likelihood(diff_sq, sensor_cfg.imu_accel_noise);
                 }
             }
             Observation::Barometer {
                 altitude,
                 timestamp: _,
             } => {
-                let sigma2 = sensor_cfg.baro_noise * sensor_cfg.baro_noise + 1e-12;
                 for i in 0..n {
-                    let diff = particles[[i, 2]] - altitude;
-                    let like = (-0.5 * diff * diff / sigma2).exp();
-                    weights[i] *= like;
+                    let diff = particles[[i, 2]] + altitude; // NED: z=-alt, so diff = z+alt ≈ 0 for correct particles
+                    weights[i] *= gaussian_likelihood(diff * diff, sensor_cfg.baro_noise);
                 }
             }
             Observation::Magnetometer {
                 heading,
                 timestamp: _,
             } => {
-                let sigma2 = sensor_cfg.mag_noise * sensor_cfg.mag_noise + 1e-12;
                 for i in 0..n {
                     // Heading likelihood: compare velocity direction vs
                     // magnetometer heading vector.
@@ -312,8 +334,7 @@ pub fn update_weights_6d(
                     if speed > 1e-6 {
                         let unit_vel = vel / speed;
                         let diff_sq = (unit_vel - heading).norm_squared();
-                        let like = (-0.5 * diff_sq / sigma2).exp();
-                        weights[i] *= like;
+                        weights[i] *= gaussian_likelihood(diff_sq, sensor_cfg.mag_noise);
                     }
                     // If nearly stationary, heading is uninformative — skip.
                 }
@@ -324,13 +345,11 @@ pub fn update_weights_6d(
                 timestamp: _,
             } => {
                 // Altitude cross-check — rangefinder measures AGL.
-                let sigma2 = sensor_cfg.rangefinder_noise * sensor_cfg.rangefinder_noise + 1e-12;
                 for i in 0..n {
                     // In NED, z is down, so altitude above ground ≈ -z.
                     let alt = -particles[[i, 2]];
                     let diff = alt - distance;
-                    let like = (-0.5 * diff * diff / sigma2).exp();
-                    weights[i] *= like;
+                    weights[i] *= gaussian_likelihood(diff * diff, sensor_cfg.rangefinder_noise);
                 }
             }
             Observation::VisualOdometry {
@@ -356,16 +375,13 @@ pub fn update_weights_6d(
                 emitter_id: _,
                 timestamp: _,
             } => {
-                let sigma2 =
-                    sensor_cfg.radio_bearing_noise * sensor_cfg.radio_bearing_noise + 1e-12;
                 for i in 0..n {
                     let pos = Vector3::new(particles[[i, 0]], particles[[i, 1]], particles[[i, 2]]);
                     let norm = pos.norm();
                     if norm > 1e-6 {
                         let unit_pos = pos / norm;
                         let diff_sq = (unit_pos - bearing).norm_squared();
-                        let like = (-0.5 * diff_sq / sigma2).exp();
-                        weights[i] *= like;
+                        weights[i] *= gaussian_likelihood(diff_sq, sensor_cfg.radio_bearing_noise);
                     }
                 }
             }
@@ -494,6 +510,9 @@ pub struct ParticleNavFilter {
     /// all particles are reseeded tightly around the best available
     /// observation position.
     pub collapse_count: u32,
+    /// Pre-allocated scratch buffer — reused across `step()` calls to avoid
+    /// heap allocation in `predict_particles_6d_with_buf`.
+    scratch_buf: Vec<[f64; 6]>,
 }
 
 impl ParticleNavFilter {
@@ -516,6 +535,7 @@ impl ParticleNavFilter {
             sensor_cfg: SensorConfig::default(),
             resample_threshold: 0.5,
             collapse_count: 0,
+            scratch_buf: vec![[0.0; 6]; n],
         }
     }
 
@@ -527,15 +547,18 @@ impl ParticleNavFilter {
         vel_gain: f64,
         dt: f64,
     ) -> (Vector3<f64>, Vector3<f64>, [f64; 3]) {
-        // Predict
-        predict_particles_6d(
+        // Predict — use pre-allocated scratch buffer to avoid heap allocation.
+        let mut scratch = std::mem::take(&mut self.scratch_buf);
+        predict_particles_6d_with_buf(
             &mut self.particles,
             &self.regimes,
             threat_bearing,
             vel_gain,
             dt,
             &self.noise_cfg,
+            &mut scratch,
         );
+        self.scratch_buf = scratch;
 
         // Update (normalises weights internally, logs warning on collapse).
         // Returns true if weight collapse was detected.
@@ -558,10 +581,16 @@ impl ParticleNavFilter {
                 // Hard reset: reseed all particles tightly around the best
                 // available position observation.  Fall back to the current
                 // weighted mean if no position measurement is available.
-                let recovery_pos = Self::extract_obs_position(observations).unwrap_or_else(|| {
+                //
+                // The current weighted-mean is computed first and used both as
+                // the fallback anchor and as the base for integrating the VO
+                // delta (which is a relative displacement, not an absolute pos).
+                let current_estimate = {
                     let (p, _, _) = estimate_6d(&self.particles, &self.weights, &self.regimes);
                     p
-                });
+                };
+                let recovery_pos = Self::extract_obs_position(observations, current_estimate)
+                    .unwrap_or(current_estimate);
 
                 tracing::warn!(
                     recovery_pos = ?recovery_pos,
@@ -607,9 +636,16 @@ impl ParticleNavFilter {
 
     /// Extract a 3D position from the first position-bearing observation, if any.
     ///
-    /// Barometer gives altitude (z-axis only); VisualOdometry gives full
+    /// `current_pos` is the current weighted-mean particle position and is used
+    /// to integrate the VO delta (which is relative: current − previous) into an
+    /// absolute position estimate.
+    ///
+    /// Barometer gives altitude (z-axis only); VisualOdometry gives a full
     /// delta-position; other sensors are bearing-only or velocity-based.
-    fn extract_obs_position(observations: &[Observation]) -> Option<Vector3<f64>> {
+    fn extract_obs_position(
+        observations: &[Observation],
+        current_pos: Vector3<f64>,
+    ) -> Option<Vector3<f64>> {
         for obs in observations {
             match obs {
                 Observation::VisualOdometry {
@@ -617,11 +653,13 @@ impl ParticleNavFilter {
                     confidence,
                     ..
                 } if *confidence > 0.1 => {
-                    return Some(*delta_position);
+                    // delta_position is a relative displacement (current − previous).
+                    // Add it to the current estimate to get an absolute anchor.
+                    return Some(current_pos + delta_position);
                 }
                 Observation::Barometer { altitude, .. } => {
                     // Barometer gives z only; x,y unknown — return partial hint.
-                    return Some(Vector3::new(0.0, 0.0, -altitude));
+                    return Some(Vector3::new(current_pos.x, current_pos.y, -altitude));
                 }
                 _ => {}
             }
@@ -856,7 +894,11 @@ mod tests {
                     timestamp: 0.1,
                 },
                 Observation::Magnetometer {
-                    heading: Vector3::new(0.7071, 0.7071, 0.0),
+                    heading: Vector3::new(
+                        std::f64::consts::FRAC_1_SQRT_2,
+                        std::f64::consts::FRAC_1_SQRT_2,
+                        0.0,
+                    ),
                     timestamp: 0.1,
                 },
             ],
@@ -887,26 +929,31 @@ mod tests {
 
     /// Feed divergent telemetry that makes all particle weights collapse to ~0.
     /// After > 2 consecutive collapses the filter should do a hard reset and
-    /// reseed particles near the observation position.  We verify:
+    /// reseed particles near the recovered absolute position.  We verify:
     ///   1. `collapse_count` resets to 0.
     ///   2. Weights are uniform (1/N) right after the hard reset.
     ///   3. Subsequent consistent VO observation gives non-collapsed ESS (< N).
     #[test]
     fn collapse_recovery_reseeds_near_observation() {
-        // Filter with VO observation at a known position so extract_obs_position
-        // returns a deterministic recovery anchor.
-        let recovery_pos = Vector3::new(5.0, 3.0, -20.0);
+        // Filter starts at origin.  VO supplies a delta_position (relative
+        // displacement from the previous tick).  extract_obs_position adds this
+        // delta to the current weighted-mean estimate to obtain an absolute
+        // recovery anchor.
+        //
+        // With the filter near origin, current_estimate ≈ (0,0,0), so the
+        // recovery anchor ≈ current_estimate + vo_delta = vo_delta.
+        let vo_delta = Vector3::new(5.0, 3.0, -20.0); // realistic one-tick displacement
         let mut filter = ParticleNavFilter::new(100, Vector3::new(0.0, 0.0, 0.0));
         let tb = Vector3::zeros();
         let n = filter.particles.nrows() as f64;
 
         // Divergent obs: barometer claims altitude = 1e9 m.  Particles are near
         // z = 0, so diff ≈ 1e9 → like ≈ exp(-huge) ≈ 0 → collapse every step.
-        // Include a VO observation at recovery_pos so the hard-reset anchor is
-        // deterministic (extract_obs_position prefers VO over Barometer).
+        // Include a VO observation so the hard-reset anchor is deterministic
+        // (extract_obs_position prefers VO over Barometer).
         let divergent_obs = vec![
             Observation::VisualOdometry {
-                delta_position: recovery_pos,
+                delta_position: vo_delta,
                 confidence: 0.9,
                 timestamp: 0.0,
             },
@@ -919,7 +966,7 @@ mod tests {
         // Run 3 collapse steps.  The Barometer dominates the weight update
         // (exp(-huge)) so collapse is triggered despite the VO hint.
         // On step 3, collapse_count exceeds 2 and hard reset fires around
-        // recovery_pos (the VO observation).
+        // current_estimate + vo_delta.
         for _ in 0..3 {
             filter.step(&divergent_obs, &tb, 1.0, 0.1);
         }
@@ -939,11 +986,13 @@ mod tests {
             );
         }
 
-        // 3. A consistent VO observation near recovery_pos should pull the
-        //    weights away from uniform (ESS < N).  If the filter remained stuck
-        //    ESS would stay near N.
+        // 3. A consistent VO observation whose delta_position matches where the
+        //    particles were reseeded (the weight update compares particle positions
+        //    against delta_position) should give high likelihoods and not collapse.
+        //    After the hard reset, particles are seeded near current_estimate + vo_delta,
+        //    and the weight update treats delta as absolute, so we reuse vo_delta here.
         let consistent_obs = vec![Observation::VisualOdometry {
-            delta_position: recovery_pos,
+            delta_position: vo_delta,
             confidence: 0.95,
             timestamp: 1.0,
         }];

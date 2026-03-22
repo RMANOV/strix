@@ -513,7 +513,11 @@ pub fn modulate_detection_config(
     base: &strix_core::regime::DetectionConfig,
     f: f64,
 ) -> strix_core::regime::DetectionConfig {
-    let f = f.clamp(0.0, 1.0);
+    let f = if f.is_nan() || f.is_infinite() {
+        0.0
+    } else {
+        f.clamp(0.0, 1.0)
+    };
     strix_core::regime::DetectionConfig {
         engage_distance: base.engage_distance * (1.0 + f * 0.5), // 500->750m
         evade_distance: base.evade_distance * (1.0 + f * 2.3),   // 150->500m
@@ -546,8 +550,8 @@ pub fn modulate_formation_config(
         // Vee angle unchanged — geometric identity, not risk-dependent.
         vee_angle_deg: base.vee_angle_deg,
         // Slower corrections under fear: speed axis [1.0, 3.0] -> correction
-        // speed reduced by 1/speed factor.
-        max_correction_speed: base.max_correction_speed / axes.speed,
+        // speed reduced by 1/speed factor. Guard against zero/NaN to avoid div-by-zero.
+        max_correction_speed: base.max_correction_speed / axes.speed.max(0.01),
         // Tighter deadband under fear: threshold axis [0.3, 1.0] scales the
         // deadband down, making the formation hold more strictly.
         deadband: base.deadband * axes.threshold,
@@ -599,7 +603,11 @@ pub fn modulate_pheromone(
 /// Returns `base_fanout + floor(f * base_fanout)`, capped at a sensible
 /// upper bound to avoid flooding the mesh.
 pub fn modulate_gossip_fanout(base_fanout: usize, f: f64) -> usize {
-    let f = f.clamp(0.0, 1.0);
+    let f = if f.is_nan() || f.is_infinite() {
+        0.0
+    } else {
+        f.clamp(0.0, 1.0)
+    };
     let extra = (f * base_fanout as f64).floor() as usize;
     let max_fanout = base_fanout * 3; // hard cap at 3x base
     (base_fanout + extra).min(max_fanout)
@@ -1113,5 +1121,51 @@ mod tests {
             );
             prev = current;
         }
+    }
+
+    // ── NaN/Inf safety guards ─────────────────────────────────────────────
+
+    #[test]
+    fn test_nan_fear_detection_config_defaults_to_zero() {
+        let base = strix_core::regime::DetectionConfig::default();
+        let result_nan = modulate_detection_config(&base, f64::NAN);
+        let result_zero = modulate_detection_config(&base, 0.0);
+        assert!(
+            (result_nan.engage_distance - result_zero.engage_distance).abs() < 1e-12,
+            "NaN fear should produce same output as F=0"
+        );
+        assert!(
+            (result_nan.evade_distance - result_zero.evade_distance).abs() < 1e-12,
+            "NaN fear should produce safe evade_distance"
+        );
+    }
+
+    #[test]
+    fn test_inf_fear_detection_config_defaults_to_zero() {
+        let base = strix_core::regime::DetectionConfig::default();
+        let result_inf = modulate_detection_config(&base, f64::INFINITY);
+        let result_zero = modulate_detection_config(&base, 0.0);
+        assert!(
+            (result_inf.evade_distance - result_zero.evade_distance).abs() < 1e-12,
+            "Inf fear should be treated as F=0, not produce huge distances"
+        );
+    }
+
+    #[test]
+    fn test_nan_fear_gossip_fanout_defaults_to_base() {
+        let result = modulate_gossip_fanout(3, f64::NAN);
+        assert_eq!(
+            result, 3,
+            "NaN fear should produce base fanout: got {result}"
+        );
+    }
+
+    #[test]
+    fn test_inf_fear_gossip_fanout_defaults_to_base() {
+        let result = modulate_gossip_fanout(3, f64::INFINITY);
+        assert_eq!(
+            result, 3,
+            "Inf fear should produce base fanout: got {result}"
+        );
     }
 }

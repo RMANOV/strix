@@ -171,6 +171,46 @@ fn test_roe_denies_weapon_tasks_under_weapons_hold() {
 }
 
 #[test]
+fn test_roe_denies_weapon_tasks_weapons_hold_no_threats() {
+    // Regression: before the fix, weapon tasks bypassed the ROE gate when
+    // threat_trackers was empty, because the gate was inside
+    // `if !threat_trackers.is_empty()`. With WeaponsHold and no registered
+    // threats (no hostile act possible), weapon tasks must be denied.
+    let ids: Vec<u32> = (0..5).collect();
+    let config = SwarmConfig {
+        auction_interval: 1,
+        ..Default::default()
+    };
+    let mut orch = SwarmOrchestrator::new(&ids, config);
+    orch.set_weapons_posture(WeaponsPosture::WeaponsHold);
+    // Deliberately register NO threats.
+
+    let fleet = SimulatorFleet::new_grid(5, 15.0, SimulatorConfig::default());
+    fleet.arm_all().unwrap();
+    fleet.step_all_n(10);
+
+    let tasks = vec![
+        make_weapon_task(1, [50.0, 50.0, 50.0]),
+        make_weapon_task(2, [100.0, 100.0, 50.0]),
+        make_sensor_task(3, [20.0, 20.0, 50.0]),
+    ];
+
+    let telem = collect_telemetry(&fleet);
+    let decision = orch.tick(&telem, &tasks, 0.1);
+
+    // Both weapon tasks must be denied; sensor task must pass.
+    assert_eq!(
+        decision.roe_denials, 2,
+        "both weapon tasks must be denied under WeaponsHold with no threats: got {}",
+        decision.roe_denials
+    );
+    assert_eq!(
+        decision.roe_escalations, 0,
+        "no escalations expected when no threats registered"
+    );
+}
+
+#[test]
 fn test_roe_sensor_tasks_always_pass() {
     let ids: Vec<u32> = (0..5).collect();
     let config = SwarmConfig {

@@ -353,15 +353,6 @@ pub fn momentum_score(values: &[f64], window: usize) -> f64 {
 // Effective Sample Size (sensor diversity health)
 // ---------------------------------------------------------------------------
 
-/// Effective Sample Size from a weight vector.
-///
-/// ESS = 1 / sum(w^2).  A low ESS relative to N indicates weight
-/// degeneracy (particle filter collapse or sensor dominance).
-pub fn effective_sample_size(weights: &[f64]) -> f64 {
-    let sum_sq: f64 = weights.iter().map(|w| w * w).sum();
-    1.0 / (sum_sq + 1e-12)
-}
-
 /// ESS ratio + uncertainty margin + dominance test.
 ///
 /// Returns `(ess_ratio, uncertainty_margin, is_dominant)`.
@@ -375,7 +366,7 @@ pub fn ess_and_uncertainty_margin(
     p_evade: f64,
 ) -> (f64, f64, bool) {
     let n = weights.len();
-    let ess = effective_sample_size(weights);
+    let ess = crate::particle_common::effective_sample_size(weights);
     let ess_ratio = (ess / n as f64).clamp(0.0, 1.0);
 
     let uncertainty_margin = 2.0 * (0.25 / f64::max(ess, 100.0)).sqrt();
@@ -504,7 +495,7 @@ mod tests {
     fn ess_uniform_weights() {
         let n = 100;
         let weights = vec![1.0 / n as f64; n];
-        let ess = effective_sample_size(&weights);
+        let ess = crate::particle_common::effective_sample_size(&weights);
         assert!((ess - n as f64).abs() < 1.0);
     }
 
@@ -512,7 +503,7 @@ mod tests {
     fn ess_degenerate_weights() {
         let mut weights = vec![0.0; 100];
         weights[0] = 1.0;
-        let ess = effective_sample_size(&weights);
+        let ess = crate::particle_common::effective_sample_size(&weights);
         assert!((ess - 1.0).abs() < 0.1);
     }
 }

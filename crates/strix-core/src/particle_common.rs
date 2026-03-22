@@ -36,6 +36,22 @@ pub fn normalize_weights(weights: &mut [f64]) {
 }
 
 // ---------------------------------------------------------------------------
+// Gaussian Likelihood
+// ---------------------------------------------------------------------------
+
+/// Gaussian likelihood kernel: `exp(-0.5 * diff_sq / (sigma² + ε))`.
+///
+/// `diff_sq` is the squared Mahalanobis distance (or squared scalar diff).
+/// `sigma` is the measurement noise standard deviation.
+///
+/// The `+1e-12` epsilon prevents division by zero for zero-noise sensors.
+#[inline]
+pub fn gaussian_likelihood(diff_sq: f64, sigma: f64) -> f64 {
+    let sigma2 = sigma * sigma + 1e-12;
+    (-0.5 * diff_sq / sigma2).exp()
+}
+
+// ---------------------------------------------------------------------------
 // Effective Sample Size
 // ---------------------------------------------------------------------------
 

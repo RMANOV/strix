@@ -36,18 +36,19 @@ const FORMATION: [[f64; 3]; NUM_DRONES] = [
 /// Generate sensor observations simulating GPS availability.
 /// Uses VisualOdometry with high confidence as a GPS proxy.
 fn observations_with_gps(pos: [f64; 3], vel: [f64; 3], t: f64) -> Vec<Observation> {
+    // Simulator uses z-up; particle filter uses NED (z-down). Negate z at boundary.
     vec![
         Observation::VisualOdometry {
-            delta_position: Vector3::new(pos[0], pos[1], pos[2]),
+            delta_position: Vector3::new(pos[0], pos[1], -pos[2]),
             confidence: 0.95,
             timestamp: t,
         },
         Observation::Barometer {
-            altitude: pos[2],
+            altitude: pos[2].abs(), // always positive height above ground
             timestamp: t,
         },
         Observation::Imu {
-            acceleration: Vector3::new(vel[0], vel[1], vel[2]),
+            acceleration: Vector3::new(vel[0], vel[1], -vel[2]),
             gyro: None,
             timestamp: t,
         },
@@ -56,13 +57,14 @@ fn observations_with_gps(pos: [f64; 3], vel: [f64; 3], t: f64) -> Vec<Observatio
 
 /// Generate sensor observations WITHOUT GPS — only IMU, barometer, magnetometer.
 fn observations_gps_denied(pos: [f64; 3], vel: [f64; 3], t: f64) -> Vec<Observation> {
+    // Simulator uses z-up; particle filter uses NED (z-down). Negate z at boundary.
     vec![
         Observation::Barometer {
-            altitude: pos[2],
+            altitude: pos[2].abs(), // always positive height above ground
             timestamp: t,
         },
         Observation::Imu {
-            acceleration: Vector3::new(vel[0], vel[1], vel[2]),
+            acceleration: Vector3::new(vel[0], vel[1], -vel[2]),
             gyro: None,
             timestamp: t,
         },
@@ -97,7 +99,7 @@ fn phase1_gps_denied_navigation() {
     // Initialize particle filters at formation positions.
     let mut filters: Vec<ParticleNavFilter> = FORMATION
         .iter()
-        .map(|pos| ParticleNavFilter::new(PARTICLES, Vector3::new(pos[0], pos[1], pos[2])))
+        .map(|pos| ParticleNavFilter::new(PARTICLES, Vector3::new(pos[0], pos[1], -pos[2]))) // NED
         .collect();
 
     let no_threat = Vector3::zeros();
@@ -118,7 +120,7 @@ fn phase1_gps_denied_navigation() {
     for i in 0..NUM_DRONES {
         let telem = drones[i].get_telemetry().unwrap();
         let state = filters[i].to_drone_state(i as u32);
-        let true_pos = Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
+        let true_pos = Vector3::new(telem.position[0], telem.position[1], -telem.position[2]); // NED
         let error = (state.position - true_pos).norm();
         assert!(
             error < 5.0,
@@ -144,7 +146,7 @@ fn phase1_gps_denied_navigation() {
     for i in 0..NUM_DRONES {
         let telem = drones[i].get_telemetry().unwrap();
         let state = filters[i].to_drone_state(i as u32);
-        let true_pos = Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
+        let true_pos = Vector3::new(telem.position[0], telem.position[1], -telem.position[2]); // NED
         let error = (state.position - true_pos).norm();
 
         let (mean_pos, _, _) = estimate_6d(
@@ -243,19 +245,19 @@ fn phase1_regime_transitions() {
 
 #[test]
 fn phase1_dual_particle_filter() {
-    // Our drone at origin, enemy at [200, 200, 50].
-    let mut friendly = ParticleNavFilter::new(100, Vector3::new(0.0, 0.0, 50.0));
-    let mut enemy = ThreatTracker::new(1, 200, Vector3::new(200.0, 200.0, 50.0));
+    // Our drone at origin, enemy at [200, 200, -50] (NED: z=-50 = 50m altitude).
+    let mut friendly = ParticleNavFilter::new(100, Vector3::new(0.0, 0.0, -50.0));
+    let mut enemy = ThreatTracker::new(1, 200, Vector3::new(200.0, 200.0, -50.0));
 
-    let our_centroid = Vector3::new(0.0, 0.0, 50.0);
+    let our_centroid = Vector3::new(0.0, 0.0, -50.0);
     let no_threat = Vector3::zeros();
 
     let obs_friendly = vec![Observation::Barometer {
-        altitude: 50.0,
+        altitude: 50.0, // positive height above ground
         timestamp: 0.0,
     }];
     let obs_enemy = vec![ThreatObservation::Radar {
-        position: Vector3::new(195.0, 195.0, 50.0),
+        position: Vector3::new(195.0, 195.0, -50.0), // NED
         sigma: 10.0,
         timestamp: 0.0,
     }];
@@ -270,8 +272,8 @@ fn phase1_dual_particle_filter() {
     let threat_state = enemy.to_threat_state();
     let future_pos = enemy.predict_future_threat(10.0);
 
-    // Friendly filter should stay near initial position (0, 0, 50).
-    let initial_pos = Vector3::new(0.0, 0.0, 50.0);
+    // Friendly filter should stay near initial position (0, 0, -50) NED.
+    let initial_pos = Vector3::new(0.0, 0.0, -50.0);
     let friendly_drift = (our_state.position - initial_pos).norm();
     assert!(
         friendly_drift < 20.0,

@@ -183,11 +183,44 @@ impl Auctioneer {
             };
         }
 
-        // Build a bid lookup: (drone_id, task_id) → score.
-        let bid_map: HashMap<(u32, u32), f64> = bids
+        // Build cost matrix. Filter NaN bid scores to prevent corruption.
+        let max_score = bids
             .iter()
-            .map(|b| ((b.drone_id, b.task_id), b.score))
-            .collect();
+            .map(|b| b.score)
+            .filter(|s| s.is_finite())
+            .fold(0.0_f64, f64::max);
+        let big_penalty = (max_score.abs() + 1.0) * 10.0;
+
+        // Build a flat bid lookup: bid_scores[drone_idx * n_tasks + task_idx] → score.
+        // Sentinel value -big_penalty means no bid. drone_ids and all_task_ids are
+        // already sorted+deduped, so binary_search gives O(log N) dense indices.
+        let n_drones = drone_ids.len();
+        let n_tasks = all_task_ids.len();
+        let mut bid_scores = vec![-big_penalty; n_drones * n_tasks];
+        for b in bids {
+            if let (Ok(di), Ok(ti)) = (
+                drone_ids.binary_search(&b.drone_id),
+                all_task_ids.binary_search(&b.task_id),
+            ) {
+                let s = if b.score.is_finite() {
+                    b.score
+                } else {
+                    -big_penalty
+                };
+                bid_scores[di * n_tasks + ti] = s;
+            }
+        }
+
+        // Helper: look up score for (drone_idx, task_id); returns None if sentinel.
+        let lookup = |di: usize, tid: u32| -> Option<f64> {
+            let ti = all_task_ids.binary_search(&tid).ok()?;
+            let s = bid_scores[di * n_tasks + ti];
+            if s <= -big_penalty {
+                None
+            } else {
+                Some(s)
+            }
+        };
 
         // ── Bundle handling ─────────────────────────────────────────────────
         // Collapse bundled tasks into "super-tasks" for the assignment matrix.
@@ -215,28 +248,13 @@ impl Auctioneer {
 
         let n = drone_ids.len().max(slot_task_ids.len());
 
-        // Build cost matrix. Filter NaN bid scores to prevent corruption.
-        let max_score = bids
-            .iter()
-            .map(|b| b.score)
-            .filter(|s| s.is_finite())
-            .fold(0.0_f64, f64::max);
-        let big_penalty = (max_score.abs() + 1.0) * 10.0;
-
         let mut cost_matrix = vec![vec![0.0f64; n]; n];
-        for (di, &did) in drone_ids.iter().enumerate() {
+        for (di, _did) in drone_ids.iter().enumerate() {
             for (si, slot) in slot_task_ids.iter().enumerate() {
                 // Super-task score = sum of individual bid scores.
                 let total_score: f64 = slot
                     .iter()
-                    .map(|&tid| {
-                        let s = bid_map.get(&(did, tid)).copied().unwrap_or(-big_penalty);
-                        if s.is_finite() {
-                            s
-                        } else {
-                            -big_penalty
-                        }
-                    })
+                    .map(|&tid| lookup(di, tid).unwrap_or(-big_penalty))
                     .sum();
                 cost_matrix[di][si] = -total_score;
             }
@@ -258,19 +276,17 @@ impl Auctioneer {
             if di >= drone_ids.len() || si >= slot_task_ids.len() {
                 continue;
             }
-            let did = drone_ids[di];
             let slot = &slot_task_ids[si];
 
             // Check that the drone has valid bids for at least one task in the slot.
-            let has_any_bid = slot.iter().any(|&tid| {
-                bid_map
-                    .get(&(did, tid))
-                    .is_some_and(|&s| s >= self.min_bid_threshold)
-            });
+            let has_any_bid = slot
+                .iter()
+                .any(|&tid| lookup(di, tid).is_some_and(|s| s >= self.min_bid_threshold));
 
             if has_any_bid {
+                let did = drone_ids[di];
                 for &tid in slot {
-                    let score = bid_map.get(&(did, tid)).copied().unwrap_or(0.0);
+                    let score = lookup(di, tid).unwrap_or(0.0);
                     assignments.push(Assignment {
                         drone_id: did,
                         task_id: tid,
@@ -330,11 +346,14 @@ pub fn hungarian(cost: &[Vec<f64>]) -> Vec<usize> {
     // way[j] = column in the shortest-path tree that leads to j.
     let mut way = vec![0usize; n + 1];
 
+    let mut min_v = vec![f64::INFINITY; n + 1];
+    let mut used = vec![false; n + 1];
+
     for i in 1..=n {
         p[0] = i;
         let mut j0: usize = 0;
-        let mut min_v = vec![f64::INFINITY; n + 1];
-        let mut used = vec![false; n + 1];
+        min_v.fill(f64::INFINITY);
+        used.fill(false);
 
         loop {
             used[j0] = true;

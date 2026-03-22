@@ -26,7 +26,9 @@ use strix_core::hysteresis::{HysteresisConfig, HysteresisGate};
 use strix_core::intent::{self, IntentConfig, IntentSignals};
 use strix_core::particle_nav::ParticleNavFilter;
 use strix_core::regime::{detect_regime, DetectionConfig, RegimeSignals};
-use strix_core::roe::{EngagementAuth, EngagementContext, RoeEngine, ThreatClassification};
+use strix_core::roe::{
+    EngagementAuth, EngagementContext, RoeEngine, ThreatClassification, WeaponsPosture,
+};
 use strix_core::threat_tracker::ThreatTracker;
 use strix_core::Regime;
 use strix_mesh::gossip::GossipEngine;
@@ -824,13 +826,18 @@ impl SwarmOrchestrator {
             let drone_pos = Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
 
             // Compute regime signals
-            let (nearest_threat_dist, closing_rate) = self
-                .nearest_threat_metrics(&drone_pos)
-                .unwrap_or((f64::MAX, 0.0));
+            let nearest_threat_metrics = self.nearest_threat_metrics(&drone_pos);
+            let (nearest_threat_dist, closing_rate) =
+                nearest_threat_metrics.unwrap_or((f64::MAX, 0.0));
 
-            // Update threat distance history for Hurst exponent computation
-            if let Some(tdh) = self.threat_distance_histories.get_mut(id) {
-                tdh.push(nearest_threat_dist);
+            // Update threat distance history for Hurst exponent computation.
+            // Only push real distances — f64::MAX from no-threat cases would
+            // pollute the Hurst exponent and momentum score calculations.
+            if let (Some(tdh), Some((real_dist, _))) = (
+                self.threat_distance_histories.get_mut(id),
+                nearest_threat_metrics,
+            ) {
+                tdh.push(real_dist);
                 if tdh.len() > 100 {
                     tdh.drain(..50);
                 }
@@ -1029,61 +1036,92 @@ impl SwarmOrchestrator {
         let mut roe_filtered_tasks: Vec<Task> = tasks.to_vec();
         let mut traces_recorded = 0u32;
 
-        if !tasks.is_empty() && !self.threat_trackers.is_empty() {
+        if !tasks.is_empty() {
             let mut denied_task_ids = Vec::new();
 
-            for task in tasks {
-                if !task.required_capabilities.has_weapon {
-                    continue; // ROE only gates weapon-bearing tasks
-                }
-
-                // Find nearest threat to this task's location.
-                let task_pos = Vector3::new(task.location.x, task.location.y, task.location.z);
-                if let Some((threat_dist, threat_regime)) = self.nearest_threat_to_point(&task_pos)
-                {
-                    let threat_class = match threat_regime {
-                        strix_core::ThreatRegime::CounterAttack => {
-                            ThreatClassification::ConfirmedHostile
-                        }
-                        strix_core::ThreatRegime::Defend => ThreatClassification::SuspectedHostile,
-                        strix_core::ThreatRegime::Retreat => ThreatClassification::Unknown,
-                    };
-
-                    let hostile_act = threat_regime == strix_core::ThreatRegime::CounterAttack
-                        && threat_dist < 200.0;
-
-                    let ctx = EngagementContext {
-                        threat_class,
-                        threat_distance: threat_dist,
-                        hostile_act,
-                        hostile_intent: threat_regime == strix_core::ThreatRegime::CounterAttack,
-                        collateral_risk: 0.0, // TODO: wire civilian presence model — escalation paths are tested but not yet live
-                        friendlies_at_risk: 0, // TODO: wire friendly force tracker — escalation paths are tested but not yet live
-                        regime: Regime::Engage,
-                    };
-
-                    match self.roe_engine.authorize_engagement(&ctx) {
-                        EngagementAuth::Denied { reason } => {
+            if self.threat_trackers.is_empty() {
+                // No threats registered. Under WeaponsHold or WeaponsTight, weapon
+                // tasks are denied by default — there is no hostile act that could
+                // trigger the self-defense override, so the posture gate applies
+                // unconditionally. WeaponsFree passes: engage anything not friendly.
+                let deny_weapons_no_threat = matches!(
+                    self.roe_engine.posture,
+                    WeaponsPosture::WeaponsHold | WeaponsPosture::WeaponsTight
+                );
+                if deny_weapons_no_threat {
+                    for task in tasks {
+                        if task.required_capabilities.has_weapon {
                             denied_task_ids.push(task.id);
                             roe_denials += 1;
-                            self.record_roe_trace(task.id, threat_dist, "denied", &reason, 1.0);
-                            traces_recorded += 1;
-                        }
-                        EngagementAuth::EscalationRequired { reason, .. } => {
-                            // Escalated tasks MUST NOT proceed to auction without
-                            // human approval — filter them just like denied tasks.
-                            denied_task_ids.push(task.id);
-                            roe_escalations += 1;
                             self.record_roe_trace(
                                 task.id,
-                                threat_dist,
-                                "escalation_required",
-                                &reason,
-                                0.7,
+                                f64::MAX,
+                                "denied",
+                                "no threats registered — weapon task denied under current posture",
+                                1.0,
                             );
                             traces_recorded += 1;
                         }
-                        EngagementAuth::Authorized { .. } => {} // pass through
+                    }
+                }
+            } else {
+                for task in tasks {
+                    if !task.required_capabilities.has_weapon {
+                        continue; // ROE only gates weapon-bearing tasks
+                    }
+
+                    // Find nearest threat to this task's location.
+                    let task_pos = Vector3::new(task.location.x, task.location.y, task.location.z);
+                    if let Some((threat_dist, threat_regime)) =
+                        self.nearest_threat_to_point(&task_pos)
+                    {
+                        let threat_class = match threat_regime {
+                            strix_core::ThreatRegime::CounterAttack => {
+                                ThreatClassification::ConfirmedHostile
+                            }
+                            strix_core::ThreatRegime::Defend => {
+                                ThreatClassification::SuspectedHostile
+                            }
+                            strix_core::ThreatRegime::Retreat => ThreatClassification::Unknown,
+                        };
+
+                        let hostile_act = threat_regime == strix_core::ThreatRegime::CounterAttack
+                            && threat_dist < 200.0;
+
+                        let ctx = EngagementContext {
+                            threat_class,
+                            threat_distance: threat_dist,
+                            hostile_act,
+                            hostile_intent: threat_regime
+                                == strix_core::ThreatRegime::CounterAttack,
+                            collateral_risk: 0.0, // TODO: wire civilian presence model — escalation paths are tested but not yet live
+                            friendlies_at_risk: 0, // TODO: wire friendly force tracker — escalation paths are tested but not yet live
+                            regime: Regime::Engage,
+                        };
+
+                        match self.roe_engine.authorize_engagement(&ctx) {
+                            EngagementAuth::Denied { reason } => {
+                                denied_task_ids.push(task.id);
+                                roe_denials += 1;
+                                self.record_roe_trace(task.id, threat_dist, "denied", &reason, 1.0);
+                                traces_recorded += 1;
+                            }
+                            EngagementAuth::EscalationRequired { reason, .. } => {
+                                // Escalated tasks MUST NOT proceed to auction without
+                                // human approval — filter them just like denied tasks.
+                                denied_task_ids.push(task.id);
+                                roe_escalations += 1;
+                                self.record_roe_trace(
+                                    task.id,
+                                    threat_dist,
+                                    "escalation_required",
+                                    &reason,
+                                    0.7,
+                                );
+                                traces_recorded += 1;
+                            }
+                            EngagementAuth::Authorized { .. } => {} // pass through
+                        }
                     }
                 }
             }
@@ -1272,10 +1310,15 @@ impl SwarmOrchestrator {
 
         for (id, telem) in telemetry {
             let regime = self.regimes.get(id).copied().unwrap_or(Regime::Patrol);
+            let regime_str = match regime {
+                Regime::Patrol => "Patrol",
+                Regime::Engage => "Engage",
+                Regime::Evade => "Evade",
+            };
             self.gossip.update_self_state(
                 Position3D(telem.position),
                 telem.battery,
-                format!("{:?}", regime),
+                regime_str.to_string(),
                 telem.timestamp,
             );
         }
@@ -1339,6 +1382,17 @@ impl SwarmOrchestrator {
                 })
                 .collect();
 
+            // Build velocity map once — avoids O(N) telemetry.iter().find() per drone.
+            let vel_map: HashMap<u32, Vector3<f64>> = telemetry
+                .iter()
+                .map(|(id, t)| {
+                    (
+                        *id,
+                        Vector3::new(t.velocity[0], t.velocity[1], t.velocity[2]),
+                    )
+                })
+                .collect();
+
             for (drone_id, drone_pos) in &all_positions {
                 // Neighbor positions = all drones except this one.
                 let neighbors: Vec<Vector3<f64>> = all_positions
@@ -1348,10 +1402,9 @@ impl SwarmOrchestrator {
                     .collect();
 
                 // Desired velocity = telemetry velocity + formation correction.
-                let base_vel = telemetry
-                    .iter()
-                    .find(|(id, _)| id == drone_id)
-                    .map(|(_, t)| Vector3::new(t.velocity[0], t.velocity[1], t.velocity[2]))
+                let base_vel = vel_map
+                    .get(drone_id)
+                    .copied()
                     .unwrap_or_else(Vector3::zeros);
 
                 let formation_adj = formation_corrections

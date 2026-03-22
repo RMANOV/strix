@@ -18,7 +18,9 @@ use rand::Rng;
 use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 
-use crate::particle_common::{effective_sample_size, normalize_weights, systematic_resample_6d};
+use crate::particle_common::{
+    effective_sample_size, gaussian_likelihood, normalize_weights, systematic_resample_6d,
+};
 use crate::state::{ThreatRegime, ThreatState};
 
 // ---------------------------------------------------------------------------
@@ -56,7 +58,11 @@ impl ThreatNoiseConfig {
     /// Amplify threat tracking uncertainty under fear.
     /// Higher fear → wider uncertainty bounds.
     pub fn scaled_by_fear(&self, f: f64) -> Self {
-        let f = f.clamp(0.0, 1.0);
+        let f = if f.is_nan() || f.is_infinite() {
+            0.0
+        } else {
+            f.clamp(0.0, 1.0)
+        };
         Self {
             defend_pos_noise: self.defend_pos_noise * (1.0 + f * 0.3),
             defend_vel_noise: self.defend_vel_noise * (1.0 + f * 0.3),
@@ -115,6 +121,9 @@ pub struct ThreatTracker {
     pub threat_id: u32,
     /// 3x3 Markov transition matrix for threat regimes.
     pub transition_matrix: [[f64; 3]; 3],
+    /// Pre-allocated scratch buffer — reused across `predict_threat` calls to avoid
+    /// heap allocation on every tick.
+    scratch_buf: Vec<[f64; 6]>,
 }
 
 impl ThreatTracker {
@@ -136,6 +145,7 @@ impl ThreatTracker {
             noise_cfg: ThreatNoiseConfig::default(),
             threat_id,
             transition_matrix: crate::state::default_threat_transition_matrix(),
+            scratch_buf: vec![[0.0; 6]; n],
         }
     }
 
@@ -149,24 +159,25 @@ impl ThreatTracker {
         let centroid = *our_centroid;
         let noise_cfg = self.noise_cfg.clone();
 
-        let mut buf: Vec<[f64; 6]> = (0..n)
-            .map(|i| {
-                [
-                    self.particles[[i, 0]],
-                    self.particles[[i, 1]],
-                    self.particles[[i, 2]],
-                    self.particles[[i, 3]],
-                    self.particles[[i, 4]],
-                    self.particles[[i, 5]],
-                ]
-            })
-            .collect();
+        // Reuse scratch buffer — resize only if particle count changed.
+        let mut buf = std::mem::take(&mut self.scratch_buf);
+        buf.resize(n, [0.0; 6]);
+        for (i, p) in buf.iter_mut().enumerate() {
+            *p = [
+                self.particles[[i, 0]],
+                self.particles[[i, 1]],
+                self.particles[[i, 2]],
+                self.particles[[i, 3]],
+                self.particles[[i, 4]],
+                self.particles[[i, 5]],
+            ];
+        }
 
         let regimes = self.regimes.clone();
+        let normal = Normal::new(0.0, 1.0).unwrap();
 
         buf.par_iter_mut().enumerate().for_each(|(i, p)| {
             let mut rng = rand::thread_rng();
-            let normal = Normal::new(0.0, 1.0).unwrap();
             let regime = regimes[i];
 
             let rp: [f64; 3] = [
@@ -240,6 +251,8 @@ impl ThreatTracker {
                 self.particles[[i, j]] = *val;
             }
         }
+        // Restore the scratch buffer.
+        self.scratch_buf = buf;
     }
 
     /// Update threat particle weights from sensor observations.
@@ -253,14 +266,12 @@ impl ThreatTracker {
                     sigma,
                     timestamp: _,
                 } => {
-                    let sigma2 = sigma * sigma + 1e-12;
                     for i in 0..n {
                         let dx = self.particles[[i, 0]] - position.x;
                         let dy = self.particles[[i, 1]] - position.y;
                         let dz = self.particles[[i, 2]] - position.z;
                         let diff_sq = dx * dx + dy * dy + dz * dz;
-                        let like = (-0.5 * diff_sq / sigma2).exp();
-                        self.weights[i] *= like;
+                        self.weights[i] *= gaussian_likelihood(diff_sq, *sigma);
                     }
                 }
                 ThreatObservation::Visual {
@@ -269,15 +280,13 @@ impl ThreatTracker {
                     sigma,
                     timestamp: _,
                 } => {
-                    let sigma2 = sigma * sigma + 1e-12;
                     let expected_pos = bearing * *estimated_range;
                     for i in 0..n {
                         let dx = self.particles[[i, 0]] - expected_pos.x;
                         let dy = self.particles[[i, 1]] - expected_pos.y;
                         let dz = self.particles[[i, 2]] - expected_pos.z;
                         let diff_sq = dx * dx + dy * dy + dz * dz;
-                        let like = (-0.5 * diff_sq / sigma2).exp();
-                        self.weights[i] *= like;
+                        self.weights[i] *= gaussian_likelihood(diff_sq, *sigma);
                     }
                 }
                 ThreatObservation::RadioIntercept {
@@ -285,7 +294,6 @@ impl ThreatTracker {
                     sigma,
                     timestamp: _,
                 } => {
-                    let sigma2 = sigma * sigma + 1e-12;
                     for i in 0..n {
                         let pos = Vector3::new(
                             self.particles[[i, 0]],
@@ -296,8 +304,7 @@ impl ThreatTracker {
                         if norm > 1e-6 {
                             let unit = pos / norm;
                             let diff_sq = (unit - bearing).norm_squared();
-                            let like = (-0.5 * diff_sq / sigma2).exp();
-                            self.weights[i] *= like;
+                            self.weights[i] *= gaussian_likelihood(diff_sq, *sigma);
                         }
                     }
                 }
@@ -395,22 +402,12 @@ impl ThreatTracker {
     pub fn transition_regimes(&mut self) {
         let n = self.regimes.len();
         let mut rng = rand::thread_rng();
-        let tm = self.transition_matrix;
-
-        for i in 0..n {
-            let r = (self.regimes[i] as usize).min(2);
-            let u: f64 = rng.gen();
-            let mut cum_prob = 0.0;
-            let mut new_regime = 2u8;
-            for (j, &prob) in tm[r].iter().enumerate() {
-                cum_prob += prob;
-                if u < cum_prob {
-                    new_regime = j as u8;
-                    break;
-                }
-            }
-            self.regimes[i] = new_regime;
-        }
+        let random_uniform: Vec<f64> = (0..n).map(|_| rng.gen()).collect();
+        crate::regime::transition_regimes(
+            &mut self.regimes,
+            &self.transition_matrix,
+            &random_uniform,
+        );
     }
 
     /// Full predict–update–resample cycle.
@@ -430,49 +427,6 @@ impl ThreatTracker {
 }
 
 // ---------------------------------------------------------------------------
-// Momentum score for enemy advance/retreat rate
-// ---------------------------------------------------------------------------
-
-/// Calculate normalised momentum score for threat movement.
-///
-/// Positive = advancing, negative = retreating.
-/// Adapted from `calculate_momentum_score` in the trading filter.
-pub fn threat_momentum_score(distance_history: &[f64], window: usize) -> f64 {
-    let n = distance_history.len();
-    if n < window || n < 3 {
-        return 0.0;
-    }
-
-    let start = n.saturating_sub(window);
-    let mid = start + (n - start) / 2;
-
-    let mut recent_sum = 0.0_f64;
-    let mut recent_count = 0_usize;
-    for val in &distance_history[mid..n] {
-        recent_sum += val;
-        recent_count += 1;
-    }
-
-    let mut older_sum = 0.0_f64;
-    let mut older_count = 0_usize;
-    for val in &distance_history[start..mid] {
-        older_sum += val;
-        older_count += 1;
-    }
-
-    if recent_count == 0 || older_count == 0 {
-        return 0.0;
-    }
-
-    let recent_avg = recent_sum / recent_count as f64;
-    let older_avg = older_sum / older_count as f64;
-
-    // Negative momentum = distance shrinking = enemy advancing.
-    let momentum = recent_avg - older_avg;
-    (momentum * 200.0).tanh()
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -486,10 +440,13 @@ mod tests {
         let centroid = Vector3::new(0.0, 0.0, -50.0);
         tracker.predict_threat(&centroid, 0.1);
 
-        // At least some particles should have moved.
+        // Smoke test: predict_threat must not panic. With random noise, at least
+        // some particles will have moved from the initial x = 100.0.
         let any_moved = (0..50).any(|i| tracker.particles[[i, 0]] != 100.0);
-        // With random noise, almost certainly true.
-        assert!(any_moved || true); // non-deterministic; ensure no panic
+        assert!(
+            any_moved,
+            "predict_threat should move at least one particle"
+        );
     }
 
     #[test]
@@ -514,7 +471,7 @@ mod tests {
     fn momentum_score_advancing() {
         // Distance decreasing = enemy advancing → negative momentum.
         let history: Vec<f64> = (0..20).map(|i| 100.0 - i as f64 * 2.0).collect();
-        let m = threat_momentum_score(&history, 20);
+        let m = crate::uncertainty::momentum_score(&history, 20);
         assert!(m < 0.0);
     }
 
@@ -522,7 +479,7 @@ mod tests {
     fn momentum_score_retreating() {
         // Distance increasing = enemy retreating → positive momentum.
         let history: Vec<f64> = (0..20).map(|i| 10.0 + i as f64 * 2.0).collect();
-        let m = threat_momentum_score(&history, 20);
+        let m = crate::uncertainty::momentum_score(&history, 20);
         assert!(m > 0.0);
     }
 

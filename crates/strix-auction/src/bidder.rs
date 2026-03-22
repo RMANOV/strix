@@ -218,7 +218,11 @@ pub fn calculate_bid(c: &BidComponents) -> f64 {
 /// Captures the trading intuition: scared traders demand more risk premium
 /// and value distance-to-safety over proximity-to-task.
 pub fn calculate_bid_with_fear(c: &BidComponents, fear: f64) -> f64 {
-    let f = fear.clamp(0.0, 1.0);
+    let f = if fear.is_nan() || fear.is_infinite() {
+        0.0
+    } else {
+        fear.clamp(0.0, 1.0)
+    };
     let risk_weight = 4.0 + f * 3.0; // 4→7
     let proximity_weight = 5.0 - f * 2.5; // 5→2.5
     c.urgency_bonus * 10.0 + c.capability * 3.0 + c.proximity * proximity_weight + c.energy * 2.0
@@ -604,6 +608,51 @@ mod tests {
         assert!(
             bid.score > 0.0,
             "bid with scenario context should produce positive score"
+        );
+    }
+
+    // ── NaN/Inf fear safety guards ────────────────────────────────────────
+
+    #[test]
+    fn test_nan_fear_bid_equals_zero_fear() {
+        let c = BidComponents {
+            proximity: 0.5,
+            capability: 1.0,
+            energy: 0.8,
+            risk_exposure: 0.3,
+            urgency_bonus: 0.5,
+        };
+        let score_nan = calculate_bid_with_fear(&c, f64::NAN);
+        let score_zero = calculate_bid_with_fear(&c, 0.0);
+        assert!(
+            (score_nan - score_zero).abs() < 1e-12,
+            "NaN fear should be treated as F=0: nan={score_nan}, zero={score_zero}"
+        );
+        assert!(
+            score_nan.is_finite(),
+            "NaN fear must produce finite bid score"
+        );
+    }
+
+    #[test]
+    fn test_inf_fear_bid_equals_f1_bid() {
+        let c = BidComponents {
+            proximity: 0.5,
+            capability: 1.0,
+            energy: 0.8,
+            risk_exposure: 0.3,
+            urgency_bonus: 0.5,
+        };
+        let score_inf = calculate_bid_with_fear(&c, f64::INFINITY);
+        let score_zero = calculate_bid_with_fear(&c, 0.0);
+        assert!(
+            score_inf.is_finite(),
+            "Inf fear must produce finite bid score: got {score_inf}"
+        );
+        // Inf treated as 0.0 — same as F=0
+        assert!(
+            (score_inf - score_zero).abs() < 1e-12,
+            "Inf fear should be treated as F=0: inf={score_inf}, zero={score_zero}"
         );
     }
 }
