@@ -227,12 +227,7 @@ impl ParamSpace {
         // p(32) = cbf_enabled flag (>0.5 = enabled)
         let cbf_config = if p(32) > 0.5 { cbf_config } else { None };
 
-        // ── 33–50: Process noise (indices consumed by noise_config()) ──
-        // Stored in the ParamVec but not injected into SwarmConfig directly —
-        // the evaluator calls noise_config() to extract them separately.
-        let _ = (p(33), p(34), p(35), p(36), p(37), p(38)); // patrol
-        let _ = (p(39), p(40), p(41), p(42), p(43), p(44)); // engage
-        let _ = (p(45), p(46), p(47), p(48), p(49), p(50)); // evade
+        // Process noise params (indices 33–50) extracted separately via noise_config()
 
         // ── 51: Fear ──────────────────────────────────────────────────
         let fear = p(51);
@@ -270,21 +265,18 @@ impl ParamSpace {
     /// Extract the `ProcessNoiseConfig` from a `ParamVec` (indices 33–50).
     pub fn noise_config(&self, v: &ParamVec) -> ProcessNoiseConfig {
         assert_eq!(v.len(), self.len(), "ParamVec length mismatch");
-        let p = |i: usize| v[i];
         ProcessNoiseConfig {
-            patrol: RegimeNoise {
-                pos_noise: [p(33), p(34), p(35)],
-                vel_noise: [p(36), p(37), p(38)],
-            },
-            engage: RegimeNoise {
-                pos_noise: [p(39), p(40), p(41)],
-                vel_noise: [p(42), p(43), p(44)],
-            },
-            evade: RegimeNoise {
-                pos_noise: [p(45), p(46), p(47)],
-                vel_noise: [p(48), p(49), p(50)],
-            },
+            patrol: regime_noise(v, 33),
+            engage: regime_noise(v, 39),
+            evade: regime_noise(v, 45),
         }
+    }
+}
+
+fn regime_noise(v: &ParamVec, start: usize) -> RegimeNoise {
+    RegimeNoise {
+        pos_noise: [v[start], v[start + 1], v[start + 2]],
+        vel_noise: [v[start + 3], v[start + 4], v[start + 5]],
     }
 }
 

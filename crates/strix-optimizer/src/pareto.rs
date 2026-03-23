@@ -121,11 +121,30 @@ impl ParetoArchive {
     ///
     /// Returns `true` if the candidate was accepted.
     pub fn insert(&mut self, candidate: ParetoSolution) -> bool {
-        if self.solutions.iter().any(|s| s.dominates(&candidate)) {
+        // Single-pass: check if candidate is dominated AND collect indices it dominates
+        let mut dominated_by_existing = false;
+        let mut keep = Vec::with_capacity(self.solutions.len());
+        for s in &self.solutions {
+            if s.dominates(&candidate) {
+                dominated_by_existing = true;
+                break;
+            }
+            if !candidate.dominates(s) {
+                keep.push(true);
+            } else {
+                keep.push(false);
+            }
+        }
+        if dominated_by_existing {
             return false;
         }
-
-        self.solutions.retain(|s| !candidate.dominates(s));
+        // Remove dominated solutions
+        let mut i = 0;
+        self.solutions.retain(|_| {
+            let k = keep[i];
+            i += 1;
+            k
+        });
         self.solutions.push(candidate);
 
         if self.solutions.len() > self.max_size {

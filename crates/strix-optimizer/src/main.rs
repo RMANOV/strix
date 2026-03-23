@@ -51,7 +51,7 @@ fn main() {
         cli.iterations, cli.population, cli.archive_size, cli.seed
     );
 
-    let space = strix_full();
+    let eval_space = strix_full();
     let evaluator = Evaluator::default_scenarios();
     let t0 = Instant::now();
 
@@ -64,7 +64,7 @@ fn main() {
         ..SmcoConfig::default()
     };
     let archive = ParetoArchive::new(cli.archive_size);
-    let mut optimizer = SmcoOptimizer::new(smco_config, space.clone(), archive);
+    let mut optimizer = SmcoOptimizer::new(smco_config, strix_full(), archive);
     let mut hv_history: Vec<(usize, f64)> = Vec::with_capacity(cli.iterations);
     let mut total_evaluated: usize = 0;
 
@@ -76,7 +76,7 @@ fn main() {
         let results: Vec<(ParamVec, [f64; 3])> = candidates
             .into_par_iter()
             .map(|params| {
-                let objs = evaluator.evaluate(&space, &params);
+                let objs = evaluator.evaluate(&eval_space, &params);
                 (params, objs)
             })
             .collect();

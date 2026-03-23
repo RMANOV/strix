@@ -15,6 +15,8 @@
 //! }
 //! ```
 
+use std::collections::VecDeque;
+
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
@@ -22,6 +24,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::param_space::{ParamSpace, ParamVec};
 use crate::pareto::{ParetoArchive, ParetoSolution};
+
+const NORM_EPSILON: f64 = 1e-12;
+
+fn vec_norm(v: &[f64]) -> f64 {
+    v.iter().map(|x| x * x).sum::<f64>().sqrt()
+}
+
+fn normalize_in_place(v: &mut [f64]) {
+    let n = vec_norm(v);
+    if n > NORM_EPSILON {
+        for x in v.iter_mut() {
+            *x /= n;
+        }
+    }
+}
 
 // ── Config ────────────────────────────────────────────────────────────────
 
@@ -80,7 +97,7 @@ pub struct SmcoOptimizer {
     iteration: usize,
 
     /// Ring buffer of directions that led to archive insertions.
-    direction_memory: Vec<Vec<f64>>,
+    direction_memory: VecDeque<Vec<f64>>,
     /// Running mean of productive directions (same dimensionality as ParamVec).
     direction_mean: Vec<f64>,
 
@@ -103,7 +120,7 @@ impl SmcoOptimizer {
             rng,
             current_step,
             iteration: 0,
-            direction_memory: Vec::new(),
+            direction_memory: VecDeque::new(),
             direction_mean: vec![0.0; dim],
             last_candidates: Vec::new(),
         }
@@ -158,10 +175,9 @@ impl SmcoOptimizer {
                     let dir: Vec<f64> =
                         params.iter().zip(base.iter()).map(|(c, b)| c - b).collect();
 
-                    // Normalise the direction vector
-                    let norm: f64 = dir.iter().map(|x| x * x).sum::<f64>().sqrt();
-                    if norm > 1e-12 {
-                        let unit: Vec<f64> = dir.iter().map(|x| x / norm).collect();
+                    let mut unit = dir;
+                    normalize_in_place(&mut unit);
+                    if vec_norm(&unit) > NORM_EPSILON {
                         self.push_direction(unit);
                     }
                 }
@@ -227,17 +243,9 @@ impl SmcoOptimizer {
 
         // Random Gaussian unit vector
         let mut rand_dir: Vec<f64> = (0..dim)
-            .map(|_| {
-                let g: f64 = self.rng.sample(rand_distr::StandardNormal);
-                g
-            })
+            .map(|_| self.rng.sample::<f64, _>(rand_distr::StandardNormal))
             .collect();
-        let rn: f64 = rand_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if rn > 1e-12 {
-            for v in &mut rand_dir {
-                *v /= rn;
-            }
-        }
+        normalize_in_place(&mut rand_dir);
 
         // Blend with direction_mean (may be zero vector initially)
         let mut dir: Vec<f64> = rand_dir
@@ -246,12 +254,9 @@ impl SmcoOptimizer {
             .map(|(r, m)| alpha * r + (1.0 - alpha) * m)
             .collect();
 
-        // Re-normalise
-        let dn: f64 = dir.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if dn > 1e-12 {
-            for v in &mut dir {
-                *v /= dn;
-            }
+        // Blend of two unit vectors is not unit; re-normalise for valid direction
+        if vec_norm(&dir) > NORM_EPSILON {
+            normalize_in_place(&mut dir);
         } else {
             // Fallback: pure random (direction_mean was also near-zero)
             dir = rand_dir;
@@ -283,9 +288,9 @@ impl SmcoOptimizer {
     /// Push a productive direction into the ring buffer.
     fn push_direction(&mut self, unit_dir: Vec<f64>) {
         if self.direction_memory.len() >= self.config.direction_memory_size {
-            self.direction_memory.remove(0);
+            self.direction_memory.pop_front();
         }
-        self.direction_memory.push(unit_dir);
+        self.direction_memory.push_back(unit_dir);
     }
 
     /// Recompute `direction_mean` as the arithmetic mean of all stored directions.
@@ -306,13 +311,7 @@ impl SmcoOptimizer {
         for m in &mut mean {
             *m *= scale;
         }
-        // Normalise the mean direction
-        let norm: f64 = mean.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if norm > 1e-12 {
-            for m in &mut mean {
-                *m /= norm;
-            }
-        }
+        normalize_in_place(&mut mean);
         self.direction_mean = mean;
     }
 }
