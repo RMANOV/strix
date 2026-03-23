@@ -9,6 +9,7 @@ members = [
     "crates/strix-swarm",
     "crates/strix-python",
     "crates/strix-playground",
+    "crates/strix-optimizer",
 ]
 
 [workspace.package]

@@ -1,0 +1,25 @@
+[package]
+name = "strix-optimizer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Multi-objective SMCO parameter optimizer for STRIX drone swarm"
+
+[[bin]]
+name = "strix-optimize"
+path = "src/main.rs"
+
+[dependencies]
+strix-playground = { path = "../strix-playground" }
+strix-swarm = { path = "../strix-swarm" }
+strix-core = { path = "../strix-core" }
+strix-auction = { path = "../strix-auction" }
+strix-adapters = { path = "../strix-adapters" }
+rand = "0.9"
+rand_distr = "0.5"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
