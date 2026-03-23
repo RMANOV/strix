@@ -337,7 +337,8 @@ fn test_cbf_active_with_default_config() {
 
     // CBF should run (even if no constraints are active at 15m spacing > 5m min)
     // The fact that cbf_active_constraints is 0 is fine — it means drones are safely spaced.
-    assert!(decision.cbf_active_constraints == 0 || decision.cbf_active_constraints > 0);
+    // (usize is always >= 0; this assertion documents the intent, not a runtime check)
+    let _ = decision.cbf_active_constraints; // CBF ran; value is valid
 }
 
 #[test]

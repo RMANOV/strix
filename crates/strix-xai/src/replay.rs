@@ -166,7 +166,12 @@ pub fn build_replay(mission_id: &str, recorder: &TraceRecorder) -> MissionReplay
 
     // Average inter-decision time
     let avg_decision_time_ms = if traces.len() >= 2 {
-        let total_span = traces.last().unwrap().timestamp - traces.first().unwrap().timestamp;
+        // Safe: guarded by `traces.len() >= 2` above.
+        let total_span = traces.last().expect("traces non-empty: len >= 2").timestamp
+            - traces
+                .first()
+                .expect("traces non-empty: len >= 2")
+                .timestamp;
         if total_decisions > 1 {
             (total_span / (total_decisions - 1) as f64) * 1000.0
         } else {

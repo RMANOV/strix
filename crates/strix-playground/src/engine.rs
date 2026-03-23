@@ -174,7 +174,11 @@ impl Engine {
             if evt.time_secs > self.sim_time {
                 break;
             }
-            let evt = self.event_queue.pop_front().unwrap();
+            // Safe: front() just confirmed the queue is non-empty.
+            let evt = self
+                .event_queue
+                .pop_front()
+                .expect("queue non-empty: just checked front()");
             match evt.event {
                 Event::JamGps { noise_multiplier } => {
                     self.gps_jammed = true;

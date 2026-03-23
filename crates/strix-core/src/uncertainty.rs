@@ -430,7 +430,7 @@ mod tests {
             "hurst_exponent returned default (0.5, 0.5) for 20 samples with max_window=20"
         );
         // Result must be a valid Hurst exponent in [0, 1].
-        assert!(h >= 0.0 && h <= 1.0, "h={h} out of range");
+        assert!((0.0..=1.0).contains(&h), "h={h} out of range");
     }
 
     #[test]
@@ -451,9 +451,7 @@ mod tests {
             values.push(if i % 2 == 0 { 10.0 } else { -10.0 });
         }
         // Then very calm period.
-        for _ in 0..20 {
-            values.push(0.0);
-        }
+        values.extend(std::iter::repeat_n(0.0, 20));
         let (ratio, compressed, _) = volatility_compression(&values, 10, 50);
         assert!(ratio < 1.0);
         let _ = compressed;

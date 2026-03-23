@@ -131,7 +131,7 @@ impl ThreatTracker {
     pub fn new(threat_id: u32, n: usize, initial_pos: Vector3<f64>) -> Self {
         let mut particles = Array2::<f64>::zeros((n, 6));
         let mut rng = rand::thread_rng();
-        let normal = Normal::new(0.0, 1.0).unwrap();
+        let normal = Normal::new(0.0, 1.0).expect("Normal(0,1) has valid parameters");
         for i in 0..n {
             particles[[i, 0]] = initial_pos.x + normal.sample(&mut rng) * 2.0;
             particles[[i, 1]] = initial_pos.y + normal.sample(&mut rng) * 2.0;
@@ -174,7 +174,7 @@ impl ThreatTracker {
         }
 
         let regimes = self.regimes.clone();
-        let normal = Normal::new(0.0, 1.0).unwrap();
+        let normal = Normal::new(0.0, 1.0).expect("Normal(0,1) has valid parameters");
 
         buf.par_iter_mut().enumerate().for_each(|(i, p)| {
             let mut rng = rand::thread_rng();

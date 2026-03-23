@@ -363,7 +363,8 @@ impl BandwidthManager {
                 continue;
             }
 
-            let entry = self.queue.pop().unwrap();
+            // Safe: peek() above confirmed the queue is non-empty.
+            let entry = self.queue.pop().expect("queue non-empty: just peeked");
             self.bytes_used += self.bytes_per_message;
             result.push((entry.target, entry.message));
         }

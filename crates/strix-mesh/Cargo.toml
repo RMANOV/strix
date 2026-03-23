@@ -13,3 +13,10 @@ serde_json.workspace = true
 rand.workspace = true
 rayon.workspace = true
 thiserror.workspace = true
+
+[[bench]]
+name = "scale_gossip"
+harness = false
+
+[dev-dependencies]
+criterion.workspace = true

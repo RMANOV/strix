@@ -165,7 +165,7 @@ impl SimulatorAdapter {
     /// 4. Drain the battery.
     /// 5. (Optionally) inject failures.
     pub fn step(&self) {
-        let mut s = self.state.lock().unwrap();
+        let mut s = self.state.lock().expect("simulator state mutex poisoned");
         if s.failed || !s.armed {
             return;
         }
@@ -292,28 +292,28 @@ impl SimulatorAdapter {
 
     /// Reset the simulator to initial conditions.
     pub fn reset(&self, position: [f64; 3]) {
-        let mut s = self.state.lock().unwrap();
+        let mut s = self.state.lock().expect("simulator state mutex poisoned");
         *s = SimState::new(position);
     }
 
     /// Get direct access to the simulation clock (seconds).
     pub fn clock(&self) -> f64 {
-        self.state.lock().unwrap().clock
+        self.state.lock().expect("simulator state mutex poisoned").clock
     }
 
     /// Get the current battery level.
     pub fn battery(&self) -> f64 {
-        self.state.lock().unwrap().battery
+        self.state.lock().expect("simulator state mutex poisoned").battery
     }
 
     /// Check whether the simulated drone has failed.
     pub fn has_failed(&self) -> bool {
-        self.state.lock().unwrap().failed
+        self.state.lock().expect("simulator state mutex poisoned").failed
     }
 
     /// Get the Euclidean distance from the current position to a point.
     pub fn distance_to(&self, target: [f64; 3]) -> f64 {
-        let s = self.state.lock().unwrap();
+        let s = self.state.lock().expect("simulator state mutex poisoned");
         ((s.position[0] - target[0]).powi(2)
             + (s.position[1] - target[1]).powi(2)
             + (s.position[2] - target[2]).powi(2))
@@ -331,7 +331,7 @@ impl PlatformAdapter for SimulatorAdapter {
     }
 
     fn send_waypoint(&self, wp: &Waypoint) -> Result<(), AdapterError> {
-        let mut s = self.state.lock().unwrap();
+        let mut s = self.state.lock().expect("simulator state mutex poisoned");
         if !s.armed {
             return Err(AdapterError::CommandRejected("not armed".into()));
         }
@@ -342,7 +342,7 @@ impl PlatformAdapter for SimulatorAdapter {
     }
 
     fn get_telemetry(&self) -> Result<Telemetry, AdapterError> {
-        let s = self.state.lock().unwrap();
+        let s = self.state.lock().expect("simulator state mutex poisoned");
         if s.failed {
             return Err(AdapterError::TelemetryUnavailable(
                 "drone has failed".into(),
@@ -365,7 +365,7 @@ impl PlatformAdapter for SimulatorAdapter {
     }
 
     fn execute_action(&self, action: &Action) -> Result<(), AdapterError> {
-        let mut s = self.state.lock().unwrap();
+        let mut s = self.state.lock().expect("simulator state mutex poisoned");
         if s.failed {
             return Err(AdapterError::CommandRejected("drone has failed".into()));
         }
@@ -423,11 +423,11 @@ impl PlatformAdapter for SimulatorAdapter {
 
     fn is_connected(&self) -> bool {
         // Simulator is always "connected"
-        !self.state.lock().unwrap().failed
+        !self.state.lock().expect("simulator state mutex poisoned").failed
     }
 
     fn health_check(&self) -> Result<HealthStatus, AdapterError> {
-        let s = self.state.lock().unwrap();
+        let s = self.state.lock().expect("simulator state mutex poisoned");
         if s.failed {
             return Ok(HealthStatus::Critical("simulated failure".into()));
         }
@@ -575,7 +575,7 @@ impl SimulatorFleet {
 
             if result.any_active {
                 // Apply corrected velocity directly to internal state.
-                let mut s = drone.state.lock().unwrap();
+                let mut s = drone.state.lock().expect("drone state mutex poisoned");
                 s.velocity = [
                     result.safe_velocity.x,
                     result.safe_velocity.y,

@@ -4570,6 +4570,7 @@ dependencies = [
 name = "strix-mesh"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nalgebra",
  "rand 0.8.5",
  "rayon",

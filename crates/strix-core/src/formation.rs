@@ -390,7 +390,7 @@ pub fn formation_quality(
             .enumerate()
             .map(|(i, slot)| (i, (drone_pos - *slot).norm()))
             .min_by(|a, b| a.1.total_cmp(&b.1))
-            .unwrap(); // safe: unmatched is non-empty
+            .expect("unmatched is non-empty: caller ensures at least one unassigned slot");
 
         unmatched.swap_remove(best_idx);
         total_error += best_dist;

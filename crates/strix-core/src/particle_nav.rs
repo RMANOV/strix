@@ -195,7 +195,7 @@ pub fn predict_particles_6d_with_buf(
     }
 
     let tb = *threat_bearing;
-    let normal = Normal::new(0.0, 1.0).unwrap();
+    let normal = Normal::new(0.0, 1.0).expect("Normal(0,1) has valid parameters");
 
     buf.par_iter_mut().enumerate().for_each(|(i, p)| {
         let mut rng = rand::thread_rng();
@@ -520,7 +520,7 @@ impl ParticleNavFilter {
     pub fn new(n: usize, initial_pos: Vector3<f64>) -> Self {
         let mut particles = Array2::<f64>::zeros((n, 6));
         let mut rng = rand::thread_rng();
-        let normal = Normal::new(0.0, 1.0).unwrap();
+        let normal = Normal::new(0.0, 1.0).expect("Normal(0,1) has valid parameters");
         for i in 0..n {
             particles[[i, 0]] = initial_pos.x + normal.sample(&mut rng) * 0.5;
             particles[[i, 1]] = initial_pos.y + normal.sample(&mut rng) * 0.5;
@@ -600,7 +600,7 @@ impl ParticleNavFilter {
 
                 let n = self.particles.nrows();
                 let mut rng = rand::thread_rng();
-                let normal = Normal::new(0.0, 1.0).unwrap();
+                let normal = Normal::new(0.0, 1.0).expect("Normal(0,1) has valid parameters");
                 for i in 0..n {
                     self.particles[[i, 0]] = recovery_pos.x + normal.sample(&mut rng) * 0.5;
                     self.particles[[i, 1]] = recovery_pos.y + normal.sample(&mut rng) * 0.5;

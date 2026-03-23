@@ -258,7 +258,9 @@ pub fn build_hierarchy(drone_ids: &[NodeId]) -> FractalHierarchy {
     let mut pair_leaders: Vec<NodeId> = Vec::new();
 
     for chunk in &pair_chunks {
-        let leader_id = *chunk.first().unwrap();
+        let leader_id = *chunk
+            .first()
+            .expect("build_groups_from_ids guarantees non-empty chunks");
         pair_leaders.push(leader_id);
 
         for &id in chunk {
@@ -292,7 +294,9 @@ pub fn build_hierarchy(drone_ids: &[NodeId]) -> FractalHierarchy {
         let mut squad_leaders: Vec<NodeId> = Vec::new();
 
         for chunk in &squad_chunks {
-            let leader_id = *chunk.first().unwrap();
+            let leader_id = *chunk
+                .first()
+                .expect("build_groups_from_ids guarantees non-empty chunks");
             squad_leaders.push(leader_id);
 
             for &id in chunk {
@@ -343,7 +347,9 @@ pub fn build_hierarchy(drone_ids: &[NodeId]) -> FractalHierarchy {
             let mut platoon_leaders: Vec<NodeId> = Vec::new();
 
             for chunk in &platoon_chunks {
-                let leader_id = *chunk.first().unwrap();
+                let leader_id = *chunk
+                    .first()
+                    .expect("build_groups_from_ids guarantees non-empty chunks");
                 platoon_leaders.push(leader_id);
 
                 for &id in chunk {
@@ -371,7 +377,9 @@ pub fn build_hierarchy(drone_ids: &[NodeId]) -> FractalHierarchy {
 
             // --- Level 4: Company (if ≥ 2 platoons) ---
             if platoon_leaders.len() >= 2 {
-                let leader_id = *platoon_leaders.first().unwrap();
+                let leader_id = *platoon_leaders
+                    .first()
+                    .expect("platoon_leaders non-empty: len >= 2 guard above");
                 for &id in &platoon_leaders {
                     if let Some(node) = nodes.get_mut(&id) {
                         node.parent = Some(leader_id);
@@ -559,8 +567,9 @@ pub fn split_merge(hierarchy: &mut FractalHierarchy, level: HierarchyLevel) -> V
                     let left = group.members[..mid].to_vec();
                     let right = group.members[mid..].to_vec();
 
-                    let left_leader = *left.first().unwrap();
-                    let right_leader = *right.first().unwrap();
+                    // mid >= 1 since group.members.len() > max_size >= 1
+                    let left_leader = *left.first().expect("left half non-empty: mid >= 1");
+                    let right_leader = *right.first().expect("right half non-empty: len > mid");
 
                     new_groups.push(Group {
                         leader: left_leader,
@@ -610,7 +619,10 @@ pub fn split_merge(hierarchy: &mut FractalHierarchy, level: HierarchyLevel) -> V
     for (a, b) in &merge_pairs {
         let mut members = groups[*a].members.clone();
         members.extend_from_slice(&groups[*b].members);
-        let leader = *members.first().unwrap();
+        // members = groups[a].members + groups[b].members, both non-empty.
+        let leader = *members
+            .first()
+            .expect("merged members non-empty: both source groups non-empty");
         merged_groups.push(Group {
             leader,
             members,

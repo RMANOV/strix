@@ -44,7 +44,7 @@ fn make_tasks(n: usize) -> Vec<Task> {
 fn bench_swarm_tick(c: &mut Criterion) {
     let mut group = c.benchmark_group("swarm_tick");
 
-    for n_drones in [5, 10, 20] {
+    for n_drones in [5, 10, 20, 50, 100] {
         let label = format!("{}_drones", n_drones);
         group.bench_function(&label, |b| {
             let ids: Vec<u32> = (0..n_drones as u32).collect();

@@ -19,5 +19,9 @@ thiserror.workspace = true
 name = "auction"
 harness = false
 
+[[bench]]
+name = "scale_auction"
+harness = false
+
 [dev-dependencies]
 criterion.workspace = true
