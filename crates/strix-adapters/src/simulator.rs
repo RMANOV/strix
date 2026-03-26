@@ -298,17 +298,26 @@ impl SimulatorAdapter {
 
     /// Get direct access to the simulation clock (seconds).
     pub fn clock(&self) -> f64 {
-        self.state.lock().expect("simulator state mutex poisoned").clock
+        self.state
+            .lock()
+            .expect("simulator state mutex poisoned")
+            .clock
     }
 
     /// Get the current battery level.
     pub fn battery(&self) -> f64 {
-        self.state.lock().expect("simulator state mutex poisoned").battery
+        self.state
+            .lock()
+            .expect("simulator state mutex poisoned")
+            .battery
     }
 
     /// Check whether the simulated drone has failed.
     pub fn has_failed(&self) -> bool {
-        self.state.lock().expect("simulator state mutex poisoned").failed
+        self.state
+            .lock()
+            .expect("simulator state mutex poisoned")
+            .failed
     }
 
     /// Get the Euclidean distance from the current position to a point.
@@ -423,7 +432,11 @@ impl PlatformAdapter for SimulatorAdapter {
 
     fn is_connected(&self) -> bool {
         // Simulator is always "connected"
-        !self.state.lock().expect("simulator state mutex poisoned").failed
+        !self
+            .state
+            .lock()
+            .expect("simulator state mutex poisoned")
+            .failed
     }
 
     fn health_check(&self) -> Result<HealthStatus, AdapterError> {
