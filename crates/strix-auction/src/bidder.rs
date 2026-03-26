@@ -253,10 +253,8 @@ pub fn calculate_bid_with_scenarios(
 
     let opportunity_bonus = upside * success_prob * (0.25 + 0.75 * confidence);
     let downside_penalty = cvar_like_downside(c, fear, downside, confidence);
-    let uncertainty_drag = uncertainty
-        * (1.0 - success_prob)
-        * (1.0 + c.urgency_bonus + c.risk_exposure)
-        * 2.0;
+    let uncertainty_drag =
+        uncertainty * (1.0 - success_prob) * (1.0 + c.urgency_bonus + c.risk_exposure) * 2.0;
 
     base * confidence.clamp(0.3, 1.0) + opportunity_bonus - downside_penalty - uncertainty_drag
 }
@@ -284,10 +282,7 @@ fn cvar_like_downside(c: &BidComponents, fear: f64, downside_value: f64, confide
     let uncertainty = 1.0 - confidence.clamp(0.0, 1.0);
 
     downside_value
-        * (0.35
-            + c.risk_exposure.clamp(0.0, 1.0) * 0.35
-            + fear * 0.20
-            + uncertainty * 0.25)
+        * (0.35 + c.risk_exposure.clamp(0.0, 1.0) * 0.35 + fear * 0.20 + uncertainty * 0.25)
 }
 
 /// Compute capability match as fraction of required capabilities that the drone has.
@@ -676,8 +671,14 @@ mod tests {
         let risky_conf = mission_success_probability(&riskier, 0.9);
 
         assert!((0.0..=1.0).contains(&high_conf));
-        assert!(high_conf > low_conf, "confidence should improve mission success odds");
-        assert!(high_conf > risky_conf, "lower risk should improve mission success odds");
+        assert!(
+            high_conf > low_conf,
+            "confidence should improve mission success odds"
+        );
+        assert!(
+            high_conf > risky_conf,
+            "lower risk should improve mission success odds"
+        );
     }
 
     // ── NaN/Inf fear safety guards ────────────────────────────────────────
