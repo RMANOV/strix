@@ -114,8 +114,14 @@ fn main() {
     }
 
     let elapsed = t0.elapsed().as_secs_f64();
-    let report =
-        OptimizationReport::from_archive(optimizer.archive(), hv_history, total_evaluated, elapsed);
+    let report = OptimizationReport::from_archive(
+        optimizer.archive(),
+        doctrine,
+        evaluator.objective_labels(),
+        hv_history,
+        total_evaluated,
+        elapsed,
+    );
 
     report.print_summary();
 
