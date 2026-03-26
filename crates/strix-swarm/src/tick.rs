@@ -19,7 +19,7 @@ use nalgebra::Vector3;
 use strix_adapters::traits::Telemetry;
 use strix_auction::{Assignment, Auctioneer, Capabilities, LossAnalyzer, Task};
 use strix_core::anomaly::CusumConfig;
-use strix_core::cbf::{self, CbfConfig, NoFlyZone};
+use strix_core::cbf::{self, CbfConfig, NeighborState, NoFlyZone};
 use strix_core::ew_response::{EwEngine, EwEvent, EwResponse, EwResponsePlan};
 use strix_core::formation::{self, FormationConfig, FormationType};
 use strix_core::hysteresis::{HysteresisConfig, HysteresisGate};
@@ -1394,11 +1394,14 @@ impl SwarmOrchestrator {
                 .collect();
 
             for (drone_id, drone_pos) in &all_positions {
-                // Neighbor positions = all drones except this one.
-                let neighbors: Vec<Vector3<f64>> = all_positions
+                // Neighbor states = all drones except this one.
+                let neighbors: Vec<NeighborState> = all_positions
                     .iter()
                     .filter(|(id, _)| id != drone_id)
-                    .map(|(_, pos)| *pos)
+                    .map(|(id, pos)| NeighborState {
+                        position: *pos,
+                        velocity: vel_map.get(id).copied().unwrap_or_else(Vector3::zeros),
+                    })
                     .collect();
 
                 // Desired velocity = telemetry velocity + formation correction.
@@ -1414,7 +1417,7 @@ impl SwarmOrchestrator {
 
                 let desired_vel = base_vel + formation_adj;
 
-                let result = cbf::cbf_filter(
+                let result = cbf::cbf_filter_with_neighbor_states(
                     drone_pos,
                     &desired_vel,
                     &neighbors,
