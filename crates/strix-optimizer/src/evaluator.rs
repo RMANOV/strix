@@ -57,8 +57,16 @@ impl DoctrineProfile {
         match self {
             Self::Balanced => ["survival_depth", "mission_continuity", "reserve_efficiency"],
             Self::SurvivalFirst => ["force_survival", "cohesion_under_fire", "reserve_depth"],
-            Self::PersistentIsr => ["mission_survival", "coverage_continuity", "endurance_efficiency"],
-            Self::CommunicationsDenied => ["survival_depth", "degraded_coordination", "reserve_efficiency"],
+            Self::PersistentIsr => [
+                "mission_survival",
+                "coverage_continuity",
+                "endurance_efficiency",
+            ],
+            Self::CommunicationsDenied => [
+                "survival_depth",
+                "degraded_coordination",
+                "reserve_efficiency",
+            ],
             Self::AggressiveStrike => ["shock_survival", "tempo_continuity", "mission_efficiency"],
         }
     }
@@ -292,16 +300,15 @@ impl ObjectiveComponents {
         let battery_mean = agg.battery_mean.clamp(0.0, 1.0);
         let battery_floor = agg.battery_min.clamp(0.0, 1.0);
         let violation_rate = agg.cbf_violations as f64 / n_init;
-        let safety_margin = (1.0 - violation_rate - 0.35 * agg.cbf_burden_mean.clamp(0.0, 1.0))
-            .clamp(0.0, 1.0);
+        let safety_margin =
+            (1.0 - violation_rate - 0.35 * agg.cbf_burden_mean.clamp(0.0, 1.0)).clamp(0.0, 1.0);
         let coordination_round_rate = agg.auction_rounds as f64 / total_ticks;
-        let coordination_peak =
-            (agg.coordination_churn_peak as f64 / n_init).clamp(0.0, 1.0);
-        let coordination_margin =
-            (1.0 - 0.65 * agg.coordination_burden_mean.clamp(0.0, 1.0)
-                - 0.20 * coordination_round_rate.clamp(0.0, 1.0)
-                - 0.15 * coordination_peak)
-                .clamp(0.0, 1.0);
+        let coordination_peak = (agg.coordination_churn_peak as f64 / n_init).clamp(0.0, 1.0);
+        let coordination_margin = (1.0
+            - 0.65 * agg.coordination_burden_mean.clamp(0.0, 1.0)
+            - 0.20 * coordination_round_rate.clamp(0.0, 1.0)
+            - 0.15 * coordination_peak)
+            .clamp(0.0, 1.0);
         let recovery_pressure =
             (agg.forced_evade_count as f64 + 0.5 * agg.kill_zones_created as f64) / n_init;
         let recovery_margin = (1.0 - recovery_pressure).clamp(0.0, 1.0);
@@ -331,15 +338,13 @@ struct ObjectiveBlend {
 
 impl ObjectiveBlend {
     fn score(self, components: ObjectiveComponents) -> f64 {
-        (
-            self.survival_rate * components.survival_rate
-                + self.stability * components.stability
-                + self.battery_mean * components.battery_mean
-                + self.battery_floor * components.battery_floor
-                + self.safety_margin * components.safety_margin
-                + self.coordination_margin * components.coordination_margin
-                + self.recovery_margin * components.recovery_margin
-        )
+        (self.survival_rate * components.survival_rate
+            + self.stability * components.stability
+            + self.battery_mean * components.battery_mean
+            + self.battery_floor * components.battery_floor
+            + self.safety_margin * components.safety_margin
+            + self.coordination_margin * components.coordination_margin
+            + self.recovery_margin * components.recovery_margin)
             .clamp(0.0, 1.0)
     }
 }
@@ -446,7 +451,12 @@ impl Evaluator {
     /// Returns a doctrine-shaped `[objective0, objective1, objective2]` vector.
     pub fn evaluate(&self, space: &ParamSpace, params: &ParamVec) -> [f64; 3] {
         let per_scenario = self.evaluate_detailed(space, params);
-        let total_weight: f64 = self.scenarios.iter().map(|s| s.weight).sum::<f64>().max(1e-9);
+        let total_weight: f64 = self
+            .scenarios
+            .iter()
+            .map(|s| s.weight)
+            .sum::<f64>()
+            .max(1e-9);
         let mut acc = [0.0f64; 3];
         for (spec, scores) in self.scenarios.iter().zip(&per_scenario) {
             let w = spec.weight / total_weight;
@@ -558,7 +568,10 @@ mod tests {
 
     #[test]
     fn doctrine_profile_parses_snake_and_kebab_case() {
-        assert_eq!("balanced".parse::<DoctrineProfile>().unwrap(), DoctrineProfile::Balanced);
+        assert_eq!(
+            "balanced".parse::<DoctrineProfile>().unwrap(),
+            DoctrineProfile::Balanced
+        );
         assert_eq!(
             "communications-denied".parse::<DoctrineProfile>().unwrap(),
             DoctrineProfile::CommunicationsDenied
@@ -567,7 +580,8 @@ mod tests {
 
     #[test]
     fn communications_denied_reweights_gps_above_ambush() {
-        let eval = Evaluator::default_scenarios().with_doctrine(DoctrineProfile::CommunicationsDenied);
+        let eval =
+            Evaluator::default_scenarios().with_doctrine(DoctrineProfile::CommunicationsDenied);
         let gps_weight = eval
             .scenarios
             .iter()
@@ -581,7 +595,10 @@ mod tests {
             .unwrap()
             .weight;
 
-        assert!(gps_weight > ambush_weight, "gps={gps_weight} ambush={ambush_weight}");
+        assert!(
+            gps_weight > ambush_weight,
+            "gps={gps_weight} ambush={ambush_weight}"
+        );
     }
 
     #[test]
@@ -616,7 +633,10 @@ mod tests {
         let survival_delta = extract_objectives(&clean, DoctrineProfile::SurvivalFirst)[0]
             - extract_objectives(&unsafe_report, DoctrineProfile::SurvivalFirst)[0];
 
-        assert!(survival_delta > balanced_delta, "survival_delta={survival_delta} balanced_delta={balanced_delta}");
+        assert!(
+            survival_delta > balanced_delta,
+            "survival_delta={survival_delta} balanced_delta={balanced_delta}"
+        );
     }
 
     #[test]
@@ -638,6 +658,11 @@ mod tests {
         let isr = extract_objectives(&report, DoctrineProfile::PersistentIsr);
         let strike = extract_objectives(&report, DoctrineProfile::AggressiveStrike);
 
-        assert!(isr[2] > strike[2], "persistent_isr reserve objective should exceed aggressive_strike: {:?} vs {:?}", isr, strike);
+        assert!(
+            isr[2] > strike[2],
+            "persistent_isr reserve objective should exceed aggressive_strike: {:?} vs {:?}",
+            isr,
+            strike
+        );
     }
 }
