@@ -79,7 +79,7 @@
 - Today it looks like a sharp research architecture with real algorithmic taste, not yet a proven theater-winning autonomy product
 - If it wants true tactical or strategic superiority, the next gains should come from decision quality under uncertainty, adversarial robustness, and bandwidth-denied coordination, not from more demo-layer complexity
 
-## Highest-Value Optimization Directions
+## Highest-value optimization directions
 
 ### 1. Belief-Space Task Allocation
 - Current auction scoring appears mostly point-estimate based
@@ -90,7 +90,7 @@
 - Why it matters: beats deterministic scoring when sensors are noisy and enemy intent is ambiguous
 - Advantage: tactical decisions become robust, not merely fast
 
-### 2. Partial Observability as a First-Class Concern
+### 2. Partial observability first-class
 - Move from "state estimate feeding auction" to an explicit POMDP-lite approximation for key mission branches
 - Use information gain as part of task value, not only mission urgency/capability/proximity
 - Advantage: reconnaissance and deception handling improve sharply
@@ -106,7 +106,7 @@
 
 ### 5. Anytime Assignment Under Attrition
 - Add a bounded-suboptimal anytime auction or assignment path so degraded compute or comms still yield fast, safe tasking
-- Advantage: better graceful degradation in live-fight conditions
+- Advantage: better graceful degradation in live fight conditions
 
 ### 6. Information Warfare Layer
 - Introduce deception-aware belief updates:
@@ -116,7 +116,7 @@
 - Advantage: reduces manipulation of the swarm's own optimization process
 
 ### 7. Multi-Objective Optimizer Tied to Doctrine
-- The new optimizer crate is potentially valuable only if tuned against doctrine-level objective surfaces
+- New optimizer crate is potentially valuable only if tuned against doctrine-level objective surfaces
 - Optimize not just latency or score, but mission survival, exposure variance, ISR coverage continuity, reserve preservation, and comms burden
 - Advantage: turns parameter tuning into strategic force-design leverage
 
@@ -142,7 +142,7 @@
   - heterogeneous fleet failures
 - Advantage: turns theory into evidence and exposes brittle interactions early
 
-## Strategic Recommendation
+## Strategic recommendation
 - Position STRIX as: swarm decision engine for denied, bandwidth-constrained, adversarial environments
 - Do not over-position against full-stack incumbents on general production readiness yet
 - Win on one claim only: better decentralized decision quality under uncertainty per watt, per byte, and per lost asset
