@@ -657,7 +657,7 @@ impl SwarmOrchestrator {
         &mut self,
         telemetry: &[(u32, Telemetry)],
         fear: &TickFearState,
-        _dt: f64,
+        dt: f64,
     ) -> FleetSnapshot {
         // ── 1. Update particle filters from telemetry ─────────────────────
         let mut fleet_centroid = Vector3::zeros();
