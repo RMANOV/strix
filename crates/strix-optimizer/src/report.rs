@@ -5,6 +5,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::evaluator::DoctrineProfile;
 use crate::pareto::{ParetoArchive, ParetoSolution};
 
 /// Reference point for hypervolume computation (worst-case objectives).
@@ -13,13 +14,17 @@ pub const HV_REFERENCE: [f64; 3] = [0.0, 0.0, 0.0];
 /// Full optimization result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizationReport {
+    /// Doctrine profile used when producing this report.
+    pub doctrine_profile: String,
+    /// Human-readable objective labels for F0/F1/F2.
+    pub objective_labels: [String; 3],
     /// Final Pareto front as a flat list of solutions.
     pub pareto_front: Vec<ParetoSolution>,
-    /// Best solution maximising F0 (survival rate).
+    /// Best solution maximising F0.
     pub best_survival: Option<ParetoSolution>,
-    /// Best solution maximising F1 (stability / low regime churn).
+    /// Best solution maximising F1.
     pub best_stability: Option<ParetoSolution>,
-    /// Best solution maximising F2 (battery / mission efficiency).
+    /// Best solution maximising F2.
     pub best_efficiency: Option<ParetoSolution>,
     /// `(iteration, hypervolume)` recorded after each optimizer step.
     pub hypervolume_history: Vec<(usize, f64)>,
@@ -33,6 +38,8 @@ impl OptimizationReport {
     /// Build from a finalised Pareto archive and history bookkeeping.
     pub fn from_archive(
         archive: &ParetoArchive,
+        doctrine: DoctrineProfile,
+        objective_labels: [&str; 3],
         hypervolume_history: Vec<(usize, f64)>,
         total_evaluations: usize,
         elapsed_secs: f64,
@@ -53,6 +60,8 @@ impl OptimizationReport {
             .cloned();
 
         Self {
+            doctrine_profile: doctrine.as_str().to_string(),
+            objective_labels: objective_labels.map(str::to_string),
             pareto_front: solutions,
             best_survival,
             best_stability,
@@ -73,6 +82,11 @@ impl OptimizationReport {
     /// Print a human-readable summary to stdout.
     pub fn print_summary(&self) {
         println!("=== STRIX Optimizer Results ===");
+        println!("  Doctrine:           {}", self.doctrine_profile);
+        println!(
+            "  Objectives:         [{}, {}, {}]",
+            self.objective_labels[0], self.objective_labels[1], self.objective_labels[2]
+        );
         println!("  Pareto front size:  {}", self.pareto_front.len());
         println!("  Total evaluations:  {}", self.total_evaluations);
         println!("  Elapsed:            {:.1}s", self.elapsed_secs);
@@ -86,20 +100,35 @@ impl OptimizationReport {
 
         if let Some(s) = &self.best_survival {
             println!(
-                "    Survival:    {:.4}  (stability={:.4}, efficiency={:.4})",
-                s.objectives[0], s.objectives[1], s.objectives[2]
+                "    {}: {:.4}  ({}={:.4}, {}={:.4})",
+                self.objective_labels[0],
+                s.objectives[0],
+                self.objective_labels[1],
+                s.objectives[1],
+                self.objective_labels[2],
+                s.objectives[2]
             );
         }
         if let Some(s) = &self.best_stability {
             println!(
-                "    Stability:   {:.4}  (survival={:.4}, efficiency={:.4})",
-                s.objectives[1], s.objectives[0], s.objectives[2]
+                "    {}: {:.4}  ({}={:.4}, {}={:.4})",
+                self.objective_labels[1],
+                s.objectives[1],
+                self.objective_labels[0],
+                s.objectives[0],
+                self.objective_labels[2],
+                s.objectives[2]
             );
         }
         if let Some(s) = &self.best_efficiency {
             println!(
-                "    Efficiency:  {:.4}  (survival={:.4}, stability={:.4})",
-                s.objectives[2], s.objectives[0], s.objectives[1]
+                "    {}: {:.4}  ({}={:.4}, {}={:.4})",
+                self.objective_labels[2],
+                s.objectives[2],
+                self.objective_labels[0],
+                s.objectives[0],
+                self.objective_labels[1],
+                s.objectives[1]
             );
         }
 
