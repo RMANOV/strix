@@ -158,7 +158,14 @@ pub struct Aggregates {
     pub cusum_fires: usize,
     pub cbf_activations: usize,
     pub cbf_violations: usize,
+    pub cbf_activation_ticks: usize,
+    pub cbf_constraints_total: usize,
+    pub cbf_constraints_peak: usize,
+    pub cbf_burden_mean: f64,
     pub auction_rounds: usize,
+    pub coordination_churn_total: usize,
+    pub coordination_churn_peak: usize,
+    pub coordination_burden_mean: f64,
     pub drones_lost: usize,
     pub drones_survived: usize,
     pub max_intent_score: f64,
@@ -249,7 +256,18 @@ impl fmt::Display for BattleReport {
         writeln!(f, "  CUSUM fires:       {}", a.cusum_fires)?;
         writeln!(f, "  CBF activations:   {}", a.cbf_activations)?;
         writeln!(f, "  CBF violations:    {}", a.cbf_violations)?;
+        writeln!(f, "  CBF active ticks:  {}", a.cbf_activation_ticks)?;
+        writeln!(
+            f,
+            "  CBF constraints:   total={} peak={} burden={:.3}",
+            a.cbf_constraints_total, a.cbf_constraints_peak, a.cbf_burden_mean
+        )?;
         writeln!(f, "  Auction rounds:    {}", a.auction_rounds)?;
+        writeln!(
+            f,
+            "  Coordination load: total={} peak={} burden={:.3}",
+            a.coordination_churn_total, a.coordination_churn_peak, a.coordination_burden_mean
+        )?;
         writeln!(f, "  Drones lost:       {}", a.drones_lost)?;
         writeln!(f, "  Drones survived:   {}", a.drones_survived)?;
         writeln!(
