@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use nalgebra::Vector3;
 use strix_adapters::simulator::SimulatorFleet;
@@ -50,6 +50,18 @@ pub struct Engine {
     prev_regimes: HashMap<u32, Regime>,
     /// Track previous assignments count to detect auction rounds.
     prev_assignment_count: usize,
+    /// Track assignment-set churn as a coordination burden metric.
+    prev_assignments: HashSet<(u32, u32)>,
+    /// Count ticks where any CBF constraint fired.
+    cbf_activation_ticks: usize,
+    /// Total number of active CBF constraints accumulated over the run.
+    cbf_constraints_total: usize,
+    /// Peak number of CBF constraints active in a single tick.
+    cbf_constraints_peak: usize,
+    /// Total assignment churn over the run.
+    coordination_churn_total: usize,
+    /// Peak assignment churn in a single tick.
+    coordination_churn_peak: usize,
     /// Track previous kill zone count.
     prev_kill_zones: usize,
     /// Track cumulative distance per drone.
@@ -97,6 +109,12 @@ impl Engine {
             n_threats_initial: n_threats,
             prev_regimes: HashMap::new(),
             prev_assignment_count: 0,
+            prev_assignments: HashSet::new(),
+            cbf_activation_ticks: 0,
+            cbf_constraints_total: 0,
+            cbf_constraints_peak: 0,
+            coordination_churn_total: 0,
+            coordination_churn_peak: 0,
             prev_kill_zones: 0,
             distances: HashMap::new(),
             prev_positions: HashMap::new(),
@@ -378,6 +396,26 @@ impl Engine {
             self.prev_assignment_count = decision.assignments.len();
         }
 
+        // Track explicit safety / coordination burden metrics.
+        let active_constraints = decision.cbf_active_constraints as usize;
+        if active_constraints > 0 {
+            self.cbf_activation_ticks += 1;
+        }
+        self.cbf_constraints_total += active_constraints;
+        self.cbf_constraints_peak = self.cbf_constraints_peak.max(active_constraints);
+
+        let current_assignments: HashSet<(u32, u32)> = decision
+            .assignments
+            .iter()
+            .map(|assignment| (assignment.drone_id, assignment.task_id))
+            .collect();
+        let coordination_churn = current_assignments
+            .symmetric_difference(&self.prev_assignments)
+            .count();
+        self.coordination_churn_total += coordination_churn;
+        self.coordination_churn_peak = self.coordination_churn_peak.max(coordination_churn);
+        self.prev_assignments = current_assignments;
+
         // Detect new kill zones
         if decision.kill_zone_count > self.prev_kill_zones {
             self.prev_kill_zones = decision.kill_zone_count;
@@ -522,11 +560,7 @@ impl Engine {
             .filter(|e| matches!(e.event_type, TimelineEventType::CusumFired { .. }))
             .count();
 
-        let cbf_activations = self
-            .timeline
-            .iter()
-            .filter(|e| matches!(e.event_type, TimelineEventType::CbfCorrection { .. }))
-            .count();
+        let cbf_activations = self.cbf_activation_ticks;
 
         let auction_rounds = self
             .timeline
@@ -568,15 +602,26 @@ impl Engine {
         } else {
             batteries.iter().sum::<f64>() / batteries.len() as f64
         };
+        let total_ticks = (self.config.duration / self.config.dt) as usize;
+        let burden_denominator = (total_ticks.max(1) * self.n_drones_initial.max(1)) as f64;
+        let cbf_burden_mean = self.cbf_constraints_total as f64 / burden_denominator;
+        let coordination_burden_mean = self.coordination_churn_total as f64 / burden_denominator;
 
         let aggregates = Aggregates {
-            total_ticks: (self.config.duration / self.config.dt) as usize,
+            total_ticks,
             regime_changes: total_regime_changes,
             hysteresis_blocks,
             cusum_fires,
             cbf_activations,
             cbf_violations: 0, // CBF should prevent all violations
+            cbf_activation_ticks: self.cbf_activation_ticks,
+            cbf_constraints_total: self.cbf_constraints_total,
+            cbf_constraints_peak: self.cbf_constraints_peak,
+            cbf_burden_mean,
             auction_rounds,
+            coordination_churn_total: self.coordination_churn_total,
+            coordination_churn_peak: self.coordination_churn_peak,
+            coordination_burden_mean,
             drones_lost: self.lost_drones.len(),
             drones_survived: self.n_drones_initial - self.lost_drones.len(),
             max_intent_score,
