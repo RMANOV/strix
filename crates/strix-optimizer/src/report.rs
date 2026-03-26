@@ -141,7 +141,7 @@ impl OptimizationReport {
         }
         if let Some((iter, hv)) = hv_pts.last() {
             let last_idx = hv_pts.len().saturating_sub(1);
-            if last_idx % stride != 0 {
+            if !last_idx.is_multiple_of(stride) {
                 println!("    iter {:>4}: {:.6}", iter, hv);
             }
         }
