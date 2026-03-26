@@ -657,7 +657,7 @@ impl SwarmOrchestrator {
         &mut self,
         telemetry: &[(u32, Telemetry)],
         fear: &TickFearState,
-        dt: f64,
+        _dt: f64,
     ) -> FleetSnapshot {
         // ── 1. Update particle filters from telemetry ─────────────────────
         let mut fleet_centroid = Vector3::zeros();
@@ -744,7 +744,7 @@ impl SwarmOrchestrator {
             #[cfg(not(feature = "temporal"))]
             {
                 if let Some(filter) = self.nav_filters.get_mut(id) {
-                    let (_pos, _vel, _probs) = filter.step(&obs, &bearing, 1.0, dt);
+                    let (_pos, _vel, _probs) = filter.step(&obs, &bearing, 1.0, _dt);
                 }
             }
 
@@ -807,7 +807,7 @@ impl SwarmOrchestrator {
         telemetry: &[(u32, Telemetry)],
         fear: &TickFearState,
         fleet: &FleetSnapshot,
-        dt: f64,
+        _dt: f64,
     ) -> RegimeDecisions {
         // ── 2. Detect regimes (CUSUM + signals) + intent ─────────────────
 
@@ -1442,7 +1442,7 @@ impl SwarmOrchestrator {
         &mut self,
         telemetry: &[(u32, Telemetry)],
         tasks: &[Task],
-        dt: f64,
+        _dt: f64,
     ) -> SwarmDecision {
         self.tick_count += 1;
         self.sim_time += dt;
