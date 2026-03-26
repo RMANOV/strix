@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
-use strix_core::cbf::{self, CbfConfig, NoFlyZone};
+use strix_core::cbf::{self, CbfConfig, NeighborState, NoFlyZone};
 
 use crate::traits::*;
 
@@ -536,7 +536,7 @@ impl SimulatorFleet {
         };
 
         // Gather all positions.
-        let positions: Vec<(u32, Vector3<f64>)> = self
+        let neighbor_states: Vec<(u32, NeighborState)> = self
             .drones
             .iter()
             .filter(|d| !d.has_failed())
@@ -544,7 +544,10 @@ impl SimulatorFleet {
                 d.get_telemetry().ok().map(|t| {
                     (
                         d.id(),
-                        Vector3::new(t.position[0], t.position[1], t.position[2]),
+                        NeighborState {
+                            position: Vector3::new(t.position[0], t.position[1], t.position[2]),
+                            velocity: Vector3::new(t.velocity[0], t.velocity[1], t.velocity[2]),
+                        },
                     )
                 })
             })
@@ -563,15 +566,20 @@ impl SimulatorFleet {
             let my_pos = Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
             let my_vel = Vector3::new(telem.velocity[0], telem.velocity[1], telem.velocity[2]);
 
-            // Collect neighbor positions (exclude self).
-            let neighbors: Vec<Vector3<f64>> = positions
+            // Collect neighbor states (exclude self).
+            let neighbors: Vec<NeighborState> = neighbor_states
                 .iter()
                 .filter(|(id, _)| *id != drone.id())
-                .map(|(_, pos)| *pos)
+                .map(|(_, state)| state.clone())
                 .collect();
 
-            let result =
-                cbf::cbf_filter(&my_pos, &my_vel, &neighbors, &self.no_fly_zones, cbf_config);
+            let result = cbf::cbf_filter_with_neighbor_states(
+                &my_pos,
+                &my_vel,
+                &neighbors,
+                &self.no_fly_zones,
+                cbf_config,
+            );
 
             if result.any_active {
                 // Apply corrected velocity directly to internal state.
