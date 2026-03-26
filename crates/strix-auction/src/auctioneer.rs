@@ -791,7 +791,11 @@ mod tests {
 
         let auctioneer = Auctioneer::new().with_bid_cap(2);
         let bids = auctioneer.collect_bids(&[drone], &tasks, &[], &HashMap::new(), &[]);
-        assert_eq!(bids.len(), 2, "bid cap should retain only the strongest bids");
+        assert_eq!(
+            bids.len(),
+            2,
+            "bid cap should retain only the strongest bids"
+        );
     }
 
     #[test]
