@@ -7,7 +7,7 @@ use clap::Parser;
 use rayon::prelude::*;
 
 use strix_optimizer::{
-    evaluator::Evaluator,
+    evaluator::{DoctrineProfile, Evaluator},
     param_space::{strix_full, ParamVec},
     pareto::ParetoArchive,
     report::{OptimizationReport, HV_REFERENCE},
@@ -41,18 +41,30 @@ struct Cli {
     /// Simulation timestep (seconds)
     #[arg(long, default_value_t = 0.1)]
     dt: f64,
+    /// Doctrine profile for objective shaping.
+    #[arg(long, default_value = "balanced")]
+    doctrine: String,
 }
 
 fn main() {
     let cli = Cli::parse();
 
+    let doctrine = cli.doctrine.parse::<DoctrineProfile>().unwrap_or_else(|err| {
+        eprintln!("Invalid doctrine '{}': {}", cli.doctrine, err);
+        std::process::exit(2);
+    });
+
     println!(
-        "strix-optimize v0.1.0 | iters={} pop={} archive={} seed={}",
-        cli.iterations, cli.population, cli.archive_size, cli.seed
+        "strix-optimize v0.1.0 | iters={} pop={} archive={} seed={} doctrine={}",
+        cli.iterations,
+        cli.population,
+        cli.archive_size,
+        cli.seed,
+        doctrine.as_str()
     );
 
     let eval_space = strix_full();
-    let evaluator = Evaluator::default_scenarios();
+    let evaluator = Evaluator::default_scenarios().with_doctrine(doctrine);
     let t0 = Instant::now();
 
     let smco_config = SmcoConfig {
