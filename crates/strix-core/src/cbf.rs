@@ -186,8 +186,8 @@ pub fn cbf_filter_with_neighbor_states(
         let h_floor = my_pos.z - floor_limit;
         if h_floor < 0.0 {
             let penetration = (-h_floor).max(0.5);
-            correction.z += (config.alpha * penetration + (-effective_vz).max(0.0))
-                .min(config.max_correction);
+            correction.z +=
+                (config.alpha * penetration + (-effective_vz).max(0.0)).min(config.max_correction);
             active_count += 1;
         } else {
             let dh_dt = desired_vel.z + correction.z;
@@ -205,8 +205,8 @@ pub fn cbf_filter_with_neighbor_states(
         let h_ceil = ceiling_limit - my_pos.z;
         if h_ceil < 0.0 {
             let penetration = (-h_ceil).max(0.5);
-            correction.z -= (config.alpha * penetration + effective_vz.max(0.0))
-                .min(config.max_correction);
+            correction.z -=
+                (config.alpha * penetration + effective_vz.max(0.0)).min(config.max_correction);
             active_count += 1;
         } else {
             let dh_dt = -(desired_vel.z + correction.z);
@@ -494,7 +494,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn moving_neighbor_velocity_is_respected() {
         let config = default_config();
@@ -506,8 +505,15 @@ mod tests {
         }];
 
         let result = cbf_filter_with_neighbor_states(&pos, &vel, &neighbors, &[], &config);
-        assert!(result.any_active, "closing neighbor velocity should trigger CBF");
-        assert!(result.correction.x < 0.0, "correction should push away: {:?}", result.correction);
+        assert!(
+            result.any_active,
+            "closing neighbor velocity should trigger CBF"
+        );
+        assert!(
+            result.correction.x < 0.0,
+            "correction should push away: {:?}",
+            result.correction
+        );
     }
 
     #[test]
@@ -517,8 +523,15 @@ mod tests {
         let vel = Vector3::new(0.0, 0.0, -5.0);
 
         let result = cbf_filter(&pos, &vel, &[], &[], &config);
-        assert!(result.any_active, "predictive altitude margin should activate early");
-        assert!(result.correction.z > 0.0, "correction should push down: {:?}", result.correction);
+        assert!(
+            result.any_active,
+            "predictive altitude margin should activate early"
+        );
+        assert!(
+            result.correction.z > 0.0,
+            "correction should push down: {:?}",
+            result.correction
+        );
     }
 
     #[test]
@@ -532,7 +545,14 @@ mod tests {
         let vel = Vector3::new(8.0, 0.0, 0.0);
 
         let result = cbf_filter(&pos, &vel, &[], &nfz, &config);
-        assert!(result.any_active, "predictive NFZ margin should activate before crossing");
-        assert!(result.correction.x < 0.0, "correction should push away from NFZ: {:?}", result.correction);
+        assert!(
+            result.any_active,
+            "predictive NFZ margin should activate before crossing"
+        );
+        assert!(
+            result.correction.x < 0.0,
+            "correction should push away from NFZ: {:?}",
+            result.correction
+        );
     }
 }
