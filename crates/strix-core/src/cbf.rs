@@ -73,6 +73,25 @@ pub struct NoFlyZone {
     pub radius: f64,
 }
 
+/// Neighbor state used by the CBF to account for relative motion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NeighborState {
+    /// Neighbor position in NED.
+    pub position: Vector3<f64>,
+    /// Neighbor velocity in NED.
+    pub velocity: Vector3<f64>,
+}
+
+impl NeighborState {
+    /// Convenience constructor for legacy call sites that only know position.
+    pub fn stationary(position: Vector3<f64>) -> Self {
+        Self {
+            position,
+            velocity: Vector3::zeros(),
+        }
+    }
+}
+
 /// Result of a CBF filter operation.
 #[derive(Debug, Clone)]
 pub struct CbfResult {
@@ -105,80 +124,89 @@ pub fn cbf_filter(
     nfz: &[NoFlyZone],
     config: &CbfConfig,
 ) -> CbfResult {
+    let neighbor_states: Vec<NeighborState> = neighbors
+        .iter()
+        .cloned()
+        .map(NeighborState::stationary)
+        .collect();
+    cbf_filter_with_neighbor_states(my_pos, desired_vel, &neighbor_states, nfz, config)
+}
+
+/// Apply the CBF using full neighbor state (position + velocity).
+pub fn cbf_filter_with_neighbor_states(
+    my_pos: &Vector3<f64>,
+    desired_vel: &Vector3<f64>,
+    neighbors: &[NeighborState],
+    nfz: &[NoFlyZone],
+    config: &CbfConfig,
+) -> CbfResult {
     let mut correction = Vector3::zeros();
     let mut active_count = 0u32;
 
-    // ── Constraint 1: Inter-drone separation ────────────────────────
-    let d_min_sq = config.min_separation * config.min_separation;
-
+    // ── Constraint 1: Inter-drone separation with relative-motion inflation ──
     for neighbor in neighbors {
-        let diff = my_pos - neighbor; // vector from neighbor to me
+        let effective_vel = desired_vel + correction;
+        let diff = my_pos - &neighbor.position;
         let dist_sq = diff.norm_squared();
-
-        // h(x) = ||p_i - p_j||^2 - d_min^2
-        let h = dist_sq - d_min_sq;
+        let dist = dist_sq.sqrt();
+        let direction = outward_direction(&diff, &effective_vel);
+        let relative_vel = effective_vel - neighbor.velocity;
+        let closing_speed = (-relative_vel.dot(&direction)).max(0.0);
+        let effective_separation = config.min_separation + 0.5 * closing_speed;
+        let h = dist_sq - effective_separation * effective_separation;
 
         if h < 0.0 {
-            // Already inside minimum separation — push away hard.
-            let dist = dist_sq.sqrt().max(1e-6);
-            correction += diff / dist * config.max_correction;
+            let radial_rel = relative_vel.dot(&direction);
+            let cancel_approach = (-radial_rel).max(0.0);
+            let penetration = (effective_separation - dist).max(0.5);
+            let push = (config.alpha * penetration + cancel_approach).min(config.max_correction);
+            correction += direction * push;
             active_count += 1;
             continue;
         }
 
-        // dh/dt = 2 * (p_i - p_j) . (v_i - v_j)
-        // For safety: dh/dt + alpha * h >= 0
-        // Assume neighbor velocity ≈ 0 for worst case.
-        let dh_dt = 2.0 * diff.dot(&(desired_vel + correction));
+        let dh_dt = 2.0 * diff.dot(&(effective_vel - neighbor.velocity));
         let constraint = dh_dt + config.alpha * h;
-
         if constraint < 0.0 {
-            // Need to correct: push velocity away from neighbor.
-            let dist = dist_sq.sqrt().max(1e-6);
-            let direction = diff / dist;
-            // Correction magnitude: just enough to satisfy constraint.
-            // dh/dt_corrected = dh/dt + 2*||diff||*correction_magnitude
-            let needed = -constraint / (2.0 * dist).max(1e-6);
-            correction += direction * needed.min(config.max_correction);
+            let needed = -constraint / (2.0 * dist.max(1e-6));
+            let radial_rel = relative_vel.dot(&direction);
+            let cancel_approach = (-radial_rel).max(0.0) * 0.5;
+            correction += direction * (needed + cancel_approach).min(config.max_correction);
             active_count += 1;
         }
     }
 
-    // ── Constraint 2: Altitude floor (NED: z positive is down) ──────
-    // h(x) = z - ceiling_ned >= 0 (ceiling_ned is the most negative = highest altitude)
-    // In NED: altitude_ceiling_ned = -5.0 means 5m AGL, z must be >= -5.0 (must not go higher than -5.0)
-    // Wait — NED convention: z positive = down. altitude_floor_ned = -500 means max altitude 500m.
-    // The drone must stay BELOW the floor and ABOVE the ceiling in NED terms:
-    //   z >= altitude_floor_ned (don't go too high — floor is the negative limit)
-    //   z <= altitude_ceiling_ned (don't go too low — ceiling is the positive limit)
-    //
-    // Actually, let's think about this clearly:
-    // NED: z=0 is ground level, z<0 is above ground, z>0 is below ground (underground).
-    // For drones: z is always negative (they're in the air).
-    // altitude_floor_ned = -500: max altitude (z must be >= -500, i.e. no higher than 500m)
-    // altitude_ceiling_ned = -5: min altitude (z must be <= -5, i.e. no lower than 5m)
+    // ── Constraint 2: Altitude bounds with predictive vertical margins ──────
     {
-        // Max altitude constraint: h = z - altitude_floor_ned >= 0
-        let h_floor = my_pos.z - config.altitude_floor_ned;
+        let effective_vz = desired_vel.z + correction.z;
+
+        // Max altitude bound (NED floor): start correcting earlier when climbing fast.
+        let climb_margin = 1.0 + (-effective_vz).max(0.0) * 0.5;
+        let floor_limit = config.altitude_floor_ned + climb_margin;
+        let h_floor = my_pos.z - floor_limit;
         if h_floor < 0.0 {
-            // Above max altitude — push down (increase z).
-            correction.z += config.max_correction;
+            let penetration = (-h_floor).max(0.5);
+            correction.z += (config.alpha * penetration + (-effective_vz).max(0.0))
+                .min(config.max_correction);
             active_count += 1;
         } else {
             let dh_dt = desired_vel.z + correction.z;
             let constraint = dh_dt + config.alpha * h_floor;
             if constraint < 0.0 {
-                // Approaching max altitude — add downward correction.
                 correction.z += (-constraint).min(config.max_correction);
                 active_count += 1;
             }
         }
 
-        // Min altitude constraint: h = altitude_ceiling_ned - z >= 0
-        let h_ceil = config.altitude_ceiling_ned - my_pos.z;
+        // Min altitude bound (NED ceiling): start correcting earlier when descending fast.
+        let effective_vz = desired_vel.z + correction.z;
+        let descent_margin = 1.0 + effective_vz.max(0.0) * 0.5;
+        let ceiling_limit = config.altitude_ceiling_ned - descent_margin;
+        let h_ceil = ceiling_limit - my_pos.z;
         if h_ceil < 0.0 {
-            // Below min altitude — push up (decrease z).
-            correction.z -= config.max_correction;
+            let penetration = (-h_ceil).max(0.5);
+            correction.z -= (config.alpha * penetration + effective_vz.max(0.0))
+                .min(config.max_correction);
             active_count += 1;
         } else {
             let dh_dt = -(desired_vel.z + correction.z);
@@ -190,31 +218,30 @@ pub fn cbf_filter(
         }
     }
 
-    // ── Constraint 3: No-fly zone avoidance ─────────────────────────
+    // ── Constraint 3: No-fly zone avoidance with ingress-aware inflation ────
     for zone in nfz {
-        let diff = my_pos - zone.center;
+        let effective_vel = desired_vel + correction;
+        let diff = my_pos - &zone.center;
         let dist_sq = diff.norm_squared();
-        let r_sq = zone.radius * zone.radius;
-
-        // h(x) = ||p - center||^2 - r^2
-        let h = dist_sq - r_sq;
+        let dist = dist_sq.sqrt();
+        let direction = outward_direction(&diff, &effective_vel);
+        let inward_speed = (-effective_vel.dot(&direction)).max(0.0);
+        let effective_radius = zone.radius + 0.5 * inward_speed + config.min_separation * 0.2;
+        let h = dist_sq - effective_radius * effective_radius;
 
         if h < 0.0 {
-            // Inside NFZ — push out maximally.
-            let dist = dist_sq.sqrt().max(1e-6);
-            correction += diff / dist * config.max_correction;
+            let penetration = (effective_radius - dist).max(0.5);
+            let push = (config.alpha * penetration + inward_speed).min(config.max_correction);
+            correction += direction * push;
             active_count += 1;
             continue;
         }
 
-        let dh_dt = 2.0 * diff.dot(&(desired_vel + correction));
+        let dh_dt = 2.0 * diff.dot(&effective_vel);
         let constraint = dh_dt + config.alpha * h;
-
         if constraint < 0.0 {
-            let dist = dist_sq.sqrt().max(1e-6);
-            let direction = diff / dist;
-            let needed = -constraint / (2.0 * dist).max(1e-6);
-            correction += direction * needed.min(config.max_correction);
+            let needed = -constraint / (2.0 * dist.max(1e-6));
+            correction += direction * (needed + inward_speed * 0.5).min(config.max_correction);
             active_count += 1;
         }
     }
@@ -231,6 +258,24 @@ pub fn cbf_filter(
         any_active: active_count > 0,
         active_count,
     }
+}
+
+fn outward_direction(diff: &Vector3<f64>, fallback_velocity: &Vector3<f64>) -> Vector3<f64> {
+    let diff_norm = diff.norm();
+    if diff_norm > 1e-6 {
+        return Vector3::new(diff.x / diff_norm, diff.y / diff_norm, diff.z / diff_norm);
+    }
+
+    let vel_norm = fallback_velocity.norm();
+    if vel_norm > 1e-6 {
+        return Vector3::new(
+            -fallback_velocity.x / vel_norm,
+            -fallback_velocity.y / vel_norm,
+            -fallback_velocity.z / vel_norm,
+        );
+    }
+
+    Vector3::new(1.0, 0.0, 0.0)
 }
 
 /// Quick check: is a position safe (all constraints satisfied)?
@@ -447,5 +492,47 @@ mod tests {
             "moving away should not trigger CBF, correction = {:?}",
             result.correction
         );
+    }
+
+
+    #[test]
+    fn moving_neighbor_velocity_is_respected() {
+        let config = default_config();
+        let pos = Vector3::new(0.0, 0.0, -50.0);
+        let vel = Vector3::zeros();
+        let neighbors = vec![NeighborState {
+            position: Vector3::new(8.0, 0.0, -50.0),
+            velocity: Vector3::new(-8.0, 0.0, 0.0),
+        }];
+
+        let result = cbf_filter_with_neighbor_states(&pos, &vel, &neighbors, &[], &config);
+        assert!(result.any_active, "closing neighbor velocity should trigger CBF");
+        assert!(result.correction.x < 0.0, "correction should push away: {:?}", result.correction);
+    }
+
+    #[test]
+    fn fast_climb_triggers_altitude_margin_before_floor_breach() {
+        let config = default_config();
+        let pos = Vector3::new(0.0, 0.0, -494.0);
+        let vel = Vector3::new(0.0, 0.0, -5.0);
+
+        let result = cbf_filter(&pos, &vel, &[], &[], &config);
+        assert!(result.any_active, "predictive altitude margin should activate early");
+        assert!(result.correction.z > 0.0, "correction should push down: {:?}", result.correction);
+    }
+
+    #[test]
+    fn fast_ingress_to_nfz_triggers_predictive_margin() {
+        let config = default_config();
+        let nfz = vec![NoFlyZone {
+            center: Vector3::new(26.0, 0.0, -50.0),
+            radius: 15.0,
+        }];
+        let pos = Vector3::new(0.0, 0.0, -50.0);
+        let vel = Vector3::new(8.0, 0.0, 0.0);
+
+        let result = cbf_filter(&pos, &vel, &[], &nfz, &config);
+        assert!(result.any_active, "predictive NFZ margin should activate before crossing");
+        assert!(result.correction.x < 0.0, "correction should push away from NFZ: {:?}", result.correction);
     }
 }
