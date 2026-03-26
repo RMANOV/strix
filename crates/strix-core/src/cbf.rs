@@ -146,7 +146,7 @@ pub fn cbf_filter_with_neighbor_states(
     // ── Constraint 1: Inter-drone separation with relative-motion inflation ──
     for neighbor in neighbors {
         let effective_vel = desired_vel + correction;
-        let diff = my_pos - &neighbor.position;
+        let diff = my_pos - neighbor.position;
         let dist_sq = diff.norm_squared();
         let dist = dist_sq.sqrt();
         let direction = outward_direction(&diff, &effective_vel);
@@ -221,7 +221,7 @@ pub fn cbf_filter_with_neighbor_states(
     // ── Constraint 3: No-fly zone avoidance with ingress-aware inflation ────
     for zone in nfz {
         let effective_vel = desired_vel + correction;
-        let diff = my_pos - &zone.center;
+        let diff = my_pos - zone.center;
         let dist_sq = diff.norm_squared();
         let dist = dist_sq.sqrt();
         let direction = outward_direction(&diff, &effective_vel);
