@@ -24,20 +24,15 @@ use crate::param_space::{ParamSpace, ParamVec};
 // ---------------------------------------------------------------------------
 
 /// Doctrine-level scoring profile for optimization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DoctrineProfile {
+    #[default]
     Balanced,
     SurvivalFirst,
     PersistentIsr,
     CommunicationsDenied,
     AggressiveStrike,
-}
-
-impl Default for DoctrineProfile {
-    fn default() -> Self {
-        Self::Balanced
-    }
 }
 
 impl DoctrineProfile {
