@@ -103,7 +103,7 @@ fn main() {
         let hv = optimizer.hypervolume(HV_REFERENCE);
         hv_history.push((iter, hv));
 
-        if iter % 10 == 0 || iter == 1 {
+        if iter.is_multiple_of(10) || iter == 1 {
             println!(
                 "  iter {:>4}/{}: archive={} hv={:.6} step={:.4} evaluated={}",
                 iter,
