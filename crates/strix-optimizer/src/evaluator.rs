@@ -101,11 +101,11 @@ impl DoctrineProfile {
         match self {
             Self::Balanced => DoctrineScoring {
                 objective_0: ObjectiveBlend {
-                    survival_rate: 0.50,
-                    stability: 0.15,
+                    survival_rate: 0.48,
+                    stability: 0.14,
                     battery_mean: 0.0,
                     battery_floor: 0.10,
-                    safety_margin: 0.25,
+                    safety_margin: 0.28,
                     coordination_margin: 0.0,
                     recovery_margin: 0.0,
                 },
@@ -130,11 +130,11 @@ impl DoctrineProfile {
             },
             Self::SurvivalFirst => DoctrineScoring {
                 objective_0: ObjectiveBlend {
-                    survival_rate: 0.60,
+                    survival_rate: 0.50,
                     stability: 0.05,
                     battery_mean: 0.0,
                     battery_floor: 0.10,
-                    safety_margin: 0.25,
+                    safety_margin: 0.35,
                     coordination_margin: 0.0,
                     recovery_margin: 0.0,
                 },
@@ -179,9 +179,9 @@ impl DoctrineProfile {
                 objective_2: ObjectiveBlend {
                     survival_rate: 0.0,
                     stability: 0.0,
-                    battery_mean: 0.40,
-                    battery_floor: 0.20,
-                    safety_margin: 0.20,
+                    battery_mean: 0.50,
+                    battery_floor: 0.25,
+                    safety_margin: 0.05,
                     coordination_margin: 0.20,
                     recovery_margin: 0.0,
                 },
@@ -235,13 +235,13 @@ impl DoctrineProfile {
                     recovery_margin: 0.25,
                 },
                 objective_2: ObjectiveBlend {
-                    survival_rate: 0.15,
-                    stability: 0.0,
-                    battery_mean: 0.35,
-                    battery_floor: 0.15,
-                    safety_margin: 0.15,
-                    coordination_margin: 0.20,
-                    recovery_margin: 0.0,
+                    survival_rate: 0.25,
+                    stability: 0.20,
+                    battery_mean: 0.15,
+                    battery_floor: 0.05,
+                    safety_margin: 0.10,
+                    coordination_margin: 0.10,
+                    recovery_margin: 0.15,
                 },
             },
         }
@@ -291,9 +291,17 @@ impl ObjectiveComponents {
         let stability = (1.0 - churn_rate * 50.0).clamp(0.0, 1.0);
         let battery_mean = agg.battery_mean.clamp(0.0, 1.0);
         let battery_floor = agg.battery_min.clamp(0.0, 1.0);
-        let safety_margin = (1.0 - agg.cbf_violations as f64 / n_init).clamp(0.0, 1.0);
-        let coordination_load = agg.auction_rounds as f64 / total_ticks;
-        let coordination_margin = (1.0 - coordination_load * 5.0).clamp(0.0, 1.0);
+        let violation_rate = agg.cbf_violations as f64 / n_init;
+        let safety_margin = (1.0 - violation_rate - 0.35 * agg.cbf_burden_mean.clamp(0.0, 1.0))
+            .clamp(0.0, 1.0);
+        let coordination_round_rate = agg.auction_rounds as f64 / total_ticks;
+        let coordination_peak =
+            (agg.coordination_churn_peak as f64 / n_init).clamp(0.0, 1.0);
+        let coordination_margin =
+            (1.0 - 0.65 * agg.coordination_burden_mean.clamp(0.0, 1.0)
+                - 0.20 * coordination_round_rate.clamp(0.0, 1.0)
+                - 0.15 * coordination_peak)
+                .clamp(0.0, 1.0);
         let recovery_pressure =
             (agg.forced_evade_count as f64 + 0.5 * agg.kill_zones_created as f64) / n_init;
         let recovery_margin = (1.0 - recovery_pressure).clamp(0.0, 1.0);
@@ -615,12 +623,13 @@ mod tests {
     fn persistent_isr_rewards_reserve_efficiency_more_than_aggressive_strike() {
         let report = synthetic_report(Aggregates {
             total_ticks: 100,
-            drones_survived: 9,
-            regime_changes: 2,
-            battery_min: 0.8,
-            battery_mean: 0.9,
+            drones_survived: 6,
+            regime_changes: 8,
+            battery_min: 0.9,
+            battery_mean: 0.95,
             auction_rounds: 2,
             cbf_violations: 0,
+            coordination_burden_mean: 0.05,
             forced_evade_count: 0,
             kill_zones_created: 0,
             ..Default::default()
