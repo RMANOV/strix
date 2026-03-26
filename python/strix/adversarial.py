@@ -46,6 +46,17 @@ class EnemyBehavior(Enum):
     UNKNOWN = auto()
 
 
+class EnemyDoctrine(Enum):
+    """Doctrinal hypothesis library used for online model selection."""
+
+    FIXED_DEFENSE = auto()
+    DIRECT_ASSAULT = auto()
+    FLANKING = auto()
+    FIGHTING_WITHDRAWAL = auto()
+    DECOY = auto()
+    EW_JAMMING = auto()
+
+
 @dataclass
 class SensorReading:
     """A single sensor observation of an enemy entity."""
@@ -71,6 +82,9 @@ class EnemyEstimate:
     position_uncertainty_m: float = 0.0
     behavior: EnemyBehavior = EnemyBehavior.UNKNOWN
     behavior_probabilities: dict[EnemyBehavior, float] = field(default_factory=dict)
+    dominant_doctrine: EnemyDoctrine = EnemyDoctrine.FIXED_DEFENSE
+    doctrine_probabilities: dict[EnemyDoctrine, float] = field(default_factory=dict)
+    deception_score: float = 0.0
     time_to_contact_s: float = float("inf")
     confidence: float = 0.0
 
@@ -132,6 +146,17 @@ class AdversarialEngine:
         self._tracks: dict[int, list[_Particle]] = {}
         self._friendly_centroid = Vec3()
         self._transition = _THREAT_TRANSITION
+        self._doctrine_posteriors: dict[int, dict[EnemyDoctrine, float]] = {}
+        self._doctrine_prior = self._normalize_distribution(
+            {
+                EnemyDoctrine.FIXED_DEFENSE: 0.30,
+                EnemyDoctrine.DIRECT_ASSAULT: 0.20,
+                EnemyDoctrine.FLANKING: 0.15,
+                EnemyDoctrine.FIGHTING_WITHDRAWAL: 0.15,
+                EnemyDoctrine.DECOY: 0.10,
+                EnemyDoctrine.EW_JAMMING: 0.10,
+            }
+        )
 
         # Process noise parameters per regime
         self._noise = {
@@ -162,6 +187,7 @@ class AdversarialEngine:
             )
             particles.append(p)
         self._tracks[threat_id] = particles
+        self._doctrine_posteriors[threat_id] = dict(self._doctrine_prior)
         logger.info("Initialized threat track %d with %d particles", threat_id, self.n_particles)
 
     def predict_enemy(self, dt: float) -> dict[int, EnemyEstimate]:
@@ -177,6 +203,7 @@ class AdversarialEngine:
         estimates = {}
         for threat_id, particles in self._tracks.items():
             self._predict_particles(particles, dt)
+            self._update_doctrine_posterior(threat_id, particles=particles)
             estimates[threat_id] = self._estimate(threat_id, particles)
         return estimates
 
@@ -211,7 +238,10 @@ class AdversarialEngine:
         # Resample if ESS too low
         ess = self._effective_sample_size(particles)
         if ess < 0.5 * len(particles):
-            self._tracks[threat_id] = self._systematic_resample(particles)
+            particles = self._systematic_resample(particles)
+            self._tracks[threat_id] = particles
+
+        self._update_doctrine_posterior(threat_id, observation=observation, particles=particles)
 
     def classify_enemy_behavior(self, threat_id: int | None = None) -> dict[int, EnemyBehavior]:
         """Classify the most likely behavior for each (or a specific) threat.
@@ -225,6 +255,16 @@ class AdversarialEngine:
             probs = self._regime_probabilities(particles)
             max_regime = max(probs, key=probs.get)  # type: ignore[arg-type]
             result[tid] = max_regime
+        return result
+
+    def classify_enemy_doctrine(self, threat_id: int | None = None) -> dict[int, EnemyDoctrine]:
+        """Classify the most likely doctrinal hypothesis for each threat."""
+        targets = {threat_id: self._tracks[threat_id]} if threat_id is not None else self._tracks
+        result = {}
+        for tid, particles in targets.items():
+            self._update_doctrine_posterior(tid, particles=particles)
+            posterior = self._doctrine_posteriors.get(tid, self._doctrine_prior)
+            result[tid] = max(posterior, key=posterior.get)
         return result
 
     def time_to_contact(self, threat_id: int | None = None) -> dict[int, float]:
@@ -243,6 +283,7 @@ class AdversarialEngine:
     def drop_track(self, threat_id: int) -> None:
         """Stop tracking a threat (e.g., confirmed destroyed)."""
         self._tracks.pop(threat_id, None)
+        self._doctrine_posteriors.pop(threat_id, None)
 
     @property
     def tracked_threats(self) -> list[int]:
@@ -402,11 +443,25 @@ class AdversarialEngine:
 
     # -- Private: Estimation -------------------------------------------------
 
-    def _estimate(self, threat_id: int, particles: list[_Particle]) -> EnemyEstimate:
-        """Compute weighted estimate from a particle cloud."""
+    @staticmethod
+    def _normalize_distribution(distribution: dict, fallback: Optional[dict] = None) -> dict:
+        """Normalize a positive-valued distribution with safe fallback."""
+        cleaned = {key: max(float(value), 0.0) for key, value in distribution.items()}
+        total = sum(cleaned.values())
+        if total <= 1e-12:
+            if fallback is not None:
+                return dict(fallback)
+            if not cleaned:
+                return {}
+            uniform = 1.0 / len(cleaned)
+            return {key: uniform for key in cleaned}
+        return {key: value / total for key, value in cleaned.items()}
+
+    @staticmethod
+    def _weighted_mean_state(particles: list[_Particle]) -> tuple[Vec3, Vec3]:
+        """Compute weighted mean position and velocity for a particle cloud."""
         mx = my = mz = 0.0
         mvx = mvy = mvz = 0.0
-
         for p in particles:
             mx += p.x * p.weight
             my += p.y * p.weight
@@ -414,25 +469,148 @@ class AdversarialEngine:
             mvx += p.vx * p.weight
             mvy += p.vy * p.weight
             mvz += p.vz * p.weight
+        return Vec3(mx, my, mz), Vec3(mvx, mvy, mvz)
 
-        mean_pos = Vec3(mx, my, mz)
-        mean_vel = Vec3(mvx, mvy, mvz)
+    def _update_doctrine_posterior(
+        self,
+        threat_id: int,
+        observation: SensorReading | None = None,
+        particles: Optional[list[_Particle]] = None,
+    ) -> None:
+        """Update doctrinal hypothesis posterior from kinematics and sensor cues."""
+        particles = particles or self._tracks.get(threat_id)
+        if not particles:
+            return
+
+        prior = dict(self._doctrine_posteriors.get(threat_id, self._doctrine_prior))
+        obs_likelihood = self._doctrine_likelihoods_from_observation(observation, particles)
+        behavior_likelihood = self._behavior_to_doctrine_likelihoods(particles)
+
+        posterior = {}
+        for doctrine, prior_prob in prior.items():
+            posterior[doctrine] = (
+                prior_prob
+                * obs_likelihood.get(doctrine, 1.0)
+                * behavior_likelihood.get(doctrine, 1.0)
+            )
+
+        self._doctrine_posteriors[threat_id] = self._normalize_distribution(
+            posterior,
+            self._doctrine_prior,
+        )
+
+    def _doctrine_likelihoods_from_observation(
+        self,
+        observation: SensorReading | None,
+        particles: list[_Particle],
+    ) -> dict[EnemyDoctrine, float]:
+        """Score doctrinal hypotheses from current observation geometry."""
+        mean_pos, mean_vel = self._weighted_mean_state(particles)
+        pos = observation.position if observation and observation.position is not None else mean_pos
+        vel = observation.velocity if observation and observation.velocity is not None else mean_vel
+        confidence = observation.confidence if observation is not None else 0.4
+
+        dx = self._friendly_centroid.x - pos.x
+        dy = self._friendly_centroid.y - pos.y
+        dz = self._friendly_centroid.z - pos.z
+        dist = max((dx**2 + dy**2 + dz**2) ** 0.5, 1.0)
+
+        speed = vel.norm()
+        closing_speed = (vel.x * dx + vel.y * dy + vel.z * dz) / dist
+        lateral_speed = max(speed * speed - closing_speed * closing_speed, 0.0) ** 0.5
+        lateral_ratio = lateral_speed / max(speed, 1.0)
+        signal_strength = observation.signal_strength_dbm if observation is not None else None
+        radar_cross_section = observation.radar_cross_section if observation is not None else None
+        sensor_type = (observation.sensor_type if observation is not None else "unknown").lower()
+
+        likelihoods = {
+            EnemyDoctrine.FIXED_DEFENSE: 0.65,
+            EnemyDoctrine.DIRECT_ASSAULT: 0.65,
+            EnemyDoctrine.FLANKING: 0.65,
+            EnemyDoctrine.FIGHTING_WITHDRAWAL: 0.65,
+            EnemyDoctrine.DECOY: 0.65,
+            EnemyDoctrine.EW_JAMMING: 0.65,
+        }
+
+        if speed < 4.0 and dist < 800.0:
+            likelihoods[EnemyDoctrine.FIXED_DEFENSE] += 0.7 * confidence
+        if closing_speed > 4.0 and lateral_ratio < 0.4:
+            likelihoods[EnemyDoctrine.DIRECT_ASSAULT] += 1.0 * confidence
+        if closing_speed > 0.5 and lateral_ratio >= 0.45:
+            likelihoods[EnemyDoctrine.FLANKING] += 1.0 * confidence
+        if closing_speed < -2.0:
+            likelihoods[EnemyDoctrine.FIGHTING_WITHDRAWAL] += 1.1 * confidence
+
+        if signal_strength is not None:
+            if signal_strength > -55.0:
+                likelihoods[EnemyDoctrine.EW_JAMMING] += 0.8 * confidence
+            if signal_strength > -50.0 and (radar_cross_section is None or radar_cross_section < 0.2):
+                likelihoods[EnemyDoctrine.DECOY] += 0.9 * confidence
+
+        if sensor_type in {"ew", "rf", "sigint"}:
+            likelihoods[EnemyDoctrine.EW_JAMMING] += 0.7 * confidence
+        if observation is not None and observation.bearing_rad is not None and observation.position is None:
+            likelihoods[EnemyDoctrine.DECOY] += 0.4 * confidence
+        if radar_cross_section is not None and radar_cross_section < 0.15:
+            likelihoods[EnemyDoctrine.DECOY] += 0.5 * confidence
+
+        return likelihoods
+
+    def _behavior_to_doctrine_likelihoods(
+        self,
+        particles: list[_Particle],
+    ) -> dict[EnemyDoctrine, float]:
+        """Map coarse particle regimes to richer doctrinal hypotheses."""
+        behavior_probs = self._regime_probabilities(particles)
+        defend = behavior_probs.get(EnemyBehavior.DEFENDING, 0.0)
+        attack = behavior_probs.get(EnemyBehavior.ATTACKING, 0.0)
+        retreat = behavior_probs.get(EnemyBehavior.RETREATING, 0.0)
+
+        return {
+            EnemyDoctrine.FIXED_DEFENSE: 0.7 + defend * 1.2,
+            EnemyDoctrine.DIRECT_ASSAULT: 0.7 + attack * 1.3,
+            EnemyDoctrine.FLANKING: 0.7 + attack * 0.9,
+            EnemyDoctrine.FIGHTING_WITHDRAWAL: 0.7 + retreat * 1.4,
+            EnemyDoctrine.DECOY: 0.7 + defend * 0.3 + retreat * 0.2,
+            EnemyDoctrine.EW_JAMMING: 0.7 + defend * 0.2 + attack * 0.2,
+        }
+
+    def _estimate(self, threat_id: int, particles: list[_Particle]) -> EnemyEstimate:
+        """Compute weighted estimate from a particle cloud."""
+        mean_pos, mean_vel = self._weighted_mean_state(particles)
 
         # Position uncertainty: weighted RMS distance from mean
         var = 0.0
         for p in particles:
-            var += p.weight * ((p.x - mx) ** 2 + (p.y - my) ** 2 + (p.z - mz) ** 2)
+            var += p.weight * ((p.x - mean_pos.x) ** 2 + (p.y - mean_pos.y) ** 2 + (p.z - mean_pos.z) ** 2)
         uncertainty = var**0.5
 
         # Regime probabilities
         probs = self._regime_probabilities(particles)
         max_behavior = max(probs, key=probs.get)  # type: ignore[arg-type]
 
+        self._update_doctrine_posterior(threat_id, particles=particles)
+        doctrine_probs = dict(self._doctrine_posteriors.get(threat_id, self._doctrine_prior))
+        dominant_doctrine = max(doctrine_probs, key=doctrine_probs.get)
+        deception_score = min(
+            1.0,
+            doctrine_probs.get(EnemyDoctrine.DECOY, 0.0)
+            + doctrine_probs.get(EnemyDoctrine.EW_JAMMING, 0.0),
+        )
+
         # Time-to-contact
         ttc = self._compute_ttc(mean_pos, mean_vel)
 
-        # Overall confidence: inversely proportional to uncertainty
-        confidence = max(0.0, min(1.0, 1.0 - uncertainty / 100.0))
+        # Overall confidence blends kinematic concentration with doctrine certainty.
+        kinematic_confidence = max(0.0, min(1.0, 1.0 - uncertainty / 100.0))
+        doctrine_certainty = max(doctrine_probs.values()) if doctrine_probs else 0.0
+        confidence = max(
+            0.0,
+            min(
+                1.0,
+                kinematic_confidence * 0.75 + doctrine_certainty * 0.25 - deception_score * 0.15,
+            ),
+        )
 
         return EnemyEstimate(
             threat_id=threat_id,
@@ -441,14 +619,25 @@ class AdversarialEngine:
             position_uncertainty_m=uncertainty,
             behavior=max_behavior,
             behavior_probabilities=probs,
+            dominant_doctrine=dominant_doctrine,
+            doctrine_probabilities=doctrine_probs,
+            deception_score=deception_score,
             time_to_contact_s=ttc,
             confidence=confidence,
         )
 
     def _regime_probabilities(self, particles: list[_Particle]) -> dict[EnemyBehavior, float]:
         """Compute weighted regime probabilities from particles."""
-        probs = {EnemyBehavior.DEFENDING: 0.0, EnemyBehavior.ATTACKING: 0.0, EnemyBehavior.RETREATING: 0.0}
-        regime_map = {_DEFEND: EnemyBehavior.DEFENDING, _ATTACK: EnemyBehavior.ATTACKING, _RETREAT: EnemyBehavior.RETREATING}
+        probs = {
+            EnemyBehavior.DEFENDING: 0.0,
+            EnemyBehavior.ATTACKING: 0.0,
+            EnemyBehavior.RETREATING: 0.0,
+        }
+        regime_map = {
+            _DEFEND: EnemyBehavior.DEFENDING,
+            _ATTACK: EnemyBehavior.ATTACKING,
+            _RETREAT: EnemyBehavior.RETREATING,
+        }
 
         for p in particles:
             behavior = regime_map.get(p.regime, EnemyBehavior.DEFENDING)
