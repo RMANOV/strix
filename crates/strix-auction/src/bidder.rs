@@ -231,10 +231,12 @@ pub fn calculate_bid_with_fear(c: &BidComponents, fear: f64) -> f64 {
 
 /// Scenario-enriched bid scoring.
 ///
-/// When phi-sim scenarios are available, incorporate doom/upside/confidence:
-/// - doom_value (negative) → additional risk penalty
-/// - upside_value (positive) → opportunity bonus
-/// - confidence → score multiplier
+/// This is a lightweight belief-space approximation over the existing phi-sim
+/// context. We retain the fast scalar bid path, but reinterpret the scenario
+/// tuple as a coarse outcome distribution:
+/// - `upside_value` contributes expected utility when confidence is high
+/// - `doom_value` contributes a CVaR-like downside penalty when uncertainty grows
+/// - `confidence` modulates both execution certainty and mission success odds
 pub fn calculate_bid_with_scenarios(
     c: &BidComponents,
     fear: f64,
@@ -243,8 +245,49 @@ pub fn calculate_bid_with_scenarios(
     confidence: f64,
 ) -> f64 {
     let base = calculate_bid_with_fear(c, fear);
-    let scenario_adjust = upside_value * 0.3 + doom_value * fear.clamp(0.0, 1.0) * 0.5;
-    base * confidence.clamp(0.3, 1.0) + scenario_adjust
+    let confidence = confidence.clamp(0.0, 1.0);
+    let success_prob = mission_success_probability(c, confidence);
+    let upside = upside_value.max(0.0);
+    let downside = (-doom_value).max(0.0);
+    let uncertainty = 1.0 - confidence;
+
+    let opportunity_bonus = upside * success_prob * (0.25 + 0.75 * confidence);
+    let downside_penalty = cvar_like_downside(c, fear, downside, confidence);
+    let uncertainty_drag = uncertainty
+        * (1.0 - success_prob)
+        * (1.0 + c.urgency_bonus + c.risk_exposure)
+        * 2.0;
+
+    base * confidence.clamp(0.3, 1.0) + opportunity_bonus - downside_penalty - uncertainty_drag
+}
+
+fn mission_success_probability(c: &BidComponents, confidence: f64) -> f64 {
+    let confidence = confidence.clamp(0.0, 1.0);
+    let proximity_quality = (c.proximity / (c.proximity + 0.05)).clamp(0.0, 1.0);
+    let urgency_drag = (c.urgency_bonus / (1.0 + c.urgency_bonus)).clamp(0.0, 1.0);
+
+    let success = 0.30 * c.capability.clamp(0.0, 1.0)
+        + 0.25 * c.energy.clamp(0.0, 1.0)
+        + 0.20 * (1.0 - c.risk_exposure.clamp(0.0, 1.0))
+        + 0.15 * proximity_quality
+        + 0.10 * confidence;
+
+    (success - urgency_drag * 0.08).clamp(0.0, 1.0)
+}
+
+fn cvar_like_downside(c: &BidComponents, fear: f64, downside_value: f64, confidence: f64) -> f64 {
+    if downside_value <= 0.0 {
+        return 0.0;
+    }
+
+    let fear = fear.clamp(0.0, 1.0);
+    let uncertainty = 1.0 - confidence.clamp(0.0, 1.0);
+
+    downside_value
+        * (0.35
+            + c.risk_exposure.clamp(0.0, 1.0) * 0.35
+            + fear * 0.20
+            + uncertainty * 0.25)
 }
 
 /// Compute capability match as fraction of required capabilities that the drone has.
@@ -609,6 +652,32 @@ mod tests {
             bid.score > 0.0,
             "bid with scenario context should produce positive score"
         );
+    }
+
+    #[test]
+    fn test_mission_success_probability_tracks_risk_and_confidence() {
+        let safer = BidComponents {
+            proximity: 0.2,
+            capability: 1.0,
+            energy: 0.9,
+            risk_exposure: 0.1,
+            urgency_bonus: 0.4,
+        };
+        let riskier = BidComponents {
+            proximity: 0.2,
+            capability: 1.0,
+            energy: 0.9,
+            risk_exposure: 0.7,
+            urgency_bonus: 0.4,
+        };
+
+        let high_conf = mission_success_probability(&safer, 0.9);
+        let low_conf = mission_success_probability(&safer, 0.2);
+        let risky_conf = mission_success_probability(&riskier, 0.9);
+
+        assert!((0.0..=1.0).contains(&high_conf));
+        assert!(high_conf > low_conf, "confidence should improve mission success odds");
+        assert!(high_conf > risky_conf, "lower risk should improve mission success odds");
     }
 
     // ── NaN/Inf fear safety guards ────────────────────────────────────────
