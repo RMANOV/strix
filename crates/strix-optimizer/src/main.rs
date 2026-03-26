@@ -49,10 +49,13 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
-    let doctrine = cli.doctrine.parse::<DoctrineProfile>().unwrap_or_else(|err| {
-        eprintln!("Invalid doctrine '{}': {}", cli.doctrine, err);
-        std::process::exit(2);
-    });
+    let doctrine = cli
+        .doctrine
+        .parse::<DoctrineProfile>()
+        .unwrap_or_else(|err| {
+            eprintln!("Invalid doctrine '{}': {}", cli.doctrine, err);
+            std::process::exit(2);
+        });
 
     println!(
         "strix-optimize v0.1.0 | iters={} pop={} archive={} seed={} doctrine={}",
