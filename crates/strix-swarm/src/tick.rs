@@ -807,7 +807,7 @@ impl SwarmOrchestrator {
         telemetry: &[(u32, Telemetry)],
         fear: &TickFearState,
         fleet: &FleetSnapshot,
-        _dt: f64,
+        dt: f64,
     ) -> RegimeDecisions {
         // ── 2. Detect regimes (CUSUM + signals) + intent ─────────────────
 
@@ -1442,7 +1442,7 @@ impl SwarmOrchestrator {
         &mut self,
         telemetry: &[(u32, Telemetry)],
         tasks: &[Task],
-        _dt: f64,
+        dt: f64,
     ) -> SwarmDecision {
         self.tick_count += 1;
         self.sim_time += dt;
