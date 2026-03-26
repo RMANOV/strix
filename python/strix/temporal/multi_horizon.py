@@ -21,6 +21,7 @@ risk budget set at the daily level.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -270,16 +271,22 @@ class MultiHorizonPlanner:
 
         for drone in alive_drones:
             waypoints = self._generate_tactical_waypoints(drone, state, cfg)
-            clearance = self._compute_obstacle_clearance(drone, state.obstacles)
-            separation = self._compute_min_separation(drone, alive_drones)
+            clearance = self._compute_waypoint_clearance(waypoints, state.obstacles)
+            separation = self._compute_rollout_min_separation(drone, waypoints, alive_drones)
+
+            veto_reasons = []
+            if clearance <= 2.0:
+                veto_reasons.append(f"obstacle clearance {clearance:.1f}m < 2m")
+            if separation <= 3.0:
+                veto_reasons.append(f"separation {separation:.1f}m < 3m")
 
             plan = TacticalPlan(
                 drone_id=drone.drone_id,
                 waypoints=waypoints,
                 obstacle_clearance_m=clearance,
                 min_separation_m=separation,
-                valid=clearance > 2.0 and separation > 3.0,
-                veto_reason="" if clearance > 2.0 else f"obstacle clearance {clearance:.1f}m < 2m",
+                valid=clearance > 2.0 and separation > 3.0 and len(waypoints) > 0,
+                veto_reason="; ".join(veto_reasons),
                 timestamp=now,
             )
             plans[drone.drone_id] = plan
@@ -320,7 +327,7 @@ class MultiHorizonPlanner:
         plan = OperationalPlan(
             formation=slots,
             formation_centroid=state.centroid,
-            formation_heading_rad=0.0,
+            formation_heading_rad=self._estimate_formation_heading(alive, state),
             speed_ms=self._select_cruise_speed(state),
             sensor_coverage_pct=coverage,
             valid=n >= 2,
@@ -423,26 +430,220 @@ class MultiHorizonPlanner:
         state: FleetState,
         cfg: HorizonConfig,
     ) -> list[Waypoint]:
-        """Generate a short obstacle-avoiding trajectory for one drone."""
-        waypoints = []
-        pos = drone.position
-        vel = drone.velocity
+        """Generate a short trajectory via a small heading/speed lattice search."""
+        steps = min(cfg.steps, 20)
+        if steps <= 0:
+            return []
 
-        for step in range(min(cfg.steps, 20)):
-            t = step * cfg.dt
-            # Simple linear projection (placeholder for RRT/potential-field planner)
-            wp = Waypoint(
-                position=Vec3(
-                    pos.x + vel.x * t,
-                    pos.y + vel.y * t,
-                    pos.z + vel.z * t,
-                ),
-                velocity=vel,
-                time_s=t,
+        preferred_direction = MultiHorizonPlanner._preferred_direction(drone, state)
+        nominal_speed = max(drone.velocity.norm(), 6.0)
+        heading_offsets = (
+            0.0,
+            math.radians(15.0),
+            math.radians(-15.0),
+            math.radians(30.0),
+            math.radians(-30.0),
+            math.radians(45.0),
+            math.radians(-45.0),
+            math.radians(60.0),
+            math.radians(-60.0),
+            math.radians(75.0),
+            math.radians(-75.0),
+        )
+        speed_scales = (0.55, 0.85, 1.0, 1.15)
+
+        best_waypoints: list[Waypoint] = []
+        best_score = float("-inf")
+
+        for heading_offset in heading_offsets:
+            heading_direction = MultiHorizonPlanner._rotate_xy(preferred_direction, heading_offset)
+            for speed_scale in speed_scales:
+                speed_ms = max(3.0, nominal_speed * speed_scale)
+                candidate = MultiHorizonPlanner._rollout_constant_velocity(
+                    drone=drone,
+                    direction=heading_direction,
+                    speed_ms=speed_ms,
+                    cfg=cfg,
+                    steps=steps,
+                )
+                score = MultiHorizonPlanner._score_tactical_rollout(
+                    drone=drone,
+                    state=state,
+                    waypoints=candidate,
+                    preferred_direction=preferred_direction,
+                    heading_offset_rad=heading_offset,
+                    speed_ms=speed_ms,
+                    nominal_speed_ms=nominal_speed,
+                )
+                if score > best_score:
+                    best_score = score
+                    best_waypoints = candidate
+
+        return best_waypoints
+
+    @staticmethod
+    def _rollout_constant_velocity(
+        drone: DroneSnapshot,
+        direction: Vec3,
+        speed_ms: float,
+        cfg: HorizonConfig,
+        steps: int,
+    ) -> list[Waypoint]:
+        """Roll out a constant-velocity candidate over the short tactical horizon."""
+        heading = math.atan2(direction.y, direction.x)
+        velocity = Vec3(direction.x * speed_ms, direction.y * speed_ms, drone.velocity.z)
+        waypoints: list[Waypoint] = []
+
+        for step in range(steps):
+            t = (step + 1) * cfg.dt
+            waypoints.append(
+                Waypoint(
+                    position=Vec3(
+                        drone.position.x + velocity.x * t,
+                        drone.position.y + velocity.y * t,
+                        drone.position.z + velocity.z * t,
+                    ),
+                    velocity=Vec3(velocity.x, velocity.y, velocity.z),
+                    time_s=t,
+                    heading_rad=heading,
+                )
             )
-            waypoints.append(wp)
 
         return waypoints
+
+    @staticmethod
+    def _score_tactical_rollout(
+        drone: DroneSnapshot,
+        state: FleetState,
+        waypoints: list[Waypoint],
+        preferred_direction: Vec3,
+        heading_offset_rad: float,
+        speed_ms: float,
+        nominal_speed_ms: float,
+    ) -> float:
+        """Score a candidate rollout by progress, safety margin, and exposure."""
+        if not waypoints:
+            return float("-inf")
+
+        clearance = MultiHorizonPlanner._compute_waypoint_clearance(waypoints, state.obstacles)
+        alive_drones = [d for d in state.drones if d.alive]
+        separation = MultiHorizonPlanner._compute_rollout_min_separation(drone, waypoints, alive_drones)
+        threat_exposure = MultiHorizonPlanner._path_threat_exposure(waypoints, state.threats)
+        last = waypoints[-1].position
+        progress = (
+            (last.x - drone.position.x) * preferred_direction.x
+            + (last.y - drone.position.y) * preferred_direction.y
+        )
+
+        clearance_bonus = 25.0 if math.isinf(clearance) else max(-8.0, min(clearance, 25.0))
+        separation_bonus = 20.0 if math.isinf(separation) else max(-8.0, min(separation - 3.0, 20.0))
+        clearance_shortfall = 0.0 if math.isinf(clearance) else max(0.0, 2.0 - clearance)
+        separation_shortfall = 0.0 if math.isinf(separation) else max(0.0, 3.0 - separation)
+        threat_weight = 45.0 if state.regime == RegimeLabel.EVADE else 25.0
+        turn_penalty = abs(heading_offset_rad) * 6.0
+        speed_penalty = abs(speed_ms - nominal_speed_ms) * 0.25
+
+        return (
+            progress
+            + 1.8 * clearance_bonus
+            + 0.9 * separation_bonus
+            - threat_weight * threat_exposure
+            - turn_penalty
+            - speed_penalty
+            - 40.0 * clearance_shortfall
+            - 25.0 * separation_shortfall
+        )
+
+    @staticmethod
+    def _compute_waypoint_clearance(waypoints: list[Waypoint], obstacles: list[tuple[Vec3, float]]) -> float:
+        """Minimum obstacle clearance across the full candidate trajectory."""
+        if not obstacles:
+            return float("inf")
+        min_clearance = float("inf")
+        for wp in waypoints:
+            for center, radius in obstacles:
+                dist = wp.position.distance_to(center) - radius
+                min_clearance = min(min_clearance, dist)
+        return min_clearance
+
+    @staticmethod
+    def _compute_rollout_min_separation(
+        drone: DroneSnapshot,
+        waypoints: list[Waypoint],
+        all_drones: list[DroneSnapshot],
+    ) -> float:
+        """Minimum predicted separation from the rest of the current fleet snapshot."""
+        others = [other for other in all_drones if other.drone_id != drone.drone_id and other.alive]
+        if not others:
+            return float("inf")
+
+        min_sep = float("inf")
+        for wp in waypoints:
+            for other in others:
+                dist = wp.position.distance_to(other.position)
+                min_sep = min(min_sep, dist)
+        return min_sep
+
+    @staticmethod
+    def _path_threat_exposure(waypoints: list[Waypoint], threats: list[Vec3]) -> float:
+        """Average normalized exposure to nearby threats along a candidate path."""
+        if not waypoints or not threats:
+            return 0.0
+
+        total_exposure = 0.0
+        for wp in waypoints:
+            step_exposure = 0.0
+            for threat in threats:
+                dist = wp.position.distance_to(threat)
+                if dist < 120.0:
+                    step_exposure = max(step_exposure, (120.0 - dist) / 120.0)
+            total_exposure += step_exposure
+        return total_exposure / len(waypoints)
+
+    @staticmethod
+    def _preferred_direction(drone: DroneSnapshot, state: FleetState) -> Vec3:
+        """Preferred horizontal direction before tactical safety corrections."""
+        horizontal_velocity = Vec3(drone.velocity.x, drone.velocity.y, 0.0)
+        if horizontal_velocity.norm() > 1.0:
+            return MultiHorizonPlanner._normalize_xy(horizontal_velocity)
+
+        if state.threats and state.regime == RegimeLabel.EVADE:
+            nearest = min(state.threats, key=lambda threat: drone.position.distance_to(threat))
+            return MultiHorizonPlanner._normalize_xy(
+                Vec3(drone.position.x - nearest.x, drone.position.y - nearest.y, 0.0)
+            )
+
+        if state.threats and state.regime == RegimeLabel.ENGAGE:
+            nearest = min(state.threats, key=lambda threat: drone.position.distance_to(threat))
+            return MultiHorizonPlanner._normalize_xy(
+                Vec3(nearest.x - drone.position.x, nearest.y - drone.position.y, 0.0)
+            )
+
+        to_centroid = Vec3(state.centroid.x - drone.position.x, state.centroid.y - drone.position.y, 0.0)
+        if to_centroid.norm() > 1.0:
+            return MultiHorizonPlanner._normalize_xy(to_centroid)
+
+        return Vec3(1.0, 0.0, 0.0)
+
+    @staticmethod
+    def _normalize_xy(vec: Vec3) -> Vec3:
+        """Normalize only the horizontal component of a vector."""
+        magnitude = (vec.x**2 + vec.y**2) ** 0.5
+        if magnitude <= 1e-6:
+            return Vec3(1.0, 0.0, 0.0)
+        return Vec3(vec.x / magnitude, vec.y / magnitude, 0.0)
+
+    @staticmethod
+    def _rotate_xy(direction: Vec3, angle_rad: float) -> Vec3:
+        """Rotate a horizontal direction vector by the given angle."""
+        base = MultiHorizonPlanner._normalize_xy(direction)
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+        return Vec3(
+            base.x * cos_a - base.y * sin_a,
+            base.x * sin_a + base.y * cos_a,
+            0.0,
+        )
 
     @staticmethod
     def _compute_obstacle_clearance(drone: DroneSnapshot, obstacles: list[tuple[Vec3, float]]) -> float:
@@ -489,6 +690,21 @@ class MultiHorizonPlanner:
             slots.append(FormationSlot(drone_id=drone.drone_id, offset=offset, role=role))
 
         return slots
+
+    @staticmethod
+    def _estimate_formation_heading(drones: list[DroneSnapshot], state: FleetState) -> float:
+        """Estimate formation heading from the fleet's aggregate motion."""
+        if drones:
+            mean_vx = sum(drone.velocity.x for drone in drones) / len(drones)
+            mean_vy = sum(drone.velocity.y for drone in drones) / len(drones)
+            if abs(mean_vx) > 1e-6 or abs(mean_vy) > 1e-6:
+                return math.atan2(mean_vy, mean_vx)
+
+        if state.threats:
+            nearest = min(state.threats, key=lambda threat: state.centroid.distance_to(threat))
+            return math.atan2(nearest.y - state.centroid.y, nearest.x - state.centroid.x)
+
+        return 0.0
 
     @staticmethod
     def _estimate_sensor_coverage(drones: list[DroneSnapshot], state: FleetState) -> float:
