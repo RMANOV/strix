@@ -539,6 +539,8 @@ class MultiHorizonPlanner:
         separation_bonus = 20.0 if math.isinf(separation) else max(-8.0, min(separation - 3.0, 20.0))
         clearance_shortfall = 0.0 if math.isinf(clearance) else max(0.0, 2.0 - clearance)
         separation_shortfall = 0.0 if math.isinf(separation) else max(0.0, 3.0 - separation)
+        unsafe_penalty = 60.0 if not math.isinf(clearance) and clearance < 2.0 else 0.0
+        deconflict_penalty = 40.0 if not math.isinf(separation) and separation < 3.0 else 0.0
         threat_weight = 45.0 if state.regime == RegimeLabel.EVADE else 25.0
         turn_penalty = abs(heading_offset_rad) * 6.0
         speed_penalty = abs(speed_ms - nominal_speed_ms) * 0.25
@@ -550,6 +552,8 @@ class MultiHorizonPlanner:
             - threat_weight * threat_exposure
             - turn_penalty
             - speed_penalty
+            - unsafe_penalty
+            - deconflict_penalty
             - 40.0 * clearance_shortfall
             - 25.0 * separation_shortfall
         )
