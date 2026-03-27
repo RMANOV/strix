@@ -285,6 +285,39 @@ fn cvar_like_downside(c: &BidComponents, fear: f64, downside_value: f64, confide
         * (0.35 + c.risk_exposure.clamp(0.0, 1.0) * 0.35 + fear * 0.20 + uncertainty * 0.25)
 }
 
+/// CVaR-weighted bid scoring — replaces heuristic downside with proper CVaR.
+///
+/// Uses [`crate::risk::ValueAtRisk::cvar_estimate`] for the tail-risk penalty
+/// instead of the hand-tuned `cvar_like_downside` heuristic.
+pub fn calculate_bid_with_cvar(
+    c: &BidComponents,
+    fear: f64,
+    doom_value: f64,
+    upside_value: f64,
+    confidence: f64,
+    fleet_alive: u32,
+    threat_density: f64,
+    mission_duration: f64,
+) -> f64 {
+    let base = calculate_bid_with_fear(c, fear);
+    let confidence = confidence.clamp(0.0, 1.0);
+    let success_prob = mission_success_probability(c, confidence);
+    let opportunity = upside_value.max(0.0) * success_prob * (0.25 + 0.75 * confidence);
+
+    // Proper CVaR-based downside (replaces cvar_like_downside heuristic)
+    let var = crate::risk::ValueAtRisk::new(0.95, 0.01);
+    let cvar = var.cvar_estimate(fleet_alive, threat_density, mission_duration);
+    let per_drone_cvar = cvar / fleet_alive.max(1) as f64;
+    let downside_penalty =
+        (-doom_value).max(0.0) * per_drone_cvar * (1.0 + fear.clamp(0.0, 1.0) * 0.5);
+
+    let uncertainty = 1.0 - confidence;
+    let uncertainty_drag =
+        uncertainty * (1.0 - success_prob) * (1.0 + c.urgency_bonus + c.risk_exposure) * 2.0;
+
+    base * confidence.clamp(0.3, 1.0) + opportunity - downside_penalty - uncertainty_drag
+}
+
 /// Compute capability match as fraction of required capabilities that the drone has.
 ///
 /// Returns a value in [0, 1]. A drone that meets ALL requirements scores 1.0.
@@ -723,6 +756,43 @@ mod tests {
         assert!(
             (score_inf - score_zero).abs() < 1e-12,
             "Inf fear should be treated as F=0: inf={score_inf}, zero={score_zero}"
+        );
+    }
+
+    // ── D2: CVaR-weighted bid scoring ──
+
+    #[test]
+    fn cvar_bid_penalizes_high_risk_more_than_heuristic() {
+        let c = BidComponents {
+            proximity: 0.1,
+            capability: 0.8,
+            energy: 0.9,
+            risk_exposure: 0.7,
+            urgency_bonus: 0.5,
+        };
+        let old = calculate_bid_with_scenarios(&c, 0.5, -10.0, 5.0, 0.6);
+        let new = calculate_bid_with_cvar(&c, 0.5, -10.0, 5.0, 0.6, 10, 0.7, 60.0);
+        assert!(
+            new < old,
+            "CVaR({new:.3}) should be < heuristic({old:.3}) at high risk"
+        );
+    }
+
+    #[test]
+    fn cvar_bid_zero_threat_matches_base() {
+        let c = BidComponents {
+            proximity: 0.5,
+            capability: 0.5,
+            energy: 0.5,
+            risk_exposure: 0.0,
+            urgency_bonus: 0.3,
+        };
+        // Zero threat density → no CVaR penalty → similar to heuristic
+        let cvar = calculate_bid_with_cvar(&c, 0.0, -5.0, 5.0, 0.8, 10, 0.0, 60.0);
+        let heur = calculate_bid_with_scenarios(&c, 0.0, -5.0, 5.0, 0.8);
+        assert!(
+            (cvar - heur).abs() < 2.0,
+            "zero threat: CVaR({cvar:.3}) and heuristic({heur:.3}) should be similar"
         );
     }
 }

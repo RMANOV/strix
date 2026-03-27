@@ -164,6 +164,35 @@ impl ValueAtRisk {
 
         var.max(0.0).min(drones_committed as f64)
     }
+
+    /// Estimate CVaR (Conditional Value at Risk) — expected loss in the tail
+    /// beyond the VaR quantile.
+    ///
+    /// For Poisson-normal approximation:
+    ///   CVaR_α = μ + σ · φ(z_α) / (1 − α)
+    /// where φ is the standard normal PDF and z_α is the VaR quantile.
+    pub fn cvar_estimate(
+        &self,
+        drones_committed: u32,
+        threat_density: f64,
+        mission_duration: f64,
+    ) -> f64 {
+        let mean = self.lambda * drones_committed as f64 * threat_density * mission_duration;
+        let sigma = mean.sqrt().max(1e-6);
+        let z = standard_normal_quantile(self.confidence);
+        let phi_z = (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt();
+        let cvar = mean + sigma * phi_z / (1.0 - self.confidence).max(1e-6);
+        cvar.max(0.0).min(drones_committed as f64)
+    }
+}
+
+/// Mission risk budget — constrains auction allocation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskBudget {
+    /// Maximum CVaR per individual task assignment.
+    pub max_cvar_per_task: f64,
+    /// Maximum total CVaR across all assignments.
+    pub max_total_cvar: f64,
 }
 
 /// Attrition monitor — the main risk management interface.
@@ -457,5 +486,32 @@ mod tests {
             RiskLevel::from_attrition_with_fear(0.15, 2.0),
             RiskLevel::from_attrition_with_fear(0.15, 1.0)
         );
+    }
+
+    // ── D1: CVaR computation ──
+
+    #[test]
+    fn cvar_exceeds_var_at_same_confidence() {
+        let var = ValueAtRisk::new(0.95, 0.01);
+        let var_est = var.estimate(10, 0.5, 60.0);
+        let cvar_est = var.cvar_estimate(10, 0.5, 60.0);
+        assert!(
+            cvar_est >= var_est,
+            "CVaR({:.3}) must >= VaR({:.3})",
+            cvar_est,
+            var_est
+        );
+    }
+
+    #[test]
+    fn cvar_zero_threat_is_zero() {
+        let var = ValueAtRisk::new(0.95, 0.01);
+        assert!(var.cvar_estimate(10, 0.0, 60.0) < 0.01);
+    }
+
+    #[test]
+    fn cvar_increases_with_threat_density() {
+        let var = ValueAtRisk::new(0.95, 0.01);
+        assert!(var.cvar_estimate(10, 0.9, 60.0) > var.cvar_estimate(10, 0.1, 60.0));
     }
 }
