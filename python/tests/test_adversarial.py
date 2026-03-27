@@ -110,3 +110,33 @@ def test_deterministic_replay_with_seed():
         est2 = e2.predict_enemy(0.1)[1]
         assert est1.position.x == est2.position.x
         assert est1.confidence == est2.confidence
+
+
+def test_calibration_isotonic_identity():
+    """Uncalibrated engine: calibrator initialized with identity (passthrough)."""
+    from strix.adversarial import ConfidenceCalibrator
+    cal = ConfidenceCalibrator()
+    assert cal.calibrate(0.5) == 0.5
+    assert cal.calibrate(0.9) == 0.9
+
+
+def test_calibration_after_fit():
+    """After fitting, high raw-confidence on wrong predictions should reduce output."""
+    from strix.adversarial import ConfidenceCalibrator
+    cal = ConfidenceCalibrator()
+    raw = [0.9, 0.9, 0.9, 0.1, 0.1, 0.1]
+    actual = [0, 0, 0, 1, 1, 1]
+    cal.fit(raw, actual)
+    assert cal.calibrate(0.9) <= 0.5  # anti-calibrated → PAV pools to 0.5
+
+
+def test_calibration_monotonic():
+    """Calibrated values should be monotonically non-decreasing."""
+    from strix.adversarial import ConfidenceCalibrator
+    cal = ConfidenceCalibrator()
+    raw = [0.1, 0.3, 0.5, 0.7, 0.9]
+    actual = [0, 0, 1, 1, 1]
+    cal.fit(raw, actual)
+    calibrated = [cal.calibrate(x) for x in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]]
+    for i in range(1, len(calibrated)):
+        assert calibrated[i] >= calibrated[i-1] - 1e-9

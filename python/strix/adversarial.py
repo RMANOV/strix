@@ -104,6 +104,100 @@ class _Particle:
 
 
 # ---------------------------------------------------------------------------
+# Confidence Calibrator
+# ---------------------------------------------------------------------------
+
+
+class ConfidenceCalibrator:
+    """Isotonic regression calibrator for confidence scores.
+
+    Before fitting: calibrate() is identity (passthrough).
+    After fitting with (raw_confidences, outcomes): calibrate() maps
+    raw scores through a monotonically non-decreasing step function.
+    """
+
+    def __init__(self) -> None:
+        self._fitted = False
+        self._xs: list[float] = []
+        self._ys: list[float] = []
+
+    def fit(self, raw_confidences: list[float], outcomes: list[int]) -> None:
+        """Fit isotonic regression from raw confidence → actual outcome rate.
+
+        Computes empirical outcome rates per unique x-value, then applies the
+        Pool Adjacent Violators (PAV) algorithm to enforce isotonicity on the
+        per-bin means.  The resulting piecewise-linear function is stored as
+        (self._xs, self._ys) breakpoint pairs.
+        """
+        # Pre-average duplicate x-values into empirical bins (weighted by count)
+        bin_sums: dict[float, float] = {}
+        bin_counts: dict[float, int] = {}
+        for x, y in zip(raw_confidences, outcomes):
+            bin_sums[x] = bin_sums.get(x, 0.0) + float(y)
+            bin_counts[x] = bin_counts.get(x, 0) + 1
+        sorted_xs = sorted(bin_sums)
+        bin_means = [bin_sums[x] / bin_counts[x] for x in sorted_xs]
+
+        # Pool Adjacent Violators on pre-averaged bins
+        # Each "block" is a list of original bin indices
+        blocks: list[list[int]] = [[i] for i in range(len(sorted_xs))]
+        means: list[float] = list(bin_means)
+        changed = True
+        while changed:
+            changed = False
+            i = 0
+            new_blocks: list[list[int]] = []
+            new_means: list[float] = []
+            while i < len(blocks):
+                if i + 1 < len(blocks) and means[i] > means[i + 1]:
+                    merged = blocks[i] + blocks[i + 1]
+                    merged_count = sum(bin_counts[sorted_xs[j]] for j in merged)
+                    merged_sum = sum(bin_sums[sorted_xs[j]] for j in merged)
+                    new_blocks.append(merged)
+                    new_means.append(merged_sum / merged_count)
+                    changed = True
+                    i += 2
+                else:
+                    new_blocks.append(blocks[i])
+                    new_means.append(means[i])
+                    i += 1
+            blocks = new_blocks
+            means = new_means
+
+        # Build breakpoint arrays for piecewise-linear interpolation.
+        # Between consecutive blocks, use their respective means as endpoints
+        # so that linear interpolation produces a smooth, non-decreasing curve.
+        self._xs = []
+        self._ys = []
+        for idx, (block, mean) in enumerate(zip(blocks, means)):
+            x_lo = sorted_xs[block[0]]
+            x_hi = sorted_xs[block[-1]]
+            # Avoid duplicate x entries for single-point blocks
+            if not self._xs or self._xs[-1] != x_lo:
+                self._xs.append(x_lo)
+                self._ys.append(mean)
+            if x_hi != x_lo:
+                self._xs.append(x_hi)
+                self._ys.append(mean)
+        self._fitted = True
+
+    def calibrate(self, raw: float) -> float:
+        """Map raw confidence through the calibration function."""
+        if not self._fitted:
+            return raw
+        if raw <= self._xs[0]:
+            return self._ys[0]
+        if raw >= self._xs[-1]:
+            return self._ys[-1]
+        # Linear interpolation between step points
+        for i in range(1, len(self._xs)):
+            if raw <= self._xs[i]:
+                t = (raw - self._xs[i - 1]) / max(self._xs[i] - self._xs[i - 1], 1e-12)
+                return self._ys[i - 1] + t * (self._ys[i] - self._ys[i - 1])
+        return self._ys[-1]
+
+
+# ---------------------------------------------------------------------------
 # Adversarial Engine
 # ---------------------------------------------------------------------------
 
@@ -141,9 +235,15 @@ class AdversarialEngine:
         better estimates at higher computational cost.
     """
 
-    def __init__(self, n_enemy_particles: int = 500, seed: int | None = None) -> None:
+    def __init__(
+        self,
+        n_enemy_particles: int = 500,
+        seed: int | None = None,
+        calibrator: ConfidenceCalibrator | None = None,
+    ) -> None:
         self.n_particles = n_enemy_particles
         self._rng = random.Random(seed)
+        self._calibrator = calibrator
         self._tracks: dict[int, list[_Particle]] = {}
         self._friendly_centroid = Vec3()
         self._transition = _THREAT_TRANSITION
@@ -612,6 +712,8 @@ class AdversarialEngine:
                 kinematic_confidence * 0.75 + doctrine_certainty * 0.25 - deception_score * 0.15,
             ),
         )
+        if self._calibrator is not None:
+            confidence = self._calibrator.calibrate(confidence)
 
         return EnemyEstimate(
             threat_id=threat_id,
