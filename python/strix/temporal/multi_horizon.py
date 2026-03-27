@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
 
-from strix.brain import DecisionKind, DroneSnapshot, MissionArea, MissionType, RegimeLabel, Vec3
+from strix.brain import DroneSnapshot, MissionArea, MissionType, RegimeLabel, Vec3
 
 logger = logging.getLogger("strix.temporal.multi_horizon")
 
@@ -459,13 +459,27 @@ class MultiHorizonPlanner:
             heading_direction = MultiHorizonPlanner._rotate_xy(preferred_direction, heading_offset)
             for speed_scale in speed_scales:
                 speed_ms = max(3.0, nominal_speed * speed_scale)
-                candidate = MultiHorizonPlanner._rollout_constant_velocity(
-                    drone=drone,
-                    direction=heading_direction,
-                    speed_ms=speed_ms,
-                    cfg=cfg,
-                    steps=steps,
-                )
+                # Use APF if obstacles/threats exist, else constant velocity
+                obs_list = [(o[0], o[1]) for o in getattr(state, 'obstacles', [])]
+                thr_list = [(t[0], t[1]) for t in getattr(state, 'threats', [])]
+                if obs_list or thr_list:
+                    candidate = MultiHorizonPlanner._rollout_apf(
+                        drone=drone,
+                        direction=heading_direction,
+                        speed_ms=speed_ms,
+                        cfg=cfg,
+                        steps=steps,
+                        obstacles=obs_list,
+                        threats=thr_list,
+                    )
+                else:
+                    candidate = MultiHorizonPlanner._rollout_constant_velocity(
+                        drone=drone,
+                        direction=heading_direction,
+                        speed_ms=speed_ms,
+                        cfg=cfg,
+                        steps=steps,
+                    )
                 score = MultiHorizonPlanner._score_tactical_rollout(
                     drone=drone,
                     state=state,
@@ -508,6 +522,74 @@ class MultiHorizonPlanner:
                     heading_rad=heading,
                 )
             )
+
+        return waypoints
+
+    @staticmethod
+    def _rollout_apf(
+        drone: DroneSnapshot,
+        direction: Vec3,
+        speed_ms: float,
+        cfg: HorizonConfig,
+        steps: int,
+        obstacles: list[tuple],
+        threats: list[tuple],
+    ) -> list[Waypoint]:
+        """APF-guided rollout: attractive toward goal + repulsive from obstacles/threats."""
+        K_REP_OBS = 200.0
+        D0_OBS = 20.0
+        K_REP_THREAT = 150.0
+        D0_THREAT = 60.0
+
+        px, py, pz = drone.position.x, drone.position.y, drone.position.z
+        waypoints: list[Waypoint] = []
+
+        for step in range(steps):
+            # Attractive force toward goal direction
+            fx, fy, fz = direction.x * speed_ms, direction.y * speed_ms, 0.0
+
+            # Repulsive forces from obstacles (position, radius)
+            for obs_pos, obs_r in obstacles:
+                dx, dy = px - obs_pos.x, py - obs_pos.y
+                raw_dist = (dx * dx + dy * dy) ** 0.5
+                dist = max(raw_dist - obs_r, 0.1)
+                if dist < D0_OBS:
+                    rep_mag = K_REP_OBS * (1.0 / dist - 1.0 / D0_OBS) / (dist * dist)
+                    norm = max(raw_dist, 0.1)
+                    rx, ry = dx / norm, dy / norm
+                    # Break collinearity: add perpendicular if nearly head-on
+                    cross = abs(rx * direction.y - ry * direction.x)
+                    if cross < 0.15:
+                        rx, ry = -ry, rx  # rotate 90 degrees
+                    fx += rep_mag * rx
+                    fy += rep_mag * ry
+
+            # Repulsive forces from threats (position, radius)
+            for thr_pos, thr_r in threats:
+                dx, dy = px - thr_pos.x, py - thr_pos.y
+                dist = max((dx * dx + dy * dy) ** 0.5 - thr_r, 0.1)
+                if dist < D0_THREAT:
+                    rep_mag = K_REP_THREAT * (1.0 / dist - 1.0 / D0_THREAT) / (dist * dist)
+                    norm = max((dx * dx + dy * dy) ** 0.5, 0.1)
+                    fx += rep_mag * dx / norm
+                    fy += rep_mag * dy / norm
+
+            # Normalize to speed_ms
+            f_norm = max((fx * fx + fy * fy + fz * fz) ** 0.5, 1e-6)
+            vx = fx / f_norm * speed_ms
+            vy = fy / f_norm * speed_ms
+            vz = drone.velocity.z  # keep altitude velocity
+
+            px += vx * cfg.dt
+            py += vy * cfg.dt
+            pz += vz * cfg.dt
+
+            waypoints.append(Waypoint(
+                position=Vec3(px, py, pz),
+                velocity=Vec3(vx, vy, vz),
+                time_s=(step + 1) * cfg.dt,
+                heading_rad=math.atan2(vy, vx),
+            ))
 
         return waypoints
 
@@ -789,3 +871,38 @@ class MultiHorizonPlanner:
         )
 
         return phases
+
+
+def tactical_to_decisions(
+    plans: dict[int, "TacticalPlan"],
+) -> list:
+    """Convert tactical plans to Decision objects for the mission brain.
+
+    Valid plans → GOTO decisions targeting first waypoint.
+    Invalid plans → LOITER decisions with veto reason.
+    """
+    from strix.brain import Decision, DecisionKind
+
+    decisions = []
+    for drone_id, plan in plans.items():
+        if plan.valid and plan.waypoints:
+            wp = plan.waypoints[0]
+            vel_norm = (wp.velocity.x ** 2 + wp.velocity.y ** 2 + wp.velocity.z ** 2) ** 0.5
+            decisions.append(Decision(
+                drone_id=drone_id,
+                kind=DecisionKind.GOTO,
+                target_position=wp.position,
+                speed_ms=max(vel_norm, 1.0),
+                reason=f"tactical H1 waypoint (clearance={plan.obstacle_clearance_m:.1f}m)",
+                confidence=1.0,
+            ))
+        else:
+            decisions.append(Decision(
+                drone_id=drone_id,
+                kind=DecisionKind.LOITER,
+                target_position=None,
+                speed_ms=0.0,
+                reason=plan.veto_reason or "tactical plan invalid",
+                confidence=0.3,
+            ))
+    return decisions

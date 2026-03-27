@@ -65,3 +65,55 @@ def test_operational_heading_tracks_fleet_motion():
     plan = planner.plan_operational(state)
 
     assert math.isclose(plan.formation_heading_rad, math.pi / 2, rel_tol=1e-6, abs_tol=1e-6)
+
+
+# ── B1: APF rollout ──
+
+def test_apf_rollout_curves_around_obstacle():
+    """APF rollout should produce a curved path around an obstacle."""
+    from strix.temporal.multi_horizon import Horizon
+    planner = MultiHorizonPlanner()
+    cfg = planner._configs[Horizon.TACTICAL]
+    drone = _drone(1, 0.0, 0.0, vx=10.0, vy=0.0)
+    obstacles = [(Vec3(15.0, 0.0, 0.0), 5.0)]
+    wps = MultiHorizonPlanner._rollout_apf(
+        drone=drone, direction=Vec3(1.0, 0.0, 0.0),
+        speed_ms=10.0, cfg=cfg, steps=20, obstacles=obstacles, threats=[],
+    )
+    assert any(abs(wp.position.y) > 1.0 for wp in wps), "APF should curve around obstacle"
+    assert wps[-1].position.x > drone.position.x, "should make forward progress"
+
+
+def test_apf_rollout_no_obstacles_is_straight():
+    """Without obstacles, APF degrades to near-constant-velocity."""
+    from strix.temporal.multi_horizon import Horizon
+    planner = MultiHorizonPlanner()
+    cfg = planner._configs[Horizon.TACTICAL]
+    drone = _drone(1, 0.0, 0.0, vx=10.0, vy=0.0)
+    wps = MultiHorizonPlanner._rollout_apf(
+        drone=drone, direction=Vec3(1.0, 0.0, 0.0),
+        speed_ms=10.0, cfg=cfg, steps=20, obstacles=[], threats=[],
+    )
+    for wp in wps:
+        assert abs(wp.position.y) < 0.1, f"no obstacle: y={wp.position.y} should be ~0"
+
+
+# ── B3: Waypoint-to-Decision bridge ──
+
+def test_tactical_to_decisions_conversion():
+    """TacticalPlan waypoints should convert to a Decision sequence."""
+    from strix.temporal.multi_horizon import tactical_to_decisions
+    from strix.brain import DecisionKind
+    planner = MultiHorizonPlanner()
+    state = FleetState(
+        drones=[_drone(1, 0.0, 0.0, vx=8.0, vy=0.0)],
+        obstacles=[(Vec3(20.0, 0.0, 0.0), 3.0)],
+    )
+    state.recompute_metrics()
+    plans = planner.plan_tactical(state)
+    decisions = tactical_to_decisions(plans)
+    assert len(decisions) >= 1
+    d = decisions[0]
+    assert d.drone_id == 1
+    assert d.kind == DecisionKind.GOTO
+    assert d.speed_ms > 0
