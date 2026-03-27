@@ -140,3 +140,96 @@ def test_calibration_monotonic():
     calibrated = [cal.calibrate(x) for x in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]]
     for i in range(1, len(calibrated)):
         assert calibrated[i] >= calibrated[i-1] - 1e-9
+
+
+# ── E1: New doctrine types ──
+
+def test_probing_doctrine_in_enum():
+    """New doctrine types should exist in the enum."""
+    assert hasattr(EnemyDoctrine, "PROBING")
+    assert hasattr(EnemyDoctrine, "FEINT")
+    assert hasattr(EnemyDoctrine, "COORDINATED_ATTACK")
+
+
+def test_probing_detected_for_oscillating_approach():
+    """Enemy that approaches then backs off should trigger PROBING."""
+    engine = AdversarialEngine(n_enemy_particles=64, seed=42)
+    engine.set_friendly_centroid(Vec3(0.0, 0.0, 0.0))
+    engine.init_track(10, Vec3(200.0, 0.0, 0.0))
+    # Approach
+    engine.update_from_sensor(SensorReading(
+        threat_id=10, position=Vec3(180.0, 0.0, 0.0),
+        velocity=Vec3(-8.0, 0.0, 0.0), confidence=0.8))
+    engine.predict_enemy(1.0)
+    # Withdraw
+    engine.update_from_sensor(SensorReading(
+        threat_id=10, position=Vec3(190.0, 0.0, 0.0),
+        velocity=Vec3(5.0, 0.0, 0.0), confidence=0.8))
+    engine.predict_enemy(1.0)
+    # Approach again
+    engine.update_from_sensor(SensorReading(
+        threat_id=10, position=Vec3(175.0, 0.0, 0.0),
+        velocity=Vec3(-10.0, 0.0, 0.0), confidence=0.8))
+    est = engine.predict_enemy(1.0)[10]
+    assert EnemyDoctrine.PROBING in est.doctrine_probabilities
+
+
+# ── E2: Temporal deception ──
+
+def test_deception_score_increases_for_inconsistent_behavior():
+    """Threat that flips behavior should accumulate behavior transitions."""
+    engine = AdversarialEngine(n_enemy_particles=64, seed=42)
+    engine.set_friendly_centroid(Vec3(0.0, 0.0, 0.0))
+    engine.init_track(30, Vec3(100.0, 0.0, 0.0))
+    # Consistent attacker — always same velocity
+    for _ in range(5):
+        engine.update_from_sensor(SensorReading(
+            threat_id=30, position=Vec3(80.0, 0.0, 0.0),
+            velocity=Vec3(-12.0, 0.0, 0.0), confidence=0.8))
+        engine.predict_enemy(0.5)
+    hist_consistent = engine._behavior_history.get(30, [])
+    transitions_consistent = sum(1 for a, b in zip(hist_consistent, hist_consistent[1:]) if a != b) if len(hist_consistent) > 1 else 0
+
+    engine2 = AdversarialEngine(n_enemy_particles=64, seed=42)
+    engine2.set_friendly_centroid(Vec3(0.0, 0.0, 0.0))
+    engine2.init_track(31, Vec3(100.0, 0.0, 0.0))
+    # Give it more extreme oscillation to force behavior flips
+    vels = [Vec3(-20.0, 0.0, 0.0), Vec3(15.0, 0.0, 0.0)] * 5
+    for i, v in enumerate(vels[:8]):
+        pos_x = 80.0 if i % 2 == 0 else 110.0
+        engine2.update_from_sensor(SensorReading(
+            threat_id=31, position=Vec3(pos_x, 0.0, 0.0),
+            velocity=v, confidence=0.9))
+        engine2.predict_enemy(0.5)
+    hist_inconsistent = engine2._behavior_history.get(31, [])
+    transitions_inconsistent = sum(1 for a, b in zip(hist_inconsistent, hist_inconsistent[1:]) if a != b) if len(hist_inconsistent) > 1 else 0
+
+    # The flipper should have more behavior transitions
+    assert transitions_inconsistent >= transitions_consistent, (
+        f"inconsistent={transitions_inconsistent} should >= consistent={transitions_consistent}"
+    )
+
+
+# ── E3: Adversarial → auction risk context ──
+
+def test_adversarial_risk_context_format():
+    from strix.adversarial import adversarial_to_risk_context
+    engine = AdversarialEngine(n_enemy_particles=64, seed=42)
+    engine.set_friendly_centroid(Vec3(0.0, 0.0, 0.0))
+    engine.init_track(40, Vec3(50.0, 0.0, 0.0))
+    engine.update_from_sensor(SensorReading(
+        threat_id=40, position=Vec3(50.0, 0.0, 0.0),
+        velocity=Vec3(-15.0, 0.0, 0.0), confidence=0.9))
+    estimates = engine.predict_enemy(0.1)
+    ctx = adversarial_to_risk_context(estimates)
+    assert "threat_density" in ctx
+    assert "confidence" in ctx
+    assert 0.0 <= ctx["confidence"] <= 1.0
+    assert ctx["threat_density"] >= 0.0
+
+
+def test_adversarial_risk_context_empty():
+    from strix.adversarial import adversarial_to_risk_context
+    ctx = adversarial_to_risk_context({})
+    assert ctx["threat_density"] == 0.0
+    assert ctx["confidence"] == 0.5

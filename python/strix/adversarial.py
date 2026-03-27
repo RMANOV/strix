@@ -55,6 +55,9 @@ class EnemyDoctrine(Enum):
     FIGHTING_WITHDRAWAL = auto()
     DECOY = auto()
     EW_JAMMING = auto()
+    PROBING = auto()
+    FEINT = auto()
+    COORDINATED_ATTACK = auto()
 
 
 @dataclass
@@ -248,14 +251,19 @@ class AdversarialEngine:
         self._friendly_centroid = Vec3()
         self._transition = _THREAT_TRANSITION
         self._doctrine_posteriors: dict[int, dict[EnemyDoctrine, float]] = {}
+        self._velocity_history: dict[int, list[float]] = {}  # closing speed history per track
+        self._behavior_history: dict[int, list[EnemyBehavior]] = {}  # for temporal deception
         self._doctrine_prior = self._normalize_distribution(
             {
-                EnemyDoctrine.FIXED_DEFENSE: 0.30,
-                EnemyDoctrine.DIRECT_ASSAULT: 0.20,
-                EnemyDoctrine.FLANKING: 0.15,
-                EnemyDoctrine.FIGHTING_WITHDRAWAL: 0.15,
-                EnemyDoctrine.DECOY: 0.10,
-                EnemyDoctrine.EW_JAMMING: 0.10,
+                EnemyDoctrine.FIXED_DEFENSE: 0.25,
+                EnemyDoctrine.DIRECT_ASSAULT: 0.17,
+                EnemyDoctrine.FLANKING: 0.13,
+                EnemyDoctrine.FIGHTING_WITHDRAWAL: 0.12,
+                EnemyDoctrine.DECOY: 0.08,
+                EnemyDoctrine.EW_JAMMING: 0.08,
+                EnemyDoctrine.PROBING: 0.08,
+                EnemyDoctrine.FEINT: 0.05,
+                EnemyDoctrine.COORDINATED_ATTACK: 0.04,
             }
         )
 
@@ -343,6 +351,36 @@ class AdversarialEngine:
             self._tracks[threat_id] = particles
 
         self._update_doctrine_posterior(threat_id, observation=observation, particles=particles)
+
+        # Track closing speed history for PROBING detection
+        if observation.velocity:
+            mean_pos, _ = self._weighted_mean_state(particles)
+            dx = self._friendly_centroid.x - mean_pos.x
+            dy = self._friendly_centroid.y - mean_pos.y
+            dz = self._friendly_centroid.z - mean_pos.z
+            dist = (dx * dx + dy * dy + dz * dz) ** 0.5
+            if dist > 1e-3:
+                closing = (
+                    observation.velocity.x * dx
+                    + observation.velocity.y * dy
+                    + observation.velocity.z * dz
+                ) / dist
+                hist = self._velocity_history.setdefault(threat_id, [])
+                hist.append(closing)
+                if len(hist) > 10:
+                    hist[:] = hist[-10:]
+
+    def _is_closing(self, particles: list) -> bool:
+        """Check if a track's weighted mean velocity is toward friendly centroid."""
+        mean_pos, mean_vel = self._weighted_mean_state(particles)
+        dx = self._friendly_centroid.x - mean_pos.x
+        dy = self._friendly_centroid.y - mean_pos.y
+        dz = self._friendly_centroid.z - mean_pos.z
+        dist = (dx * dx + dy * dy + dz * dz) ** 0.5
+        if dist < 1e-3:
+            return False
+        closing = (mean_vel.x * dx + mean_vel.y * dy + mean_vel.z * dz) / dist
+        return closing > 2.0
 
     def classify_enemy_behavior(self, threat_id: int | None = None) -> dict[int, EnemyBehavior]:
         """Classify the most likely behavior for each (or a specific) threat.
@@ -655,6 +693,31 @@ class AdversarialEngine:
         if radar_cross_section is not None and radar_cross_section < 0.15:
             likelihoods[EnemyDoctrine.DECOY] += 0.5 * confidence
 
+        # PROBING: oscillating approach (uses velocity history)
+        history = self._velocity_history.get(
+            observation.threat_id if observation else None, []
+        )
+        if len(history) >= 3:
+            sign_changes = sum(
+                1 for a, b in zip(history[-3:], history[-2:]) if (a > 0) != (b > 0)
+            )
+            if sign_changes >= 1:
+                likelihoods[EnemyDoctrine.PROBING] = 0.65 + 0.9 * confidence
+        # FEINT: attack signals + deception indicators
+        if closing_speed > 3.0 and (
+            radar_cross_section is not None and radar_cross_section < 0.2
+        ):
+            likelihoods[EnemyDoctrine.FEINT] = 0.65 + 0.8 * confidence
+        # COORDINATED_ATTACK: multiple tracks closing simultaneously
+        n_closing = sum(
+            1 for tid, pts in self._tracks.items()
+            if tid != (observation.threat_id if observation else None)
+            and len(pts) > 0
+            and self._is_closing(pts)
+        )
+        if n_closing >= 1 and closing_speed > 2.0:
+            likelihoods[EnemyDoctrine.COORDINATED_ATTACK] = 0.65 + 0.7 * confidence * min(n_closing, 3) / 3.0
+
         return likelihoods
 
     def _behavior_to_doctrine_likelihoods(
@@ -674,6 +737,9 @@ class AdversarialEngine:
             EnemyDoctrine.FIGHTING_WITHDRAWAL: 0.7 + retreat * 1.4,
             EnemyDoctrine.DECOY: 0.7 + defend * 0.3 + retreat * 0.2,
             EnemyDoctrine.EW_JAMMING: 0.7 + defend * 0.2 + attack * 0.2,
+            EnemyDoctrine.PROBING: 0.7 + attack * 0.4 + defend * 0.3,
+            EnemyDoctrine.FEINT: 0.7 + attack * 0.5 + retreat * 0.2,
+            EnemyDoctrine.COORDINATED_ATTACK: 0.7 + attack * 1.0,
         }
 
     def _estimate(self, threat_id: int, particles: list[_Particle]) -> EnemyEstimate:
@@ -693,11 +759,23 @@ class AdversarialEngine:
         self._update_doctrine_posterior(threat_id, particles=particles)
         doctrine_probs = dict(self._doctrine_posteriors.get(threat_id, self._doctrine_prior))
         dominant_doctrine = max(doctrine_probs, key=doctrine_probs.get)
-        deception_score = min(
+        base_deception = min(
             1.0,
             doctrine_probs.get(EnemyDoctrine.DECOY, 0.0)
             + doctrine_probs.get(EnemyDoctrine.EW_JAMMING, 0.0),
         )
+        # E2: Temporal consistency — behavior flipping increases deception score
+        behavior_probs = self._regime_probabilities(particles)
+        dominant_behavior = max(behavior_probs, key=behavior_probs.get)
+        hist = self._behavior_history.setdefault(threat_id, [])
+        hist.append(dominant_behavior)
+        if len(hist) > 10:
+            hist[:] = hist[-10:]
+        transition_rate = 0.0
+        if len(hist) >= 2:
+            transitions = sum(1 for a, b in zip(hist, hist[1:]) if a != b)
+            transition_rate = transitions / (len(hist) - 1)
+        deception_score = min(1.0, base_deception + 0.3 * transition_rate)
 
         # Time-to-contact
         ttc = self._compute_ttc(mean_pos, mean_vel)
@@ -769,3 +847,29 @@ class AdversarialEngine:
             return float("inf")
 
         return dist / closing_speed
+
+
+def adversarial_to_risk_context(estimates: dict[int, EnemyEstimate]) -> dict:
+    """Convert adversarial estimates to risk context for the auction system.
+
+    Returns a dict with threat_density, confidence, doom_value, max_deception
+    suitable for feeding into ScenarioContext on the Auctioneer.
+    """
+    if not estimates:
+        return {"threat_density": 0.0, "confidence": 0.5, "doom_value": 0.0, "max_deception": 0.0}
+
+    n = len(estimates)
+    avg_confidence = sum(e.confidence for e in estimates.values()) / n
+    max_deception = max(e.deception_score for e in estimates.values())
+    attackers = sum(1 for e in estimates.values() if e.behavior == EnemyBehavior.ATTACKING)
+    threat_density = attackers / max(n, 1)
+
+    min_ttc = min((e.time_to_contact_s for e in estimates.values()), default=float("inf"))
+    doom_value = -1.0 * attackers * (1.0 / max(min_ttc, 1.0))
+
+    return {
+        "threat_density": threat_density,
+        "confidence": avg_confidence * (1.0 - max_deception * 0.3),
+        "doom_value": doom_value,
+        "max_deception": max_deception,
+    }
