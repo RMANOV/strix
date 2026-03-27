@@ -152,7 +152,20 @@ pub fn cbf_filter_with_neighbor_states(
         let direction = outward_direction(&diff, &effective_vel);
         let relative_vel = effective_vel - neighbor.velocity;
         let closing_speed = (-relative_vel.dot(&direction)).max(0.0);
-        let effective_separation = config.min_separation + 0.5 * closing_speed;
+        // TTC-aware margin: scale by time-to-collision for faster response
+        let ttc = if closing_speed > 0.1 {
+            dist / closing_speed
+        } else {
+            f64::INFINITY
+        };
+        let margin_scale = if ttc < 3.0 {
+            1.5
+        } else if ttc < 6.0 {
+            1.0
+        } else {
+            0.5
+        };
+        let effective_separation = config.min_separation + margin_scale * closing_speed;
         let h = dist_sq - effective_separation * effective_separation;
 
         if h < 0.0 {
@@ -307,6 +320,116 @@ pub fn is_position_safe(
     }
 
     true
+}
+
+// ---------------------------------------------------------------------------
+// Deadlock Detection & Escape
+// ---------------------------------------------------------------------------
+
+/// Result of a deadlock detection check.
+#[derive(Debug, Clone)]
+pub struct DeadlockResult {
+    /// Whether a mutual deadlock was detected.
+    pub is_deadlocked: bool,
+    /// Number of drones involved in the deadlock cluster.
+    pub involved_count: usize,
+    /// Indices of involved drones.
+    pub involved_indices: Vec<usize>,
+}
+
+/// Detect mutual CBF blocking among a group of drones.
+///
+/// A deadlock exists when 3+ drones each have active CBF constraints against
+/// at least 2 of the others, forming a tightly coupled cluster.
+pub fn detect_deadlock(
+    positions: &[Vector3<f64>],
+    velocities: &[Vector3<f64>],
+    nfz: &[NoFlyZone],
+    config: &CbfConfig,
+) -> DeadlockResult {
+    let n = positions.len();
+    if n < 3 {
+        return DeadlockResult {
+            is_deadlocked: false,
+            involved_count: 0,
+            involved_indices: vec![],
+        };
+    }
+    // Build adjacency: (i,j) are mutually blocking if both have active CBF
+    let mut degree = vec![0usize; n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let ns_j = NeighborState {
+                position: positions[j],
+                velocity: velocities[j],
+            };
+            let r = cbf_filter_with_neighbor_states(
+                &positions[i],
+                &velocities[i],
+                &[ns_j],
+                nfz,
+                config,
+            );
+            if r.any_active {
+                degree[i] += 1;
+                degree[j] += 1;
+            }
+        }
+    }
+    // Deadlock cluster: all drones with degree >= 2
+    let involved: Vec<usize> = (0..n).filter(|&i| degree[i] >= 2).collect();
+    let is_deadlocked = involved.len() >= 3;
+    DeadlockResult {
+        is_deadlocked,
+        involved_count: involved.len(),
+        involved_indices: involved,
+    }
+}
+
+/// Generate escape velocity corrections for deadlocked drones.
+///
+/// Strategy: each drone gets a perpendicular velocity (rotated from
+/// centroid-to-drone) plus an alternating altitude shift.
+pub fn generate_escape_maneuvers(
+    positions: &[Vector3<f64>],
+    config: &CbfConfig,
+) -> Vec<Vector3<f64>> {
+    let n = positions.len();
+    if n == 0 {
+        return vec![];
+    }
+    let centroid = positions.iter().fold(Vector3::zeros(), |a, p| a + p) / n as f64;
+    let escape_speed = config.max_correction * 0.5;
+    positions
+        .iter()
+        .enumerate()
+        .map(|(i, pos)| {
+            let outward = pos - centroid;
+            let norm = outward.norm().max(1e-6);
+            let dir = outward / norm;
+            // Perpendicular in xy-plane
+            let perp = Vector3::new(-dir.y, dir.x, 0.0);
+            // Alternating altitude shift
+            let alt = if i % 2 == 0 { 3.0 } else { -3.0 };
+            (dir * escape_speed * 0.5 + perp * escape_speed * 0.5 + Vector3::new(0.0, 0.0, alt))
+                .cap_magnitude(config.max_correction)
+        })
+        .collect()
+}
+
+/// Clamp vector magnitude (helper).
+trait CapMagnitude {
+    fn cap_magnitude(self, max: f64) -> Self;
+}
+impl CapMagnitude for Vector3<f64> {
+    fn cap_magnitude(self, max: f64) -> Self {
+        let n = self.norm();
+        if n > max {
+            self * (max / n)
+        } else {
+            self
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -553,6 +676,103 @@ mod tests {
             result.correction.x < 0.0,
             "correction should push away from NFZ: {:?}",
             result.correction
+        );
+    }
+
+    // ── C3: TTC-aware margins ──
+
+    #[test]
+    fn fast_closing_gets_larger_margin_than_slow() {
+        let config = CbfConfig::default();
+        let pos = Vector3::new(0.0, 0.0, -50.0);
+        let neighbor_pos = Vector3::new(12.0, 0.0, -50.0);
+        let n = NeighborState {
+            position: neighbor_pos,
+            velocity: Vector3::zeros(),
+        };
+        let r_slow = cbf_filter_with_neighbor_states(
+            &pos,
+            &Vector3::new(2.0, 0.0, 0.0),
+            &[n.clone()],
+            &[],
+            &config,
+        );
+        let r_fast = cbf_filter_with_neighbor_states(
+            &pos,
+            &Vector3::new(15.0, 0.0, 0.0),
+            &[n],
+            &[],
+            &config,
+        );
+        assert!(
+            r_fast.correction.norm() > r_slow.correction.norm(),
+            "fast={:.3} should exceed slow={:.3}",
+            r_fast.correction.norm(),
+            r_slow.correction.norm()
+        );
+    }
+
+    // ── C1: Deadlock detection ──
+
+    #[test]
+    fn detect_deadlock_triangle() {
+        let config = CbfConfig::default();
+        let positions = vec![
+            Vector3::new(0.0, 0.0, -50.0),
+            Vector3::new(3.0, 0.0, -50.0),
+            Vector3::new(1.5, 2.6, -50.0),
+        ];
+        let velocities = vec![Vector3::zeros(); 3];
+        let result = detect_deadlock(&positions, &velocities, &[], &config);
+        assert!(result.is_deadlocked, "tight triangle should deadlock");
+        assert!(result.involved_count >= 3);
+    }
+
+    #[test]
+    fn no_deadlock_when_spread() {
+        let config = CbfConfig::default();
+        let positions = vec![
+            Vector3::new(0.0, 0.0, -50.0),
+            Vector3::new(20.0, 0.0, -50.0),
+            Vector3::new(40.0, 0.0, -50.0),
+        ];
+        let velocities = vec![Vector3::zeros(); 3];
+        let result = detect_deadlock(&positions, &velocities, &[], &config);
+        assert!(!result.is_deadlocked, "spread drones should not deadlock");
+    }
+
+    // ── C2: Escape maneuvers ──
+
+    #[test]
+    fn escape_maneuvers_separate_drones() {
+        let config = CbfConfig::default();
+        let positions = vec![
+            Vector3::new(0.0, 0.0, -50.0),
+            Vector3::new(3.0, 0.0, -50.0),
+            Vector3::new(1.5, 2.6, -50.0),
+        ];
+        let escapes = generate_escape_maneuvers(&positions, &config);
+        assert_eq!(escapes.len(), 3);
+        // After applying escapes, centroid-relative distances should increase
+        let centroid = positions.iter().fold(Vector3::zeros(), |a, p| a + p) / 3.0;
+        for (i, esc) in escapes.iter().enumerate() {
+            let old_dist = (positions[i] - centroid).norm();
+            let new_dist = (positions[i] + esc - centroid).norm();
+            assert!(
+                new_dist > old_dist,
+                "drone {i} should move away from centroid"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_uses_altitude_shift() {
+        let config = CbfConfig::default();
+        let positions = vec![Vector3::new(0.0, 0.0, -50.0), Vector3::new(3.0, 0.0, -50.0)];
+        let escapes = generate_escape_maneuvers(&positions, &config);
+        assert!(
+            escapes.iter().any(|e| e.z.abs() > 0.1),
+            "at least one escape should shift altitude"
         );
     }
 }
