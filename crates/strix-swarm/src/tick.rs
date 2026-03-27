@@ -150,6 +150,8 @@ pub struct SwarmDecision {
     pub ew_active_threats: usize,
     /// Number of CBF safety constraints active this tick.
     pub cbf_active_constraints: u32,
+    /// Number of drones pushed into deadlock escape maneuvers this tick.
+    pub deadlock_escape_count: usize,
     // ── Phi-sim intelligence fields ─────────────────────────────────────
     /// Collective courage level [0, 1].
     pub courage_level: f64,
@@ -1289,13 +1291,13 @@ impl SwarmOrchestrator {
     }
 
     /// Phase 4: Propagate state via gossip, update pheromones, apply CBF safety clamp.
-    /// Returns cbf_active_constraints.
+    /// Returns `(cbf_active_constraints, deadlock_escape_count)`.
     fn propagate_and_safety(
         &mut self,
         telemetry: &[(u32, Telemetry)],
         fear: &TickFearState,
         formation_corrections: &mut HashMap<u32, Vector3<f64>>,
-    ) -> u32 {
+    ) -> (u32, usize) {
         // ── 5. Propagate via gossip ──────────────────────────────────────
         self.gossip_version += 1;
 
@@ -1367,6 +1369,7 @@ impl SwarmOrchestrator {
         // ── 6.5 CBF safety clamp ─────────────────────────────────────────
         // Apply control barrier functions to clamp velocities for safety.
         let mut cbf_active_constraints = 0u32;
+        let mut deadlock_escape_count = 0usize;
 
         if let Some(ref base_cbf) = self.cbf_config {
             let cbf_cfg = base_cbf.with_fear(fear.f);
@@ -1432,6 +1435,7 @@ impl SwarmOrchestrator {
                 }
 
                 cbf_active_constraints += deadlock.involved_count as u32;
+                deadlock_escape_count += deadlock.involved_count;
             }
 
             for (drone_id, drone_pos) in &all_positions {
@@ -1475,7 +1479,7 @@ impl SwarmOrchestrator {
             }
         }
 
-        cbf_active_constraints
+        (cbf_active_constraints, deadlock_escape_count)
     }
 
     /// One orchestration cycle: sense → think → act.
@@ -1565,7 +1569,7 @@ impl SwarmOrchestrator {
             self.run_roe_and_auction(telemetry, tasks, &fear, &fleet, &regimes);
         traces_recorded += auction_traces;
 
-        let cbf_active_constraints =
+        let (cbf_active_constraints, deadlock_escape_count) =
             self.propagate_and_safety(telemetry, &fear, &mut formation_corrections);
 
         // ── 7. Track fear signals + record outcome ──────────────────────
@@ -1652,6 +1656,7 @@ impl SwarmOrchestrator {
             roe_escalations,
             ew_active_threats: fear.ew_active_threats,
             cbf_active_constraints,
+            deadlock_escape_count,
             courage_level: fear.collective_c,
             tension: fear.collective_t,
             per_drone_fear,

@@ -179,6 +179,15 @@ class ThreatObservation:
 
 
 @dataclass
+class CommsState:
+    """Observed communications quality for one drone or the fleet as a whole."""
+
+    packet_success_rate: float = 1.0
+    state_age_s: float = 0.0
+    latency_ms: float = 0.0
+
+
+@dataclass
 class Decision:
     """A single atomic decision produced by a brain tick."""
 
@@ -236,6 +245,11 @@ class MissionBrain:
         self._pending_intents: list[MissionIntent] = []
         self._running = False
         self._last_auction_tick = 0
+        self._network_comms = CommsState(
+            packet_success_rate=self.config.default_packet_success_rate,
+            state_age_s=self.config.stale_state_age_s,
+        )
+        self._drone_comms: dict[int, CommsState] = {}
 
         # Rust FFI: particle filters + auctioneer (graceful fallback)
         self._filters: dict[int, object] = {}
@@ -261,6 +275,14 @@ class MissionBrain:
         if len(self._fleet) >= self.config.max_fleet_size and drone.drone_id not in self._fleet:
             raise ValueError(f"Fleet full ({self.config.max_fleet_size} drones)")
         self._fleet[drone.drone_id] = drone
+        self._drone_comms.setdefault(
+            drone.drone_id,
+            CommsState(
+                packet_success_rate=self._network_comms.packet_success_rate,
+                state_age_s=self._network_comms.state_age_s,
+                latency_ms=self._network_comms.latency_ms,
+            ),
+        )
         if self._rust_available and drone.drone_id not in self._filters:
             self._filters[drone.drone_id] = self._ParticleNavFilter(
                 n_particles=self.config.n_particles,
@@ -272,10 +294,38 @@ class MissionBrain:
         """Mark a drone as lost and remove it from active fleet."""
         self._fleet.pop(drone_id, None)
         self._filters.pop(drone_id, None)
+        self._drone_comms.pop(drone_id, None)
 
     @property
     def fleet_size(self) -> int:
         return sum(1 for d in self._fleet.values() if d.alive)
+
+    def update_network_state(
+        self,
+        packet_success_rate: float,
+        state_age_s: float | None = None,
+        latency_ms: float | None = None,
+    ) -> None:
+        """Update fleet-wide communications health from an external source."""
+        self._network_comms = CommsState(
+            packet_success_rate=max(0.0, min(packet_success_rate, 1.0)),
+            state_age_s=self.config.stale_state_age_s if state_age_s is None else max(0.0, state_age_s),
+            latency_ms=0.0 if latency_ms is None else max(0.0, latency_ms),
+        )
+
+    def update_link_state(
+        self,
+        drone_id: int,
+        packet_success_rate: float,
+        state_age_s: float | None = None,
+        latency_ms: float | None = None,
+    ) -> None:
+        """Update observed link quality for one drone."""
+        self._drone_comms[drone_id] = CommsState(
+            packet_success_rate=max(0.0, min(packet_success_rate, 1.0)),
+            state_age_s=self._network_comms.state_age_s if state_age_s is None else max(0.0, state_age_s),
+            latency_ms=self._network_comms.latency_ms if latency_ms is None else max(0.0, latency_ms),
+        )
 
     # -- Intent pipeline -----------------------------------------------------
 
@@ -424,8 +474,20 @@ class MissionBrain:
             centroid = self._fleet_centroid()
             dist = centroid.distance_to(observation.position)
             if dist < 300.0:
-                logger.warning("High-confidence threat at %.0fm -- shifting to ENGAGE", dist)
-                self._regime = RegimeLabel.ENGAGE
+                link_quality = self._planner_packet_success_rate()
+                stale_age = self._network_state_age()
+                if link_quality < 0.5 or stale_age > 1.0:
+                    logger.warning(
+                        "High-confidence threat at %.0fm under degraded comms "
+                        "(link=%.2f stale=%.2fs) -- biasing to EVADE",
+                        dist,
+                        link_quality,
+                        stale_age,
+                    )
+                    self._regime = RegimeLabel.EVADE
+                else:
+                    logger.warning("High-confidence threat at %.0fm -- shifting to ENGAGE", dist)
+                    self._regime = RegimeLabel.ENGAGE
 
     # -- Async runner --------------------------------------------------------
 
@@ -532,6 +594,15 @@ class MissionBrain:
 
         if self._active_plan and self._active_plan.intent.mission_type == MissionType.STRIKE:
             engage_pressure += 0.1 * self._active_plan.intent.priority
+
+        link_quality = self._planner_packet_success_rate()
+        stale_age = self._network_state_age()
+        if link_quality < 0.55 and (engage_pressure > 0.2 or evade_pressure > 0.2):
+            evade_pressure += (0.55 - link_quality) * 1.6
+        if stale_age > 0.75 and (engage_pressure > 0.2 or evade_pressure > 0.15):
+            evade_pressure += min((stale_age - 0.75) * 0.35, 0.45)
+        if link_quality < 0.45 and stale_age > 1.0 and engage_pressure > 0.25:
+            evade_pressure += 0.35
 
         margin = self.config.regime_hysteresis_margin
         if self._regime == RegimeLabel.EVADE and evade_pressure >= 0.35:
@@ -819,7 +890,7 @@ class MissionBrain:
             threats=[threat.position for threat in self._threats.values() if threat.confidence > 0.25],
             obstacles=self._intent_obstacles(intent),
             neighbor_state_ages_s=self._neighbor_state_ages(selected_drones),
-            packet_success_rate=self._planner_packet_success_rate(),
+            packet_success_rate=self._planner_packet_success_rate(selected_drones),
             timestamp=time.monotonic(),
         )
         state.recompute_metrics()
@@ -889,22 +960,30 @@ class MissionBrain:
         )
         return assignments, overall_confidence, summary
 
-    def _planner_packet_success_rate(self) -> float:
-        if self._regime == RegimeLabel.EVADE:
-            return max(0.35, self.config.default_packet_success_rate - 0.3)
-        if self._regime == RegimeLabel.ENGAGE:
-            return max(0.5, self.config.default_packet_success_rate - 0.15)
-        return self.config.default_packet_success_rate
+    def _planner_packet_success_rate(self, drones: list[DroneSnapshot] | None = None) -> float:
+        observed = [
+            self._effective_comms_state(drone.drone_id).packet_success_rate
+            for drone in (drones or [])
+            if drone.alive
+        ]
+        if observed:
+            return max(0.0, min(sum(observed) / len(observed), 1.0))
+        return self._network_comms.packet_success_rate
+
+    def _network_state_age(self) -> float:
+        observed = [state.state_age_s for state in self._drone_comms.values()]
+        if observed:
+            return max(max(observed), self._network_comms.state_age_s)
+        return self._network_comms.state_age_s
 
     def _neighbor_state_ages(self, drones: list[DroneSnapshot]) -> dict[int, float]:
-        base_age = self.config.stale_state_age_s
-        threat_pressure = min(sum(t.confidence for t in self._threats.values()), 3.0)
-        age_bias = threat_pressure * 0.15
-        if self._regime == RegimeLabel.EVADE:
-            age_bias += 0.35
-        elif self._regime == RegimeLabel.ENGAGE:
-            age_bias += 0.15
-        return {drone.drone_id: base_age + age_bias for drone in drones}
+        return {
+            drone.drone_id: self._effective_comms_state(drone.drone_id).state_age_s
+            for drone in drones
+        }
+
+    def _effective_comms_state(self, drone_id: int) -> CommsState:
+        return self._drone_comms.get(drone_id, self._network_comms)
 
     @staticmethod
     def _intent_obstacles(intent: MissionIntent) -> list[tuple[Vec3, float]]:

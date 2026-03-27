@@ -189,6 +189,34 @@ class TestBrainFallback:
         )
         assert any(abs(assignment.confidence - 0.8) > 1e-6 for assignment in plan.assignments)
 
+    def test_real_link_state_overrides_nominal_planner_degradedness(self):
+        brain = MissionBrain(BrainConfig(default_packet_success_rate=0.9, stale_state_age_s=0.2))
+        brain._rust_available = False
+        brain._filters = {}
+
+        brain.register_drone(
+            DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, -50.0), velocity=Vec3(7.0, 0.0, 0.0))
+        )
+        brain.register_drone(
+            DroneSnapshot(drone_id=2, position=Vec3(20.0, 0.0, -50.0), velocity=Vec3(7.0, 0.0, 0.0))
+        )
+        brain.update_network_state(packet_success_rate=0.82, state_age_s=0.4)
+        brain.update_link_state(1, packet_success_rate=0.45, state_age_s=1.6, latency_ms=180.0)
+        brain.update_link_state(2, packet_success_rate=0.55, state_age_s=0.8, latency_ms=120.0)
+
+        intent = MissionIntent(
+            mission_type=MissionType.RECON,
+            area=MissionArea(center=Vec3(120.0, 20.0, -50.0), radius_m=80.0),
+            priority=0.7,
+            drone_count=2,
+        )
+        plan = asyncio.run(brain.process_intent(intent))
+
+        assert "link=0.50" in plan.explanation
+        assert "stale_max=1.60s" in plan.explanation
+        assert brain._planner_packet_success_rate([brain._fleet[1], brain._fleet[2]]) == pytest.approx(0.5)
+        assert brain._neighbor_state_ages([brain._fleet[1], brain._fleet[2]]) == {1: 1.6, 2: 0.8}
+
 
 class TestNearestThreatBearing:
     def test_no_threats(self):
@@ -228,6 +256,24 @@ class TestRegimeInference:
         )
 
         assert brain._check_regime() == RegimeLabel.ENGAGE
+
+    def test_poor_real_comms_biases_regime_toward_evade(self):
+        brain = MissionBrain()
+        brain.register_drone(DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, -50.0)))
+        brain.update_network_state(packet_success_rate=0.35, state_age_s=1.2)
+        asyncio.run(
+            brain.update_threat(
+                ThreatObservation(
+                    threat_id=9,
+                    position=Vec3(250.0, 0.0, -50.0),
+                    velocity=Vec3(-12.0, 0.0, 0.0),
+                    confidence=0.95,
+                    threat_type="sam",
+                )
+            )
+        )
+
+        assert brain._check_regime() == RegimeLabel.EVADE
 
 
 class TestAuctionIntegration:
