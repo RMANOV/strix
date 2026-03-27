@@ -1393,6 +1393,47 @@ impl SwarmOrchestrator {
                 })
                 .collect();
 
+            let positions_only: Vec<Vector3<f64>> =
+                all_positions.iter().map(|(_, pos)| *pos).collect();
+            let velocities_only: Vec<Vector3<f64>> = all_positions
+                .iter()
+                .map(|(id, _)| vel_map.get(id).copied().unwrap_or_else(Vector3::zeros))
+                .collect();
+
+            let deadlock = cbf::detect_deadlock(
+                &positions_only,
+                &velocities_only,
+                &self.no_fly_zones,
+                &cbf_cfg,
+            );
+
+            if deadlock.is_deadlocked {
+                let cluster_positions: Vec<Vector3<f64>> = deadlock
+                    .involved_indices
+                    .iter()
+                    .map(|&idx| positions_only[idx])
+                    .collect();
+                let escape_maneuvers = cbf::generate_escape_maneuvers(&cluster_positions, &cbf_cfg);
+
+                for (cluster_idx, escape) in escape_maneuvers.into_iter().enumerate() {
+                    if let Some(&global_idx) = deadlock.involved_indices.get(cluster_idx) {
+                        if let Some((drone_id, _)) = all_positions.get(global_idx) {
+                            let entry = formation_corrections
+                                .entry(*drone_id)
+                                .or_insert_with(Vector3::zeros);
+                            let mut combined = *entry + escape;
+                            let combined_norm = combined.norm();
+                            if combined_norm > cbf_cfg.max_correction {
+                                combined *= cbf_cfg.max_correction / combined_norm;
+                            }
+                            *entry = combined;
+                        }
+                    }
+                }
+
+                cbf_active_constraints += deadlock.involved_count as u32;
+            }
+
             for (drone_id, drone_pos) in &all_positions {
                 // Neighbor states = all drones except this one.
                 let neighbors: Vec<NeighborState> = all_positions

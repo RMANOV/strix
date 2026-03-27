@@ -3,7 +3,7 @@
 import math
 
 from strix.brain import DroneSnapshot, Vec3
-from strix.temporal.multi_horizon import FleetState, MultiHorizonPlanner
+from strix.temporal.multi_horizon import FleetState, MultiHorizonPlanner, planner_validation_metrics
 
 
 def _drone(
@@ -117,3 +117,47 @@ def test_tactical_to_decisions_conversion():
     assert d.drone_id == 1
     assert d.kind == DecisionKind.GOTO
     assert d.speed_ms > 0
+
+
+def test_stale_state_inflates_required_separation():
+    planner = MultiHorizonPlanner()
+    state = FleetState(
+        drones=[
+            _drone(1, 0.0, 0.0, vx=8.0, vy=0.0),
+            _drone(2, 6.0, 0.0, vx=0.0, vy=0.0),
+        ],
+        neighbor_state_ages_s={2: 2.0},
+        packet_success_rate=0.4,
+    )
+    state.recompute_metrics()
+
+    plan = planner.plan_tactical(state)[1]
+
+    assert plan.required_separation_m > 3.0
+    assert math.isclose(plan.max_neighbor_age_s, 2.0, rel_tol=1e-6, abs_tol=1e-6)
+    assert plan.packet_success_rate == 0.4
+    assert plan.validation_confidence < 0.9
+
+
+def test_planner_validation_metrics_reflect_degraded_link():
+    planner = MultiHorizonPlanner()
+    state = FleetState(
+        drones=[
+            _drone(1, 0.0, 0.0, vx=7.0, vy=0.0),
+            _drone(2, 10.0, 0.0, vx=0.0, vy=0.0),
+        ],
+        neighbor_state_ages_s={2: 1.5},
+        packet_success_rate=0.55,
+    )
+    state.recompute_metrics()
+
+    plans = planner.plan_tactical(state)
+    metrics = planner_validation_metrics(plans)
+    from strix.temporal.multi_horizon import tactical_to_decisions
+    decisions = tactical_to_decisions(plans)
+
+    assert metrics["packet_success_rate"] == 0.55
+    assert math.isclose(metrics["max_neighbor_age_s"], 1.5, rel_tol=1e-6, abs_tol=1e-6)
+    assert 0.0 <= metrics["mean_validation_confidence"] <= 1.0
+    assert metrics["valid_fraction"] >= 0.0
+    assert math.isclose(decisions[0].confidence, plans[1].validation_confidence, rel_tol=1e-6, abs_tol=1e-6)

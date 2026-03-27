@@ -144,6 +144,51 @@ class TestBrainFallback:
         result = brain._run_auction()
         assert result == []
 
+    def test_process_intent_uses_planner_routing(self):
+        """Mission planning should route through tactical planning, not fixed center tasking."""
+        brain = MissionBrain(BrainConfig(default_packet_success_rate=0.65, stale_state_age_s=1.0))
+        brain._rust_available = False
+        brain._filters = {}
+
+        brain.register_drone(
+            DroneSnapshot(
+                drone_id=1,
+                position=Vec3(0.0, 0.0, -50.0),
+                velocity=Vec3(8.0, 0.0, 0.0),
+                energy=0.9,
+            )
+        )
+        brain.register_drone(
+            DroneSnapshot(
+                drone_id=2,
+                position=Vec3(20.0, 10.0, -50.0),
+                velocity=Vec3(6.0, 2.0, 0.0),
+                energy=0.8,
+            )
+        )
+
+        intent = MissionIntent(
+            mission_type=MissionType.RECON,
+            area=MissionArea(center=Vec3(150.0, 40.0, -50.0), radius_m=120.0),
+            priority=0.8,
+            drone_count=2,
+        )
+
+        plan = asyncio.run(brain.process_intent(intent))
+
+        assert len(plan.assignments) == 2
+        assert "Planner valid_fraction" in plan.explanation
+        assert all("planner" in assignment.reason.lower() for assignment in plan.assignments)
+        assert any(
+            assignment.target_position is not None
+            and (
+                abs(assignment.target_position.x - intent.area.center.x) > 1.0
+                or abs(assignment.target_position.y - intent.area.center.y) > 1.0
+            )
+            for assignment in plan.assignments
+        )
+        assert any(abs(assignment.confidence - 0.8) > 1e-6 for assignment in plan.assignments)
+
 
 class TestNearestThreatBearing:
     def test_no_threats(self):
@@ -164,6 +209,25 @@ class TestNearestThreatBearing:
         assert abs(bearing[0] - 1.0) < 1e-10
         assert abs(bearing[1]) < 1e-10
         assert abs(bearing[2]) < 1e-10
+
+
+class TestRegimeInference:
+    def test_weighted_pressure_prefers_engage_for_fast_approach(self):
+        brain = MissionBrain()
+        brain.register_drone(DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, -50.0)))
+        asyncio.run(
+            brain.update_threat(
+                ThreatObservation(
+                    threat_id=7,
+                    position=Vec3(200.0, 0.0, -50.0),
+                    velocity=Vec3(-10.0, 0.0, 0.0),
+                    confidence=0.9,
+                    threat_type="sam",
+                )
+            )
+        )
+
+        assert brain._check_regime() == RegimeLabel.ENGAGE
 
 
 class TestAuctionIntegration:
