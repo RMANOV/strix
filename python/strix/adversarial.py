@@ -141,8 +141,9 @@ class AdversarialEngine:
         better estimates at higher computational cost.
     """
 
-    def __init__(self, n_enemy_particles: int = 500) -> None:
+    def __init__(self, n_enemy_particles: int = 500, seed: int | None = None) -> None:
         self.n_particles = n_enemy_particles
+        self._rng = random.Random(seed)
         self._tracks: dict[int, list[_Particle]] = {}
         self._friendly_centroid = Vec3()
         self._transition = _THREAT_TRANSITION
@@ -176,13 +177,13 @@ class AdversarialEngine:
         particles = []
         for _ in range(self.n_particles):
             p = _Particle(
-                x=initial_pos.x + random.gauss(0, 5.0),
-                y=initial_pos.y + random.gauss(0, 5.0),
-                z=initial_pos.z + random.gauss(0, 2.0),
-                vx=random.gauss(0, 1.0),
-                vy=random.gauss(0, 1.0),
-                vz=random.gauss(0, 0.5),
-                regime=random.choices([0, 1, 2], weights=[0.6, 0.2, 0.2])[0],
+                x=initial_pos.x + self._rng.gauss(0, 5.0),
+                y=initial_pos.y + self._rng.gauss(0, 5.0),
+                z=initial_pos.z + self._rng.gauss(0, 2.0),
+                vx=self._rng.gauss(0, 1.0),
+                vy=self._rng.gauss(0, 1.0),
+                vz=self._rng.gauss(0, 0.5),
+                regime=self._rng.choices([0, 1, 2], weights=[0.6, 0.2, 0.2])[0],
                 weight=1.0 / self.n_particles,
             )
             particles.append(p)
@@ -305,9 +306,9 @@ class AdversarialEngine:
 
             if p.regime == _DEFEND:
                 # Mean-reverting velocity
-                p.vx = 0.5 * p.vx + random.gauss(0, noise["vel"]) * dt_sqrt
-                p.vy = 0.5 * p.vy + random.gauss(0, noise["vel"]) * dt_sqrt
-                p.vz = 0.5 * p.vz + random.gauss(0, noise["vel"] * 0.5) * dt_sqrt
+                p.vx = 0.5 * p.vx + self._rng.gauss(0, noise["vel"]) * dt_sqrt
+                p.vy = 0.5 * p.vy + self._rng.gauss(0, noise["vel"]) * dt_sqrt
+                p.vz = 0.5 * p.vz + self._rng.gauss(0, noise["vel"] * 0.5) * dt_sqrt
 
             elif p.regime == _ATTACK:
                 # Velocity tracks vector toward friendly centroid
@@ -320,9 +321,9 @@ class AdversarialEngine:
                 tvy = target_speed * dy / dist
                 tvz = target_speed * dz / dist
                 beta = 0.3
-                p.vx += beta * (tvx - p.vx) * dt + random.gauss(0, noise["vel"]) * dt_sqrt
-                p.vy += beta * (tvy - p.vy) * dt + random.gauss(0, noise["vel"]) * dt_sqrt
-                p.vz += beta * (tvz - p.vz) * dt + random.gauss(0, noise["vel"] * 0.5) * dt_sqrt
+                p.vx += beta * (tvx - p.vx) * dt + self._rng.gauss(0, noise["vel"]) * dt_sqrt
+                p.vy += beta * (tvy - p.vy) * dt + self._rng.gauss(0, noise["vel"]) * dt_sqrt
+                p.vz += beta * (tvz - p.vz) * dt + self._rng.gauss(0, noise["vel"] * 0.5) * dt_sqrt
 
             else:  # RETREAT
                 # Velocity tracks vector away from engagement
@@ -333,19 +334,19 @@ class AdversarialEngine:
                 target_speed = 15.0
                 tvx = target_speed * dx / dist
                 tvy = target_speed * dy / dist
-                p.vx += 0.2 * (tvx - p.vx) * dt + random.gauss(0, noise["vel"]) * dt_sqrt
-                p.vy += 0.2 * (tvy - p.vy) * dt + random.gauss(0, noise["vel"]) * dt_sqrt
-                p.vz += random.gauss(0, noise["vel"] * 0.3) * dt_sqrt
+                p.vx += 0.2 * (tvx - p.vx) * dt + self._rng.gauss(0, noise["vel"]) * dt_sqrt
+                p.vy += 0.2 * (tvy - p.vy) * dt + self._rng.gauss(0, noise["vel"]) * dt_sqrt
+                p.vz += self._rng.gauss(0, noise["vel"] * 0.3) * dt_sqrt
 
             # Position update
-            p.x += p.vx * dt + random.gauss(0, noise["pos"]) * dt_sqrt
-            p.y += p.vy * dt + random.gauss(0, noise["pos"]) * dt_sqrt
-            p.z += p.vz * dt + random.gauss(0, noise["pos"] * 0.5) * dt_sqrt
+            p.x += p.vx * dt + self._rng.gauss(0, noise["pos"]) * dt_sqrt
+            p.y += p.vy * dt + self._rng.gauss(0, noise["pos"]) * dt_sqrt
+            p.z += p.vz * dt + self._rng.gauss(0, noise["pos"] * 0.5) * dt_sqrt
 
     def _sample_regime_transition(self, current: int) -> int:
         """Sample next regime from the Markov transition matrix."""
         row = self._transition[current]
-        r = random.random()
+        r = self._rng.random()
         cumsum = 0.0
         for regime_idx, prob in enumerate(row):
             cumsum += prob
@@ -416,7 +417,7 @@ class AdversarialEngine:
         cumsum[-1] = 1.0  # pin
 
         step = 1.0 / n
-        start = random.uniform(0.0, step)
+        start = self._rng.uniform(0.0, step)
         uniform_weight = 1.0 / n
 
         new_particles = []

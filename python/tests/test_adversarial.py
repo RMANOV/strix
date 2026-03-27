@@ -92,3 +92,21 @@ def test_withdrawal_hypothesis_beats_direct_assault_when_opening_range():
         estimate.doctrine_probabilities[EnemyDoctrine.FIGHTING_WITHDRAWAL]
         > estimate.doctrine_probabilities[EnemyDoctrine.DIRECT_ASSAULT]
     )
+
+
+def test_deterministic_replay_with_seed():
+    """Two engines with the same seed produce identical estimates."""
+    for seed in [42, 12345, 0]:
+        e1 = AdversarialEngine(n_enemy_particles=64, seed=seed)
+        e2 = AdversarialEngine(n_enemy_particles=64, seed=seed)
+        for eng in [e1, e2]:
+            eng.set_friendly_centroid(Vec3(100.0, 0.0, 0.0))
+            eng.init_track(1, Vec3(0.0, 0.0, 0.0))
+            eng.update_from_sensor(SensorReading(
+                threat_id=1, position=Vec3(0.0, 0.0, 0.0),
+                velocity=Vec3(10.0, 0.0, 0.0), confidence=0.8,
+            ))
+        est1 = e1.predict_enemy(0.1)[1]
+        est2 = e2.predict_enemy(0.1)[1]
+        assert est1.position.x == est2.position.x
+        assert est1.confidence == est2.confidence
