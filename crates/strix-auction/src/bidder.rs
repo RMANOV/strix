@@ -289,6 +289,7 @@ fn cvar_like_downside(c: &BidComponents, fear: f64, downside_value: f64, confide
 ///
 /// Uses [`crate::risk::ValueAtRisk::cvar_estimate`] for the tail-risk penalty
 /// instead of the hand-tuned `cvar_like_downside` heuristic.
+#[allow(clippy::too_many_arguments)]
 pub fn calculate_bid_with_cvar(
     c: &BidComponents,
     fear: f64,

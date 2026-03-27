@@ -276,6 +276,7 @@ pub fn predict_particles_6d_with_buf(
 /// Sequential (deterministic) variant of [`predict_particles_6d_with_buf`].
 ///
 /// Uses a caller-supplied RNG and iterates sequentially for reproducibility.
+#[allow(clippy::too_many_arguments)]
 pub fn predict_particles_6d_seeded<R: Rng>(
     particles: &mut Array2<f64>,
     regimes: &[u8],
