@@ -104,3 +104,14 @@ metrics:
   - energy_consumed_pct
   - particle_filter_ess
   - regime_time_pct
+
+pass_envelope:
+  area_coverage_pct:
+    min: 80
+    max: 100
+  position_error_rms_m:
+    min: 0.0
+    max: 10.0
+  formation_coherence:
+    min: 0.6
+    max: 1.0

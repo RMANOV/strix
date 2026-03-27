@@ -172,3 +172,14 @@ metrics:
   - regime_transitions_count
   - adversarial_prediction_accuracy
   - dark_pool_information_leakage
+
+pass_envelope:
+  drone_survival_rate:
+    min: 0.3
+    max: 1.0
+  time_to_first_strike_s:
+    min: 0
+    max: 300
+  regime_transitions_count:
+    min: 1
+    max: 8

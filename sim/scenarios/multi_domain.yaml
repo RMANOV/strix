@@ -186,3 +186,14 @@ metrics:
   - regime_transitions
   - auction_cross_domain_bids
   - formation_coherence_per_phase
+
+pass_envelope:
+  relay_link_availability_pct:
+    min: 95.0
+    max: 100.0
+  threat_detection_to_response_s:
+    min: 0.0
+    max: 60.0
+  formation_coherence_per_phase:
+    min: 0.5
+    max: 1.0

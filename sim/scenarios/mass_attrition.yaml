@@ -149,3 +149,14 @@ metrics:
   - mission_effectiveness_per_surviving_drone
   - bid_score_evolution_near_kill_zones
   - energy_efficiency_post_attrition
+
+pass_envelope:
+  drone_survival_rate:
+    min: 0.33
+    max: 1.0
+  kill_zone_avoidance_success_rate:
+    min: 0.6
+    max: 1.0
+  formation_recovery_time_per_loss:
+    min: 0.0
+    max: 30.0
