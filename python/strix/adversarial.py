@@ -21,6 +21,7 @@ The regime-switching Markov model detects transitions:
 
 from __future__ import annotations
 
+import bisect
 import logging
 import math
 import random
@@ -192,12 +193,11 @@ class ConfidenceCalibrator:
             return self._ys[0]
         if raw >= self._xs[-1]:
             return self._ys[-1]
-        # Linear interpolation between step points
-        for i in range(1, len(self._xs)):
-            if raw <= self._xs[i]:
-                t = (raw - self._xs[i - 1]) / max(self._xs[i] - self._xs[i - 1], 1e-12)
-                return self._ys[i - 1] + t * (self._ys[i] - self._ys[i - 1])
-        return self._ys[-1]
+        i = bisect.bisect_left(self._xs, raw)
+        if i == 0:
+            return self._ys[0]
+        t = (raw - self._xs[i - 1]) / max(self._xs[i] - self._xs[i - 1], 1e-12)
+        return self._ys[i - 1] + t * (self._ys[i] - self._ys[i - 1])
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +423,8 @@ class AdversarialEngine:
         """Stop tracking a threat (e.g., confirmed destroyed)."""
         self._tracks.pop(threat_id, None)
         self._doctrine_posteriors.pop(threat_id, None)
+        self._velocity_history.pop(threat_id, None)
+        self._behavior_history.pop(threat_id, None)
 
     @property
     def tracked_threats(self) -> list[int]:
@@ -765,8 +767,7 @@ class AdversarialEngine:
             + doctrine_probs.get(EnemyDoctrine.EW_JAMMING, 0.0),
         )
         # E2: Temporal consistency — behavior flipping increases deception score
-        behavior_probs = self._regime_probabilities(particles)
-        dominant_behavior = max(behavior_probs, key=behavior_probs.get)
+        dominant_behavior = max(probs, key=probs.get)  # reuse probs from line 758
         hist = self._behavior_history.setdefault(threat_id, [])
         hist.append(dominant_behavior)
         if len(hist) > 10:

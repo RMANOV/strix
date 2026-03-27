@@ -305,8 +305,9 @@ pub fn calculate_bid_with_cvar(
     let success_prob = mission_success_probability(c, confidence);
     let opportunity = upside_value.max(0.0) * success_prob * (0.25 + 0.75 * confidence);
 
-    // Proper CVaR-based downside (replaces cvar_like_downside heuristic)
-    let var = crate::risk::ValueAtRisk::new(0.95, 0.01);
+    const CVAR_CONFIDENCE: f64 = 0.95;
+    const BASE_LOSS_RATE: f64 = 0.01;
+    let var = crate::risk::ValueAtRisk::new(CVAR_CONFIDENCE, BASE_LOSS_RATE);
     let cvar = var.cvar_estimate(fleet_alive, threat_density, mission_duration);
     let per_drone_cvar = cvar / fleet_alive.max(1) as f64;
     let downside_penalty =

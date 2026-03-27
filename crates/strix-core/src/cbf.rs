@@ -337,6 +337,38 @@ pub struct DeadlockResult {
     pub involved_indices: Vec<usize>,
 }
 
+/// Lightweight pairwise separation check (no altitude/NFZ overhead).
+fn is_pair_blocking(
+    pos_i: &Vector3<f64>,
+    vel_i: &Vector3<f64>,
+    pos_j: &Vector3<f64>,
+    vel_j: &Vector3<f64>,
+    config: &CbfConfig,
+) -> bool {
+    let diff = pos_i - pos_j;
+    let dist = diff.norm();
+    if dist < 1e-6 {
+        return true;
+    }
+    let dir = diff / dist;
+    let rel_vel = vel_i - vel_j;
+    let closing = (-rel_vel.dot(&dir)).max(0.0);
+    let ttc = if closing > 0.1 {
+        dist / closing
+    } else {
+        f64::INFINITY
+    };
+    let scale = if ttc < 3.0 {
+        1.5
+    } else if ttc < 6.0 {
+        1.0
+    } else {
+        0.5
+    };
+    let eff_sep = config.min_separation + scale * closing;
+    dist < eff_sep
+}
+
 /// Detect mutual CBF blocking among a group of drones.
 ///
 /// A deadlock exists when 3+ drones each have active CBF constraints against
@@ -344,7 +376,7 @@ pub struct DeadlockResult {
 pub fn detect_deadlock(
     positions: &[Vector3<f64>],
     velocities: &[Vector3<f64>],
-    nfz: &[NoFlyZone],
+    _nfz: &[NoFlyZone],
     config: &CbfConfig,
 ) -> DeadlockResult {
     let n = positions.len();
@@ -355,22 +387,16 @@ pub fn detect_deadlock(
             involved_indices: vec![],
         };
     }
-    // Build adjacency: (i,j) are mutually blocking if both have active CBF
     let mut degree = vec![0usize; n];
     for i in 0..n {
         for j in (i + 1)..n {
-            let ns_j = NeighborState {
-                position: positions[j],
-                velocity: velocities[j],
-            };
-            let r = cbf_filter_with_neighbor_states(
+            if is_pair_blocking(
                 &positions[i],
                 &velocities[i],
-                &[ns_j],
-                nfz,
+                &positions[j],
+                &velocities[j],
                 config,
-            );
-            if r.any_active {
+            ) {
                 degree[i] += 1;
                 degree[j] += 1;
             }

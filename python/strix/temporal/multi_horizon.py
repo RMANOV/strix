@@ -455,13 +455,14 @@ class MultiHorizonPlanner:
         best_waypoints: list[Waypoint] = []
         best_score = float("-inf")
 
+        # Hoist obstacle/threat lists out of the 44-candidate loop
+        obs_list = [(o[0], o[1]) for o in getattr(state, 'obstacles', [])]
+        thr_list = [(t, 0.0) for t in getattr(state, 'threats', [])]
+
         for heading_offset in heading_offsets:
             heading_direction = MultiHorizonPlanner._rotate_xy(preferred_direction, heading_offset)
             for speed_scale in speed_scales:
                 speed_ms = max(3.0, nominal_speed * speed_scale)
-                # Use APF if obstacles/threats exist, else constant velocity
-                obs_list = [(o[0], o[1]) for o in getattr(state, 'obstacles', [])]
-                thr_list = [(t[0], t[1]) for t in getattr(state, 'threats', [])]
                 if obs_list or thr_list:
                     candidate = MultiHorizonPlanner._rollout_apf(
                         drone=drone,
