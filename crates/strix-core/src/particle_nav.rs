@@ -11,6 +11,8 @@
 
 use nalgebra::Vector3;
 use ndarray::Array2;
+use rand::Rng;
+use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 
@@ -271,6 +273,108 @@ pub fn predict_particles_6d_with_buf(
     }
 }
 
+/// Sequential (deterministic) variant of [`predict_particles_6d_with_buf`].
+///
+/// Uses a caller-supplied RNG and iterates sequentially for reproducibility.
+pub fn predict_particles_6d_seeded<R: Rng>(
+    particles: &mut Array2<f64>,
+    regimes: &[u8],
+    threat_bearing: &Vector3<f64>,
+    vel_gain: f64,
+    dt: f64,
+    noise_cfg: &ProcessNoiseConfig,
+    buf: &mut Vec<[f64; 6]>,
+    rng: &mut R,
+) {
+    let n = particles.nrows();
+    let dt_sqrt = dt.max(1e-8).sqrt();
+    buf.resize(n, [0.0; 6]);
+    for (i, p) in buf.iter_mut().enumerate() {
+        *p = [
+            particles[[i, 0]],
+            particles[[i, 1]],
+            particles[[i, 2]],
+            particles[[i, 3]],
+            particles[[i, 4]],
+            particles[[i, 5]],
+        ];
+    }
+    let tb = *threat_bearing;
+    let normal = Normal::new(0.0, 1.0).expect("Normal(0,1)");
+    for (i, p) in buf.iter_mut().enumerate() {
+        let regime = regimes[i];
+        let noise = match regime {
+            0 => &noise_cfg.patrol,
+            1 => &noise_cfg.engage,
+            _ => &noise_cfg.evade,
+        };
+        let rp: [f64; 3] = [normal.sample(rng), normal.sample(rng), normal.sample(rng)];
+        let rv: [f64; 3] = [normal.sample(rng), normal.sample(rng), normal.sample(rng)];
+        let (vx, vy, vz) = (p[3], p[4], p[5]);
+        let (nvx, nvy, nvz) = match regime {
+            0 => (
+                0.5 * vx + rv[0] * noise.vel_noise[0] * dt_sqrt,
+                0.5 * vy + rv[1] * noise.vel_noise[1] * dt_sqrt,
+                0.5 * vz + rv[2] * noise.vel_noise[2] * dt_sqrt,
+            ),
+            1 => (
+                vx + 0.3 * (vel_gain * tb.x - vx) * dt + rv[0] * noise.vel_noise[0] * dt_sqrt,
+                vy + 0.3 * (vel_gain * tb.y - vy) * dt + rv[1] * noise.vel_noise[1] * dt_sqrt,
+                vz + 0.3 * (vel_gain * tb.z - vz) * dt + rv[2] * noise.vel_noise[2] * dt_sqrt,
+            ),
+            _ => (
+                vx + rv[0] * noise.vel_noise[0] * dt_sqrt,
+                vy + rv[1] * noise.vel_noise[1] * dt_sqrt,
+                vz + rv[2] * noise.vel_noise[2] * dt_sqrt,
+            ),
+        };
+        p[0] += nvx * dt + rp[0] * noise.pos_noise[0] * dt_sqrt;
+        p[1] += nvy * dt + rp[1] * noise.pos_noise[1] * dt_sqrt;
+        p[2] += nvz * dt + rp[2] * noise.pos_noise[2] * dt_sqrt;
+        p[3] = nvx;
+        p[4] = nvy;
+        p[5] = nvz;
+    }
+    for i in 0..n {
+        for j in 0..6 {
+            particles[[i, j]] = buf[i][j];
+        }
+    }
+}
+
+/// Systematic resampling with a caller-supplied RNG for deterministic replay.
+pub fn systematic_resample_6d_with_rng<R: Rng>(
+    particles: &Array2<f64>,
+    regimes: &[u8],
+    weights: &[f64],
+    rng: &mut R,
+) -> (Array2<f64>, Vec<u8>, Vec<f64>) {
+    let n = weights.len();
+    assert!(n > 0);
+    let mut cumsum = vec![0.0_f64; n];
+    cumsum[0] = weights[0];
+    for i in 1..n {
+        cumsum[i] = cumsum[i - 1] + weights[i];
+    }
+    cumsum[n - 1] = 1.0;
+    let step = 1.0 / n as f64;
+    let start_offset: f64 = rng.gen_range(0.0..step);
+    let mut new_particles = Array2::<f64>::zeros((n, 6));
+    let mut new_regimes = vec![0u8; n];
+    let mut j = 0_usize;
+    for i in 0..n {
+        let pos = start_offset + step * i as f64;
+        while j < n - 1 && cumsum[j] < pos {
+            j += 1;
+        }
+        for k in 0..6 {
+            new_particles[[i, k]] = particles[[j, k]];
+        }
+        new_regimes[i] = regimes[j];
+    }
+    (new_particles, new_regimes, vec![1.0 / n as f64; n])
+}
+
 // ---------------------------------------------------------------------------
 // 6D Measurement Update
 // ---------------------------------------------------------------------------
@@ -513,6 +617,8 @@ pub struct ParticleNavFilter {
     /// Pre-allocated scratch buffer — reused across `step()` calls to avoid
     /// heap allocation in `predict_particles_6d_with_buf`.
     scratch_buf: Vec<[f64; 6]>,
+    /// Optional seeded RNG for deterministic replay. `None` uses `thread_rng()`.
+    rng: Option<ChaCha8Rng>,
 }
 
 impl ParticleNavFilter {
@@ -536,6 +642,31 @@ impl ParticleNavFilter {
             resample_threshold: 0.5,
             collapse_count: 0,
             scratch_buf: vec![[0.0; 6]; n],
+            rng: None,
+        }
+    }
+
+    /// Create a new filter with a seeded RNG for deterministic replay.
+    pub fn new_seeded(n: usize, initial_pos: Vector3<f64>, seed: u64) -> Self {
+        use rand::SeedableRng;
+        let mut seeded_rng = ChaCha8Rng::seed_from_u64(seed);
+        let mut particles = Array2::<f64>::zeros((n, 6));
+        let normal = Normal::new(0.0, 1.0).expect("Normal(0,1) has valid parameters");
+        for i in 0..n {
+            particles[[i, 0]] = initial_pos.x + normal.sample(&mut seeded_rng) * 0.5;
+            particles[[i, 1]] = initial_pos.y + normal.sample(&mut seeded_rng) * 0.5;
+            particles[[i, 2]] = initial_pos.z + normal.sample(&mut seeded_rng) * 0.2;
+        }
+        Self {
+            particles,
+            regimes: vec![Regime::Patrol as u8; n],
+            weights: vec![1.0 / n as f64; n],
+            noise_cfg: ProcessNoiseConfig::default(),
+            sensor_cfg: SensorConfig::default(),
+            resample_threshold: 0.5,
+            collapse_count: 0,
+            scratch_buf: vec![[0.0; 6]; n],
+            rng: Some(seeded_rng),
         }
     }
 
@@ -549,15 +680,28 @@ impl ParticleNavFilter {
     ) -> (Vector3<f64>, Vector3<f64>, [f64; 3]) {
         // Predict — use pre-allocated scratch buffer to avoid heap allocation.
         let mut scratch = std::mem::take(&mut self.scratch_buf);
-        predict_particles_6d_with_buf(
-            &mut self.particles,
-            &self.regimes,
-            threat_bearing,
-            vel_gain,
-            dt,
-            &self.noise_cfg,
-            &mut scratch,
-        );
+        if let Some(ref mut seeded) = self.rng {
+            predict_particles_6d_seeded(
+                &mut self.particles,
+                &self.regimes,
+                threat_bearing,
+                vel_gain,
+                dt,
+                &self.noise_cfg,
+                &mut scratch,
+                seeded,
+            );
+        } else {
+            predict_particles_6d_with_buf(
+                &mut self.particles,
+                &self.regimes,
+                threat_bearing,
+                vel_gain,
+                dt,
+                &self.noise_cfg,
+                &mut scratch,
+            );
+        }
         self.scratch_buf = scratch;
 
         // Update (normalises weights internally, logs warning on collapse).
@@ -599,12 +743,23 @@ impl ParticleNavFilter {
                 );
 
                 let n = self.particles.nrows();
-                let mut rng = rand::thread_rng();
                 let normal = Normal::new(0.0, 1.0).expect("Normal(0,1) has valid parameters");
+                macro_rules! reseed_particles {
+                    ($rng:expr) => {
+                        for i in 0..n {
+                            self.particles[[i, 0]] = recovery_pos.x + normal.sample($rng) * 0.5;
+                            self.particles[[i, 1]] = recovery_pos.y + normal.sample($rng) * 0.5;
+                            self.particles[[i, 2]] = recovery_pos.z + normal.sample($rng) * 0.2;
+                        }
+                    };
+                }
+                if let Some(ref mut seeded) = self.rng {
+                    reseed_particles!(seeded);
+                } else {
+                    let mut rng = rand::thread_rng();
+                    reseed_particles!(&mut rng);
+                }
                 for i in 0..n {
-                    self.particles[[i, 0]] = recovery_pos.x + normal.sample(&mut rng) * 0.5;
-                    self.particles[[i, 1]] = recovery_pos.y + normal.sample(&mut rng) * 0.5;
-                    self.particles[[i, 2]] = recovery_pos.z + normal.sample(&mut rng) * 0.2;
                     self.particles[[i, 3]] = 0.0;
                     self.particles[[i, 4]] = 0.0;
                     self.particles[[i, 5]] = 0.0;
@@ -624,11 +779,23 @@ impl ParticleNavFilter {
         let n = self.weights.len() as f64;
         let ess = effective_sample_size(&self.weights);
         if ess < self.resample_threshold * n {
-            let (new_p, new_r, new_w) =
-                systematic_resample_6d(&self.particles, &self.regimes, &self.weights);
-            self.particles = new_p;
-            self.regimes = new_r;
-            self.weights = new_w;
+            if let Some(ref mut seeded) = self.rng {
+                let (new_p, new_r, new_w) = systematic_resample_6d_with_rng(
+                    &self.particles,
+                    &self.regimes,
+                    &self.weights,
+                    seeded,
+                );
+                self.particles = new_p;
+                self.regimes = new_r;
+                self.weights = new_w;
+            } else {
+                let (new_p, new_r, new_w) =
+                    systematic_resample_6d(&self.particles, &self.regimes, &self.weights);
+                self.particles = new_p;
+                self.regimes = new_r;
+                self.weights = new_w;
+            }
         }
 
         (pos, vel, probs)
@@ -1004,5 +1171,28 @@ mod tests {
             filter.collapse_count, 0,
             "collapse_count should stay 0 on non-collapse step after recovery"
         );
+    }
+
+    #[test]
+    fn deterministic_replay_with_seed() {
+        let pos = Vector3::new(10.0, 20.0, -50.0);
+        let obs = vec![Observation::Barometer {
+            altitude: 50.0,
+            timestamp: 0.0,
+        }];
+        let tb = Vector3::new(1.0, 0.0, 0.0);
+        let mut f1 = ParticleNavFilter::new_seeded(100, pos, 42);
+        let mut f2 = ParticleNavFilter::new_seeded(100, pos, 42);
+        let (pos1, vel1, probs1) = f1.step(&obs, &tb, 1.0, 0.1);
+        let (pos2, vel2, probs2) = f2.step(&obs, &tb, 1.0, 0.1);
+        assert!(
+            (pos1 - pos2).norm() < 1e-12,
+            "positions must match: {pos1:?} vs {pos2:?}"
+        );
+        assert!(
+            (vel1 - vel2).norm() < 1e-12,
+            "velocities must match: {vel1:?} vs {vel2:?}"
+        );
+        assert_eq!(probs1, probs2, "regime probs must match");
     }
 }
