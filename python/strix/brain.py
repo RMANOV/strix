@@ -164,6 +164,7 @@ class DroneSnapshot:
     energy: float = 1.0
     alive: bool = True
     capabilities: int = 0
+    timestamp_s: float = 0.0
 
 
 @dataclass
@@ -185,6 +186,35 @@ class CommsState:
     packet_success_rate: float = 1.0
     state_age_s: float = 0.0
     latency_ms: float = 0.0
+
+
+class _FallbackLinkQualityTracker:
+    """Small sliding-window link tracker used when Rust comms FFI is unavailable."""
+
+    def __init__(self, window_size: int = 16) -> None:
+        self._window_size = max(window_size, 1)
+        self._history: dict[int, list[bool]] = {}
+
+    def record_success(self, peer_id: int) -> None:
+        self._push(peer_id, True)
+
+    def record_failure(self, peer_id: int) -> None:
+        self._push(peer_id, False)
+
+    def quality(self, peer_id: int) -> float:
+        window = self._history.get(peer_id)
+        if not window:
+            return 0.5
+        return sum(1.0 for sample in window if sample) / len(window)
+
+    def remove(self, peer_id: int) -> None:
+        self._history.pop(peer_id, None)
+
+    def _push(self, peer_id: int, success: bool) -> None:
+        history = self._history.setdefault(peer_id, [])
+        history.append(success)
+        if len(history) > self._window_size:
+            del history[0 : len(history) - self._window_size]
 
 
 @dataclass
@@ -250,6 +280,10 @@ class MissionBrain:
             state_age_s=self.config.stale_state_age_s,
         )
         self._drone_comms: dict[int, CommsState] = {}
+        self._last_arrival_s: dict[int, float] = {}
+        self._stale_windows: dict[int, int] = {}
+        self._runtime_comms_active = False
+        self._LinkQualityTracker = _FallbackLinkQualityTracker
 
         # Rust FFI: particle filters + auctioneer (graceful fallback)
         self._filters: dict[int, object] = {}
@@ -265,6 +299,14 @@ class MissionBrain:
         except ImportError:
             self._ParticleNavFilter = None
             logger.warning("MissionBrain: Rust FFI unavailable, using Python fallbacks")
+        else:
+            try:
+                from strix._strix_core import LinkQualityTracker  # noqa: F401
+
+                self._LinkQualityTracker = LinkQualityTracker
+            except ImportError:
+                pass
+        self._link_tracker = self._LinkQualityTracker(max(int(self.config.tick_hz * 2), 8))
 
         logger.info("MissionBrain initialised (particles=%d)", self.config.n_particles)
 
@@ -274,6 +316,7 @@ class MissionBrain:
         """Register or update a drone in the fleet."""
         if len(self._fleet) >= self.config.max_fleet_size and drone.drone_id not in self._fleet:
             raise ValueError(f"Fleet full ({self.config.max_fleet_size} drones)")
+        previous = self._fleet.get(drone.drone_id)
         self._fleet[drone.drone_id] = drone
         self._drone_comms.setdefault(
             drone.drone_id,
@@ -283,6 +326,12 @@ class MissionBrain:
                 latency_ms=self._network_comms.latency_ms,
             ),
         )
+        if previous is not None or drone.timestamp_s > 0.0:
+            self._runtime_comms_active = True
+            self._link_tracker.record_success(drone.drone_id)
+            self._stale_windows[drone.drone_id] = 0
+        self._last_arrival_s[drone.drone_id] = time.monotonic()
+        self._refresh_runtime_comms()
         if self._rust_available and drone.drone_id not in self._filters:
             self._filters[drone.drone_id] = self._ParticleNavFilter(
                 n_particles=self.config.n_particles,
@@ -295,6 +344,9 @@ class MissionBrain:
         self._fleet.pop(drone_id, None)
         self._filters.pop(drone_id, None)
         self._drone_comms.pop(drone_id, None)
+        self._last_arrival_s.pop(drone_id, None)
+        self._stale_windows.pop(drone_id, None)
+        self._link_tracker.remove(drone_id)
 
     @property
     def fleet_size(self) -> int:
@@ -339,6 +391,7 @@ class MissionBrain:
             4. Package into a MissionPlan for commander review.
         """
         logger.info("Processing intent: %s over %s", intent.mission_type.name, intent.area)
+        self._refresh_runtime_comms()
 
         # Determine how many drones to allocate
         available = [d for d in self._fleet.values() if d.alive]
@@ -392,6 +445,7 @@ class MissionBrain:
         """
         self._tick_count += 1
         decisions: list[Decision] = []
+        self._refresh_runtime_comms()
 
         # 1. PREDICT -- propagate particle filters forward
         self._predict_step(dt)
@@ -961,6 +1015,7 @@ class MissionBrain:
         return assignments, overall_confidence, summary
 
     def _planner_packet_success_rate(self, drones: list[DroneSnapshot] | None = None) -> float:
+        self._refresh_runtime_comms()
         observed = [
             self._effective_comms_state(drone.drone_id).packet_success_rate
             for drone in (drones or [])
@@ -971,6 +1026,7 @@ class MissionBrain:
         return self._network_comms.packet_success_rate
 
     def _network_state_age(self) -> float:
+        self._refresh_runtime_comms()
         observed = [state.state_age_s for state in self._drone_comms.values()]
         if observed:
             return max(max(observed), self._network_comms.state_age_s)
@@ -984,6 +1040,50 @@ class MissionBrain:
 
     def _effective_comms_state(self, drone_id: int) -> CommsState:
         return self._drone_comms.get(drone_id, self._network_comms)
+
+    def _refresh_runtime_comms(self, now: float | None = None) -> None:
+        """Derive comms health from telemetry freshness when live updates are flowing."""
+        if not self._runtime_comms_active:
+            return
+
+        now = time.monotonic() if now is None else now
+        expected_interval = max(1.0 / max(self.config.tick_hz, 1e-6), 0.05)
+        overdue_window = max(expected_interval * 1.5, self.config.stale_state_age_s)
+        observed_qualities: list[float] = []
+        observed_ages: list[float] = []
+
+        for drone_id, drone in self._fleet.items():
+            if not drone.alive:
+                continue
+
+            arrival = self._last_arrival_s.get(drone_id)
+            if arrival is None:
+                continue
+
+            age = max(0.0, now - arrival)
+            missed_windows = int(age / overdue_window) if overdue_window > 1e-6 else 0
+            already_recorded = self._stale_windows.get(drone_id, 0)
+            while already_recorded < missed_windows:
+                self._link_tracker.record_failure(drone_id)
+                already_recorded += 1
+            self._stale_windows[drone_id] = missed_windows
+
+            base_state = self._drone_comms.get(drone_id, self._network_comms)
+            quality = max(0.0, min(self._link_tracker.quality(drone_id), 1.0))
+            self._drone_comms[drone_id] = CommsState(
+                packet_success_rate=quality,
+                state_age_s=age,
+                latency_ms=base_state.latency_ms,
+            )
+            observed_qualities.append(quality)
+            observed_ages.append(age)
+
+        if observed_qualities:
+            self._network_comms = CommsState(
+                packet_success_rate=sum(observed_qualities) / len(observed_qualities),
+                state_age_s=max(observed_ages),
+                latency_ms=self._network_comms.latency_ms,
+            )
 
     @staticmethod
     def _intent_obstacles(intent: MissionIntent) -> list[tuple[Vec3, float]]:
