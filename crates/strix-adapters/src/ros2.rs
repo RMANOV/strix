@@ -113,6 +113,9 @@ impl Ros2Adapter {
     ///
     /// **STUB** — immediately marks the adapter as connected.
     pub fn connect(&mut self) -> Result<(), AdapterError> {
+        eprintln!(
+            "WARN strix-adapters: Ros2Adapter::connect() is running in stub mode; telemetry and actions are simulated"
+        );
         // TODO: rclrs::init(), create node, subscribe to odom/battery
         self.connected = true;
         Ok(())

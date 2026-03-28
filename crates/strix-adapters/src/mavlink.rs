@@ -142,6 +142,9 @@ impl MavlinkAdapter {
     /// **Stub** — immediately marks the adapter as connected without opening
     /// any socket.  Use the `mavlink-hw` feature for real hardware support.
     pub fn connect(&mut self) -> Result<(), AdapterError> {
+        eprintln!(
+            "WARN strix-adapters: MavlinkAdapter::connect() is running in stub mode; telemetry and actions are simulated"
+        );
         // TODO(mavlink-hw): open UDP/TCP/Serial, spawn heartbeat + receive tasks.
         self.connected = true;
         Ok(())
