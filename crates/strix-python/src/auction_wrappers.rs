@@ -169,6 +169,20 @@ impl PyAuctionDroneState {
     }
 
     #[getter]
+    fn position(&self) -> [f64; 3] {
+        [
+            self.inner.position.x,
+            self.inner.position.y,
+            self.inner.position.z,
+        ]
+    }
+
+    #[getter]
+    fn velocity(&self) -> [f64; 3] {
+        self.inner.velocity
+    }
+
+    #[getter]
     fn alive(&self) -> bool {
         self.inner.alive
     }
@@ -234,6 +248,15 @@ impl PyTask {
     #[getter]
     fn urgency(&self) -> f64 {
         self.inner.urgency
+    }
+
+    #[getter]
+    fn location(&self) -> [f64; 3] {
+        [
+            self.inner.location.x,
+            self.inner.location.y,
+            self.inner.location.z,
+        ]
     }
 
     fn __repr__(&self) -> String {
@@ -336,6 +359,15 @@ impl PyThreatState {
     #[getter]
     fn lethal_radius(&self) -> f64 {
         self.inner.lethal_radius
+    }
+
+    #[getter]
+    fn position(&self) -> [f64; 3] {
+        [
+            self.inner.position.x,
+            self.inner.position.y,
+            self.inner.position.z,
+        ]
     }
 
     fn __repr__(&self) -> String {

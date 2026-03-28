@@ -249,10 +249,21 @@ class MissionBrain:
 
     def register_drone(self, drone: DroneSnapshot) -> None:
         """Register or update a drone in the fleet."""
+        previous = self._fleet.get(drone.drone_id)
         if len(self._fleet) >= self.config.max_fleet_size and drone.drone_id not in self._fleet:
             raise ValueError(f"Fleet full ({self.config.max_fleet_size} drones)")
         self._fleet[drone.drone_id] = drone
-        if self._rust_available and drone.drone_id not in self._filters:
+        if not self._rust_available:
+            return
+
+        needs_filter_reset = drone.drone_id not in self._filters
+        if previous is not None:
+            position_changed = previous.position.distance_to(drone.position) > 1e-6
+            velocity_changed = previous.velocity.distance_to(drone.velocity) > 1e-6
+            if position_changed or velocity_changed or previous.alive != drone.alive:
+                needs_filter_reset = True
+
+        if needs_filter_reset:
             self._filters[drone.drone_id] = self._ParticleNavFilter(
                 n_particles=self.config.n_particles,
                 position=[drone.position.x, drone.position.y, drone.position.z],
@@ -270,7 +281,7 @@ class MissionBrain:
 
     # -- Intent pipeline -----------------------------------------------------
 
-    async def process_intent(self, intent: MissionIntent) -> MissionPlan:
+    def process_intent_sync(self, intent: MissionIntent) -> MissionPlan:
         """Convert a high-level intent into a concrete mission plan.
 
         Steps:
@@ -311,25 +322,29 @@ class MissionBrain:
             )
             assignments.append(decision)
 
+        estimated_duration_s = self._estimate_duration(selected, intent)
         plan = MissionPlan(
             intent=intent,
             assignments=assignments,
-            estimated_duration_s=self._estimate_duration(selected, intent),
+            estimated_duration_s=estimated_duration_s,
             confidence=0.8 if len(selected) >= requested else 0.5,
             regime=self._regime,
             explanation=(
                 f"Allocated {len(selected)}/{requested} drones. "
                 f"Current regime: {self._regime.name}. "
-                f"Estimated time: {self._estimate_duration(selected, intent):.0f}s."
+                f"Estimated time: {estimated_duration_s:.0f}s."
             ),
         )
 
         self._active_plan = plan
         return plan
 
+    async def process_intent(self, intent: MissionIntent) -> MissionPlan:
+        return self.process_intent_sync(intent)
+
     # -- Main loop -----------------------------------------------------------
 
-    async def tick(self, dt: float) -> list[Decision]:
+    def tick_sync(self, dt: float) -> list[Decision]:
         """Execute one brain cycle: predict -> update -> regime -> auction -> assign.
 
         Parameters
@@ -360,8 +375,7 @@ class MissionBrain:
         # 4. AUCTION -- periodically re-run task allocation
         ticks_since_auction = self._tick_count - self._last_auction_tick
         if ticks_since_auction >= self.config.auction_interval_ticks:
-            auction_decisions = self._run_auction()
-            decisions.extend(auction_decisions)
+            self._run_auction()
             self._last_auction_tick = self._tick_count
 
         # 5. ASSIGN -- generate per-drone decisions from active plan
@@ -373,7 +387,10 @@ class MissionBrain:
 
         return decisions
 
-    async def handle_loss(self, drone_id: int, cause: str) -> None:
+    async def tick(self, dt: float) -> list[Decision]:
+        return self.tick_sync(dt)
+
+    def handle_loss_sync(self, drone_id: int, cause: str) -> None:
         """React to the loss of a drone -- anti-fragile response.
 
         The swarm does NOT simply degrade.  It adapts:
@@ -411,7 +428,10 @@ class MissionBrain:
         if self._active_plan:
             self._active_plan.assignments = [a for a in self._active_plan.assignments if a.drone_id != drone_id]
 
-    async def update_threat(self, observation: ThreatObservation) -> None:
+    async def handle_loss(self, drone_id: int, cause: str) -> None:
+        self.handle_loss_sync(drone_id, cause)
+
+    def update_threat_sync(self, observation: ThreatObservation) -> None:
         """Incorporate a new threat observation into the adversarial filter."""
         self._threats[observation.threat_id] = observation
         logger.info(
@@ -429,6 +449,9 @@ class MissionBrain:
                 logger.warning("High-confidence threat at %.0fm -- shifting to ENGAGE", dist)
                 self._regime = RegimeLabel.ENGAGE
 
+    async def update_threat(self, observation: ThreatObservation) -> None:
+        self.update_threat_sync(observation)
+
     # -- Async runner --------------------------------------------------------
 
     async def run(self) -> None:
@@ -443,9 +466,9 @@ class MissionBrain:
             # Process any queued intents
             while self._pending_intents:
                 intent = self._pending_intents.pop(0)
-                await self.process_intent(intent)
+                self.process_intent_sync(intent)
 
-            decisions = await self.tick(dt)
+            decisions = self.tick_sync(dt)
             if decisions:
                 logger.debug("Tick %d: %d decisions", self._tick_count, len(decisions))
 
@@ -545,10 +568,12 @@ class MissionBrain:
 
         # Build tasks from active plan assignments (if any)
         auction_tasks = []
+        task_templates: dict[int, Decision] = {}
         if self._active_plan:
             for i, assignment in enumerate(self._active_plan.assignments):
                 if assignment.target_position:
                     tp = assignment.target_position
+                    task_templates[i] = assignment
                     auction_tasks.append(
                         AuctionTask(
                             id=i,
@@ -573,28 +598,28 @@ class MissionBrain:
 
         # Convert assignments to decisions
         decisions: list[Decision] = []
-        # Build a lookup from task_id to task for O(1) access.
-        task_by_id = {t.id: t for t in auction_tasks}
 
         for assignment in result.assignments:
-            # Find the corresponding task's location by ID (not index).
-            task_pos = None
-            if assignment.task_id in task_by_id:
-                t = task_by_id[assignment.task_id]
-                task_pos = Vec3(t.position[0], t.position[1], t.position[2])
-            if self._active_plan and assignment.task_id < len(self._active_plan.assignments):
-                plan_assignment = self._active_plan.assignments[assignment.task_id]
-                task_pos = plan_assignment.target_position
+            template = task_templates.get(assignment.task_id)
+            task_pos = template.target_position if template is not None else None
 
             decisions.append(
                 Decision(
                     drone_id=assignment.drone_id,
-                    kind=DecisionKind.GOTO,
+                    kind=template.kind if template is not None else DecisionKind.GOTO,
                     target_position=task_pos,
-                    reason=f"Auction assignment (score={assignment.bid_score:.2f})",
-                    confidence=min(assignment.bid_score / 10.0, 1.0),
+                    speed_ms=template.speed_ms if template is not None else 10.0,
+                    reason=(
+                        f"Auction assignment (score={assignment.bid_score:.2f})"
+                        if template is None
+                        else f"{template.reason} via auction (score={assignment.bid_score:.2f})"
+                    ),
+                    confidence=max(0.0, min(assignment.bid_score / 10.0, 1.0)),
                 )
             )
+
+        if self._active_plan is not None and decisions:
+            self._active_plan.assignments = decisions
 
         return decisions
 

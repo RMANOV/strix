@@ -48,15 +48,18 @@ impl OptimizationReport {
 
         let best_survival = solutions
             .iter()
-            .max_by(|a, b| a.objectives[0].partial_cmp(&b.objectives[0]).unwrap())
+            .filter(|solution| solution.objectives[0].is_finite())
+            .max_by(|a, b| a.objectives[0].total_cmp(&b.objectives[0]))
             .cloned();
         let best_stability = solutions
             .iter()
-            .max_by(|a, b| a.objectives[1].partial_cmp(&b.objectives[1]).unwrap())
+            .filter(|solution| solution.objectives[1].is_finite())
+            .max_by(|a, b| a.objectives[1].total_cmp(&b.objectives[1]))
             .cloned();
         let best_efficiency = solutions
             .iter()
-            .max_by(|a, b| a.objectives[2].partial_cmp(&b.objectives[2]).unwrap())
+            .filter(|solution| solution.objectives[2].is_finite())
+            .max_by(|a, b| a.objectives[2].total_cmp(&b.objectives[2]))
             .cloned();
 
         Self {

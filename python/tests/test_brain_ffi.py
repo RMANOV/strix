@@ -5,16 +5,19 @@ and auction engine when available, and falls back to Python
 implementations otherwise.
 """
 
-import asyncio
+import sys
+import types
 
 import pytest
 
 from strix.brain import (
     BrainConfig,
     Decision,
+    DecisionKind,
     DroneSnapshot,
     MissionArea,
     MissionBrain,
+    MissionPlan,
     MissionIntent,
     MissionType,
     RegimeLabel,
@@ -72,7 +75,6 @@ class TestBrainWithRust:
             velocity=Vec3(10.0, 0.0, 0.0),
         )
         brain.register_drone(drone)
-        initial_pos = (drone.position.x, drone.position.y, drone.position.z)
 
         brain._predict_step(0.1)
 
@@ -95,7 +97,7 @@ class TestBrainWithRust:
         brain.register_drone(drone1)
         brain.register_drone(drone2)
 
-        decisions = asyncio.run(brain.tick(0.1))
+        decisions = brain.tick_sync(0.1)
         assert isinstance(decisions, list)
 
     def test_predict_with_threats(self, brain):
@@ -108,13 +110,41 @@ class TestBrainWithRust:
             position=Vec3(100.0, 0.0, 0.0),
             confidence=0.8,
         )
-        asyncio.run(brain.update_threat(threat))
+        brain.update_threat_sync(threat)
 
         brain._predict_step(0.1)
         # Should complete without error
 
 
 class TestBrainFallback:
+    def test_register_drone_resets_filter_on_state_update(self):
+        created = []
+
+        class FakeFilter:
+            def __init__(self, **kwargs):
+                self.position = kwargs["position"]
+                created.append(self)
+
+        brain = MissionBrain()
+        brain._rust_available = True
+        brain._ParticleNavFilter = FakeFilter
+        brain._filters = {}
+
+        brain.register_drone(DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, 0.0)))
+        first_filter = brain._filters[1]
+
+        brain.register_drone(
+            DroneSnapshot(
+                drone_id=1,
+                position=Vec3(5.0, 0.0, 0.0),
+                velocity=Vec3(1.0, 0.0, 0.0),
+            )
+        )
+
+        assert len(created) == 2
+        assert brain._filters[1] is not first_filter
+        assert brain._filters[1].position == [5.0, 0.0, 0.0]
+
     def test_fallback_predict_step(self):
         """Without Rust, predict step uses naive kinematics."""
         brain = MissionBrain()
@@ -154,10 +184,8 @@ class TestNearestThreatBearing:
 
     def test_bearing_toward_threat(self):
         brain = MissionBrain()
-        asyncio.run(
-            brain.update_threat(
-                ThreatObservation(threat_id=1, position=Vec3(100.0, 0.0, 0.0))
-            )
+        brain.update_threat_sync(
+            ThreatObservation(threat_id=1, position=Vec3(100.0, 0.0, 0.0))
         )
         drone = DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, 0.0))
         bearing = brain._nearest_threat_bearing(drone)
@@ -183,7 +211,7 @@ class TestAuctionIntegration:
             area=MissionArea(center=Vec3(50.0, 50.0, -50.0)),
             priority=0.8,
         )
-        plan = asyncio.run(brain.process_intent(intent))
+        plan = brain.process_intent_sync(intent)
         assert plan is not None
         assert brain._active_plan is not None
 
@@ -197,3 +225,98 @@ class TestAuctionIntegration:
         """Without an active plan, no tasks → no auction decisions."""
         decisions = brain._run_auction()
         assert decisions == []
+
+
+def test_tick_replaces_plan_assignments_with_auction_results(monkeypatch):
+    class FakeAuctionDroneState:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeTask:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeThreatState:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeAssignment:
+        def __init__(self, drone_id, task_id, bid_score):
+            self.drone_id = drone_id
+            self.task_id = task_id
+            self.bid_score = bid_score
+
+    class FakeResult:
+        def __init__(self, assignments):
+            self.assignments = assignments
+
+    class FakeAuctioneer:
+        def run_auction(self, _drones, _tasks, _threats):
+            return FakeResult(
+                [
+                    FakeAssignment(drone_id=2, task_id=0, bid_score=9.0),
+                    FakeAssignment(drone_id=1, task_id=1, bid_score=8.0),
+                ]
+            )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "strix._strix_core",
+        types.SimpleNamespace(
+            AuctionDroneState=FakeAuctionDroneState,
+            Task=FakeTask,
+            ThreatState=FakeThreatState,
+        ),
+    )
+
+    brain = MissionBrain(BrainConfig(auction_interval_ticks=1))
+    brain._rust_available = False
+    brain.register_drone(DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, 0.0)))
+    brain.register_drone(DroneSnapshot(drone_id=2, position=Vec3(100.0, 0.0, 0.0)))
+    brain._rust_available = True
+    brain._auctioneer = FakeAuctioneer()
+    brain._active_plan = MissionPlan(
+        assignments=[
+            Decision(
+                drone_id=1,
+                kind=DecisionKind.GOTO,
+                target_position=Vec3(10.0, 0.0, 0.0),
+                speed_ms=12.0,
+                reason="task alpha",
+                confidence=0.7,
+            ),
+            Decision(
+                drone_id=2,
+                kind=DecisionKind.LOITER,
+                target_position=Vec3(20.0, 0.0, 0.0),
+                speed_ms=6.0,
+                reason="task bravo",
+                confidence=0.6,
+            ),
+        ]
+    )
+
+    decisions = brain.tick_sync(0.1)
+
+    assert len(decisions) == 2
+    assert decisions == brain._active_plan.assignments
+    assert {d.drone_id for d in decisions} == {1, 2}
+    assert any(d.drone_id == 2 and d.target_position == Vec3(10.0, 0.0, 0.0) for d in decisions)
+    assert any(d.drone_id == 1 and d.target_position == Vec3(20.0, 0.0, 0.0) for d in decisions)
+
+
+def test_async_shims_complete_synchronously():
+    brain = MissionBrain()
+    brain.register_drone(DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, 0.0)))
+
+    coro = brain.tick(0.1)
+    try:
+        coro.send(None)
+    except StopIteration as stop:
+        result = stop.value
+    else:
+        raise AssertionError("tick coroutine unexpectedly yielded")
+    finally:
+        coro.close()
+
+    assert result == brain.tick_sync(0.1)

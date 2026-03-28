@@ -25,7 +25,7 @@ import bisect
 import logging
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from typing import Optional
 
@@ -250,9 +250,11 @@ class AdversarialEngine:
         self._tracks: dict[int, list[_Particle]] = {}
         self._friendly_centroid = Vec3()
         self._transition = _THREAT_TRANSITION
+        self._logical_time_s = 0.0
         self._doctrine_posteriors: dict[int, dict[EnemyDoctrine, float]] = {}
         self._velocity_history: dict[int, list[float]] = {}  # closing speed history per track
         self._behavior_history: dict[int, list[EnemyBehavior]] = {}  # for temporal deception
+        self._last_observations: dict[int, SensorReading] = {}
         self._doctrine_prior = self._normalize_distribution(
             {
                 EnemyDoctrine.FIXED_DEFENSE: 0.25,
@@ -309,11 +311,20 @@ class AdversarialEngine:
         - ATTACKING: velocity tracks vector toward friendly centroid
         - RETREATING: velocity tracks vector away from engagement
         """
+        self._logical_time_s += max(dt, 0.0)
         estimates = {}
         for threat_id, particles in self._tracks.items():
             self._predict_particles(particles, dt)
-            self._update_doctrine_posterior(threat_id, particles=particles)
-            estimates[threat_id] = self._estimate(threat_id, particles)
+            doctrine_probs = self._update_doctrine_posterior(
+                threat_id,
+                particles=particles,
+            )
+            estimates[threat_id] = self._estimate(
+                threat_id,
+                particles,
+                doctrine_probs=doctrine_probs,
+                update_history=True,
+            )
         return estimates
 
     def update_from_sensor(self, observation: SensorReading) -> None:
@@ -321,6 +332,9 @@ class AdversarialEngine:
 
         Supports position observations, bearing-only, and velocity hints.
         """
+        if observation.timestamp <= 0.0:
+            observation = replace(observation, timestamp=self._logical_time_s)
+
         threat_id = observation.threat_id
         if threat_id not in self._tracks:
             # Auto-initialize if we have position
@@ -351,6 +365,7 @@ class AdversarialEngine:
             self._tracks[threat_id] = particles
 
         self._update_doctrine_posterior(threat_id, observation=observation, particles=particles)
+        self._last_observations[threat_id] = observation
 
         # Track closing speed history for PROBING detection
         if observation.velocity:
@@ -401,8 +416,10 @@ class AdversarialEngine:
         targets = {threat_id: self._tracks[threat_id]} if threat_id is not None else self._tracks
         result = {}
         for tid, particles in targets.items():
-            self._update_doctrine_posterior(tid, particles=particles)
-            posterior = self._doctrine_posteriors.get(tid, self._doctrine_prior)
+            posterior = self._compute_doctrine_posterior(
+                tid,
+                particles=particles,
+            )
             result[tid] = max(posterior, key=posterior.get)
         return result
 
@@ -415,7 +432,12 @@ class AdversarialEngine:
         targets = {threat_id: self._tracks[threat_id]} if threat_id is not None else self._tracks
         result = {}
         for tid, particles in targets.items():
-            est = self._estimate(tid, particles)
+            est = self._estimate(
+                tid,
+                particles,
+                doctrine_probs=self._compute_doctrine_posterior(tid, particles=particles),
+                update_history=False,
+            )
             result[tid] = est.time_to_contact_s
         return result
 
@@ -425,6 +447,7 @@ class AdversarialEngine:
         self._doctrine_posteriors.pop(threat_id, None)
         self._velocity_history.pop(threat_id, None)
         self._behavior_history.pop(threat_id, None)
+        self._last_observations.pop(threat_id, None)
 
     @property
     def tracked_threats(self) -> list[int]:
@@ -612,33 +635,61 @@ class AdversarialEngine:
             mvz += p.vz * p.weight
         return Vec3(mx, my, mz), Vec3(mvx, mvy, mvz)
 
-    def _update_doctrine_posterior(
+    def _doctrine_memory_prior(self, threat_id: int) -> dict[EnemyDoctrine, float]:
+        posterior = self._doctrine_posteriors.get(threat_id)
+        if posterior is None:
+            return dict(self._doctrine_prior)
+
+        observation = self._last_observations.get(threat_id)
+        if observation is None:
+            return dict(posterior)
+
+        age_s = max(0.0, self._logical_time_s - observation.timestamp)
+        memory = math.exp(-age_s / 15.0)
+        blended = {
+            doctrine: posterior.get(doctrine, 0.0) * memory + self._doctrine_prior[doctrine] * (1.0 - memory)
+            for doctrine in self._doctrine_prior
+        }
+        return self._normalize_distribution(blended, self._doctrine_prior)
+
+    def _compute_doctrine_posterior(
         self,
         threat_id: int,
         observation: SensorReading | None = None,
         particles: Optional[list[_Particle]] = None,
-    ) -> None:
-        """Update doctrinal hypothesis posterior from kinematics and sensor cues."""
+    ) -> dict[EnemyDoctrine, float]:
+        """Compute doctrinal hypothesis posterior from kinematics and sensor cues."""
         particles = particles or self._tracks.get(threat_id)
         if not particles:
-            return
+            return dict(self._doctrine_prior)
 
-        prior = dict(self._doctrine_posteriors.get(threat_id, self._doctrine_prior))
+        prior = self._doctrine_memory_prior(threat_id)
         obs_likelihood = self._doctrine_likelihoods_from_observation(observation, particles)
         behavior_likelihood = self._behavior_to_doctrine_likelihoods(particles)
+        behavior_weight = 1.0 if observation is not None else 0.0
 
         posterior = {}
         for doctrine, prior_prob in prior.items():
             posterior[doctrine] = (
                 prior_prob
                 * obs_likelihood.get(doctrine, 1.0)
-                * behavior_likelihood.get(doctrine, 1.0)
+                * behavior_likelihood.get(doctrine, 1.0) ** behavior_weight
             )
 
-        self._doctrine_posteriors[threat_id] = self._normalize_distribution(
+        return self._normalize_distribution(
             posterior,
             self._doctrine_prior,
         )
+
+    def _update_doctrine_posterior(
+        self,
+        threat_id: int,
+        observation: SensorReading | None = None,
+        particles: Optional[list[_Particle]] = None,
+    ) -> dict[EnemyDoctrine, float]:
+        posterior = self._compute_doctrine_posterior(threat_id, observation=observation, particles=particles)
+        self._doctrine_posteriors[threat_id] = posterior
+        return posterior
 
     def _doctrine_likelihoods_from_observation(
         self,
@@ -684,12 +735,16 @@ class AdversarialEngine:
 
         if signal_strength is not None:
             if signal_strength > -55.0:
-                likelihoods[EnemyDoctrine.EW_JAMMING] += 0.8 * confidence
+                likelihoods[EnemyDoctrine.EW_JAMMING] += 1.8 * confidence
+            if signal_strength > -45.0:
+                likelihoods[EnemyDoctrine.EW_JAMMING] += 1.0 * confidence
             if signal_strength > -50.0 and (radar_cross_section is None or radar_cross_section < 0.2):
                 likelihoods[EnemyDoctrine.DECOY] += 0.9 * confidence
 
         if sensor_type in {"ew", "rf", "sigint"}:
-            likelihoods[EnemyDoctrine.EW_JAMMING] += 0.7 * confidence
+            likelihoods[EnemyDoctrine.EW_JAMMING] += 1.4 * confidence
+            if signal_strength is not None and signal_strength > -40.0:
+                likelihoods[EnemyDoctrine.EW_JAMMING] += 0.8 * confidence
         if observation is not None and observation.bearing_rad is not None and observation.position is None:
             likelihoods[EnemyDoctrine.DECOY] += 0.4 * confidence
         if radar_cross_section is not None and radar_cross_section < 0.15:
@@ -744,7 +799,13 @@ class AdversarialEngine:
             EnemyDoctrine.COORDINATED_ATTACK: 0.7 + attack * 1.0,
         }
 
-    def _estimate(self, threat_id: int, particles: list[_Particle]) -> EnemyEstimate:
+    def _estimate(
+        self,
+        threat_id: int,
+        particles: list[_Particle],
+        doctrine_probs: dict[EnemyDoctrine, float] | None = None,
+        update_history: bool = True,
+    ) -> EnemyEstimate:
         """Compute weighted estimate from a particle cloud."""
         mean_pos, mean_vel = self._weighted_mean_state(particles)
 
@@ -758,20 +819,22 @@ class AdversarialEngine:
         probs = self._regime_probabilities(particles)
         max_behavior = max(probs, key=probs.get)  # type: ignore[arg-type]
 
-        self._update_doctrine_posterior(threat_id, particles=particles)
-        doctrine_probs = dict(self._doctrine_posteriors.get(threat_id, self._doctrine_prior))
+        doctrine_probs = dict(doctrine_probs or self._doctrine_posteriors.get(threat_id, self._doctrine_prior))
         dominant_doctrine = max(doctrine_probs, key=doctrine_probs.get)
         base_deception = min(
             1.0,
             doctrine_probs.get(EnemyDoctrine.DECOY, 0.0)
             + doctrine_probs.get(EnemyDoctrine.EW_JAMMING, 0.0),
         )
-        # E2: Temporal consistency — behavior flipping increases deception score
-        dominant_behavior = max(probs, key=probs.get)  # reuse probs from line 758
-        hist = self._behavior_history.setdefault(threat_id, [])
-        hist.append(dominant_behavior)
-        if len(hist) > 10:
-            hist[:] = hist[-10:]
+        dominant_behavior = max(probs, key=probs.get)
+        hist = list(self._behavior_history.get(threat_id, []))
+        if update_history:
+            stored_hist = self._behavior_history.setdefault(threat_id, [])
+            stored_hist.append(dominant_behavior)
+            if len(stored_hist) > 10:
+                stored_hist[:] = stored_hist[-10:]
+            hist = stored_hist
+
         transition_rate = 0.0
         if len(hist) >= 2:
             transitions = sum(1 for a, b in zip(hist, hist[1:]) if a != b)

@@ -233,3 +233,25 @@ def test_adversarial_risk_context_empty():
     ctx = adversarial_to_risk_context({})
     assert ctx["threat_density"] == 0.0
     assert ctx["confidence"] == 0.5
+
+
+def test_time_to_contact_does_not_mutate_behavior_history():
+    engine = AdversarialEngine(n_enemy_particles=64, seed=7)
+    engine.set_friendly_centroid(Vec3(0.0, 0.0, 0.0))
+    engine.init_track(50, Vec3(100.0, 0.0, 0.0))
+    engine.update_from_sensor(
+        SensorReading(
+            threat_id=50,
+            position=Vec3(100.0, 0.0, 0.0),
+            velocity=Vec3(-10.0, 0.0, 0.0),
+            confidence=0.9,
+        )
+    )
+    engine.predict_enemy(0.1)
+
+    before = list(engine._behavior_history.get(50, []))
+    ttc = engine.time_to_contact(50)
+    after = list(engine._behavior_history.get(50, []))
+
+    assert 50 in ttc
+    assert before == after
