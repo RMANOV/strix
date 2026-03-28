@@ -93,8 +93,29 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install pytest numpy
-      - run: pytest python/tests/ -v
-        continue-on-error: true
+      - run: python -m compileall -q python demo
+      - run: pytest -q
+
+  python-ffi:
+    name: Python FFI Smoke Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stub phi-sim
+        run: |
+          mkdir -p ../phi-sim/src
+          printf '[package]\nname = "phi-sim"\nversion = "0.5.0"\nedition = "2021"\n' > ../phi-sim/Cargo.toml
+          echo '// stub' > ../phi-sim/src/lib.rs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: pip install maturin pytest numpy
+      - run: |
+          maturin build --manifest-path crates/strix-python/Cargo.toml --release --out dist
+          pip install dist/*.whl
+      - run: pytest -q python/tests/test_ffi.py python/tests/test_auction_ffi.py python/tests/test_brain_ffi.py
 
   bench-compile:
     name: Benchmarks compile

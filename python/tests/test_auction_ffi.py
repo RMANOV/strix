@@ -73,6 +73,8 @@ class TestAuctionDroneState:
         sc = _import_strix_core()
         d = sc.AuctionDroneState(id=1, position=[0.0, 0.0, 100.0])
         assert d.id == 1
+        assert d.position == [0.0, 0.0, 100.0]
+        assert d.velocity == [0.0, 0.0, 0.0]
         assert d.energy == pytest.approx(1.0)
         assert d.alive is True
 
@@ -89,6 +91,8 @@ class TestAuctionDroneState:
             alive=True,
         )
         assert d.id == 7
+        assert d.position == [10.0, 20.0, 30.0]
+        assert d.velocity == [1.0, 2.0, 3.0]
         assert d.energy == pytest.approx(0.75)
 
     def test_invalid_regime_index(self):
@@ -107,6 +111,7 @@ class TestTask:
         sc = _import_strix_core()
         t = sc.Task(id=10, location=[5.0, 5.0, 50.0])
         assert t.id == 10
+        assert t.location == [5.0, 5.0, 50.0]
         assert t.priority == pytest.approx(0.5)
         assert t.urgency == pytest.approx(0.5)
 
@@ -123,6 +128,7 @@ class TestTask:
             dark_pool=2,
         )
         assert t.id == 42
+        assert t.location == [1.0, 2.0, 3.0]
         assert t.priority == pytest.approx(0.9)
         assert t.urgency == pytest.approx(0.8)
 
@@ -150,6 +156,7 @@ class TestThreatState:
         sc = _import_strix_core()
         th = sc.ThreatState(id=100, position=[25.0, 25.0, 0.0])
         assert th.id == 100
+        assert th.position == [25.0, 25.0, 0.0]
         assert th.lethal_radius == pytest.approx(200.0)
 
     def test_custom_radius(self):

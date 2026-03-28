@@ -174,6 +174,7 @@ class Decision:
     """A single atomic decision produced by a brain tick."""
 
     drone_id: int = 0
+    task_id: Optional[int] = None
     kind: DecisionKind = DecisionKind.LOITER
     target_position: Optional[Vec3] = None
     speed_ms: float = 10.0
@@ -227,6 +228,7 @@ class MissionBrain:
         self._pending_intents: list[MissionIntent] = []
         self._running = False
         self._last_auction_tick = 0
+        self._next_task_id = 0
 
         # Rust FFI: particle filters + auctioneer (graceful fallback)
         self._filters: dict[int, object] = {}
@@ -323,6 +325,7 @@ class MissionBrain:
             assignments.append(decision)
 
         estimated_duration_s = self._estimate_duration(selected, intent)
+        assignments = [self._with_task_id(assignment) for assignment in assignments]
         plan = MissionPlan(
             intent=intent,
             assignments=assignments,
@@ -374,7 +377,7 @@ class MissionBrain:
 
         # 4. AUCTION -- periodically re-run task allocation
         ticks_since_auction = self._tick_count - self._last_auction_tick
-        if ticks_since_auction >= self.config.auction_interval_ticks:
+        if self._should_run_auction(ticks_since_auction):
             self._run_auction()
             self._last_auction_tick = self._tick_count
 
@@ -428,6 +431,8 @@ class MissionBrain:
         if self._active_plan:
             self._active_plan.assignments = [a for a in self._active_plan.assignments if a.drone_id != drone_id]
 
+        self._trigger_reauction()
+
     async def handle_loss(self, drone_id: int, cause: str) -> None:
         self.handle_loss_sync(drone_id, cause)
 
@@ -448,6 +453,7 @@ class MissionBrain:
             if dist < 300.0:
                 logger.warning("High-confidence threat at %.0fm -- shifting to ENGAGE", dist)
                 self._regime = RegimeLabel.ENGAGE
+                self._trigger_reauction()
 
     async def update_threat(self, observation: ThreatObservation) -> None:
         self.update_threat_sync(observation)
@@ -570,13 +576,16 @@ class MissionBrain:
         auction_tasks = []
         task_templates: dict[int, Decision] = {}
         if self._active_plan:
-            for i, assignment in enumerate(self._active_plan.assignments):
+            self._active_plan.assignments = [self._with_task_id(assignment) for assignment in self._active_plan.assignments]
+            for assignment in self._active_plan.assignments:
                 if assignment.target_position:
                     tp = assignment.target_position
-                    task_templates[i] = assignment
+                    if assignment.task_id is None:
+                        continue
+                    task_templates[assignment.task_id] = assignment
                     auction_tasks.append(
                         AuctionTask(
-                            id=i,
+                            id=assignment.task_id,
                             location=[tp.x, tp.y, tp.z],
                             priority=assignment.confidence,
                         )
@@ -606,6 +615,7 @@ class MissionBrain:
             decisions.append(
                 Decision(
                     drone_id=assignment.drone_id,
+                    task_id=assignment.task_id,
                     kind=template.kind if template is not None else DecisionKind.GOTO,
                     target_position=task_pos,
                     speed_ms=template.speed_ms if template is not None else 10.0,
@@ -622,6 +632,32 @@ class MissionBrain:
             self._active_plan.assignments = decisions
 
         return decisions
+
+    def _should_run_auction(self, ticks_since_auction: int) -> bool:
+        if ticks_since_auction >= self.config.auction_interval_ticks:
+            return True
+        return bool(getattr(self._auctioneer, "needs_reauction", False))
+
+    def _trigger_reauction(self) -> None:
+        trigger = getattr(self._auctioneer, "trigger_reauction", None)
+        if callable(trigger):
+            trigger()
+
+    def _with_task_id(self, decision: Decision) -> Decision:
+        if decision.task_id is not None:
+            return decision
+
+        task_id = self._next_task_id
+        self._next_task_id += 1
+        return Decision(
+            drone_id=decision.drone_id,
+            task_id=task_id,
+            kind=decision.kind,
+            target_position=decision.target_position,
+            speed_ms=decision.speed_ms,
+            reason=decision.reason,
+            confidence=decision.confidence,
+        )
 
     def _nearest_threat_bearing(self, drone: DroneSnapshot) -> list[float]:
         """Compute unit vector from drone toward nearest threat."""

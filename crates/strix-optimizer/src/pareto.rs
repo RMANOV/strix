@@ -8,6 +8,14 @@
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
+fn finite_objective(value: f64) -> Option<f64> {
+    value.is_finite().then_some(value)
+}
+
+fn objective_sort_key(value: f64) -> f64 {
+    finite_objective(value).unwrap_or(f64::NEG_INFINITY)
+}
+
 /// A single solution in the Pareto archive.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParetoSolution {
@@ -49,6 +57,9 @@ impl ParetoSolution {
 /// Free-function dominance check: `a` dominates `b` iff
 /// a[i] >= b[i] for all i and a[j] > b[j] for at least one j (maximisation).
 pub fn dominates(a: &[f64; 3], b: &[f64; 3]) -> bool {
+    if a.iter().any(|value| !value.is_finite()) || b.iter().any(|value| !value.is_finite()) {
+        return false;
+    }
     a.iter().zip(b.iter()).all(|(x, y)| x >= y) && a.iter().zip(b.iter()).any(|(x, y)| x > y)
 }
 
@@ -70,13 +81,12 @@ pub fn crowding_distance(solutions: &[ParetoSolution]) -> Vec<f64> {
     for obj_idx in 0..3usize {
         let mut order: Vec<usize> = (0..n).collect();
         order.sort_by(|&a, &b| {
-            solutions[a].objectives[obj_idx]
-                .partial_cmp(&solutions[b].objectives[obj_idx])
-                .unwrap_or(std::cmp::Ordering::Equal)
+            objective_sort_key(solutions[a].objectives[obj_idx])
+                .total_cmp(&objective_sort_key(solutions[b].objectives[obj_idx]))
         });
 
-        let f_min = solutions[order[0]].objectives[obj_idx];
-        let f_max = solutions[order[n - 1]].objectives[obj_idx];
+        let f_min = objective_sort_key(solutions[order[0]].objectives[obj_idx]);
+        let f_max = objective_sort_key(solutions[order[n - 1]].objectives[obj_idx]);
         let range = f_max - f_min;
 
         dist[order[0]] = f64::INFINITY;
@@ -87,8 +97,8 @@ pub fn crowding_distance(solutions: &[ParetoSolution]) -> Vec<f64> {
         }
 
         for i in 1..n - 1 {
-            let prev = solutions[order[i - 1]].objectives[obj_idx];
-            let next = solutions[order[i + 1]].objectives[obj_idx];
+            let prev = objective_sort_key(solutions[order[i - 1]].objectives[obj_idx]);
+            let next = objective_sort_key(solutions[order[i + 1]].objectives[obj_idx]);
             dist[order[i]] += (next - prev) / range;
         }
     }
@@ -121,6 +131,10 @@ impl ParetoArchive {
     ///
     /// Returns `true` if the candidate was accepted.
     pub fn insert(&mut self, candidate: ParetoSolution) -> bool {
+        if candidate.objectives.iter().any(|value| !value.is_finite()) {
+            return false;
+        }
+
         // Single-pass: check if candidate is dominated AND collect indices it dominates
         let mut dominated_by_existing = false;
         let mut keep = Vec::with_capacity(self.solutions.len());
@@ -165,13 +179,11 @@ impl ParetoArchive {
                 .iter()
                 .enumerate()
                 .min_by(|(ia, da), (ib, db)| {
-                    da.partial_cmp(db)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| {
-                            self.solutions[*ia]
-                                .iteration
-                                .cmp(&self.solutions[*ib].iteration)
-                        })
+                    da.total_cmp(db).then_with(|| {
+                        self.solutions[*ia]
+                            .iteration
+                            .cmp(&self.solutions[*ib].iteration)
+                    })
                 })
                 .map(|(i, _)| i)
                 .unwrap();
@@ -197,11 +209,10 @@ impl ParetoArchive {
     /// Return the solution with the highest value on the given objective index (0, 1, or 2).
     /// Returns `None` if the archive is empty.
     pub fn best_for(&self, objective: usize) -> Option<&ParetoSolution> {
-        self.solutions.iter().max_by(|a, b| {
-            a.objectives[objective]
-                .partial_cmp(&b.objectives[objective])
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        self.solutions
+            .iter()
+            .filter(|solution| solution.objectives[objective].is_finite())
+            .max_by(|a, b| a.objectives[objective].total_cmp(&b.objectives[objective]))
     }
 
     /// Return a uniformly random member of the archive, or `None` if empty.
@@ -223,7 +234,8 @@ impl ParetoArchive {
             .solutions
             .iter()
             .filter(|s| {
-                s.objectives[0] > ref_point[0]
+                s.objectives.iter().all(|value| value.is_finite())
+                    && s.objectives[0] > ref_point[0]
                     && s.objectives[1] > ref_point[1]
                     && s.objectives[2] > ref_point[2]
             })
@@ -246,7 +258,7 @@ impl ParetoArchive {
 /// Points must already be filtered to strictly dominate the reference.
 /// Mutates `pts` (sorts in place by obj[0] descending).
 fn hypervolume_3d(pts: &mut [[f64; 3]], reference: [f64; 3]) -> f64 {
-    pts.sort_by(|a, b| b[0].partial_cmp(&a[0]).unwrap_or(std::cmp::Ordering::Equal));
+    pts.sort_by(|a, b| objective_sort_key(b[0]).total_cmp(&objective_sort_key(a[0])));
 
     let mut volume = 0.0;
     // Sweep plane starts at reference[0]; points are at higher values.
@@ -296,7 +308,7 @@ fn hypervolume_2d(front: &[[f64; 2]], reference: [f64; 2]) -> f64 {
     }
 
     let mut pts: Vec<[f64; 2]> = front.to_vec();
-    pts.sort_by(|a, b| b[0].partial_cmp(&a[0]).unwrap_or(std::cmp::Ordering::Equal));
+    pts.sort_by(|a, b| objective_sort_key(b[0]).total_cmp(&objective_sort_key(a[0])));
 
     let mut area = 0.0;
     let mut prev_y = reference[1];
@@ -386,6 +398,14 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_rejects_non_finite_candidate() {
+        let mut archive = ParetoArchive::new(100);
+        let accepted = archive.insert(sol([f64::NAN, 0.5, 0.5], 0));
+        assert!(!accepted);
+        assert!(archive.is_empty());
+    }
+
+    #[test]
     fn test_insert_incomparable_both_kept() {
         let mut archive = ParetoArchive::new(100);
         archive.insert(sol([1.0, 0.0, 0.5], 0));
@@ -469,6 +489,19 @@ mod tests {
         assert!(large.hypervolume([0.0, 0.0, 0.0]) >= small.hypervolume([0.0, 0.0, 0.0]));
     }
 
+    #[test]
+    fn test_hypervolume_ignores_non_finite_points() {
+        let mut archive = ParetoArchive::new(10);
+        archive.insert(sol([1.0, 1.0, 1.0], 0));
+        archive.solutions.push(sol([1.5, f64::NAN, 2.0], 1));
+
+        let hv = archive.hypervolume([0.0, 0.0, 0.0]);
+        assert!(
+            (hv - 1.0).abs() < 1e-9,
+            "expected NaN point to be ignored, got {hv}"
+        );
+    }
+
     // --- best_for (spec-required test) ---
 
     #[test]
@@ -486,6 +519,16 @@ mod tests {
 
         let b2 = archive.best_for(2).unwrap();
         assert!((b2.objectives[2] - 0.9).abs() < 1e-9, "wrong best for obj2");
+    }
+
+    #[test]
+    fn test_best_for_ignores_non_finite_objectives() {
+        let mut archive = ParetoArchive::new(100);
+        archive.insert(sol([0.5, 0.5, 0.5], 0));
+        archive.solutions.push(sol([f64::NAN, 0.9, 0.9], 1));
+
+        let best = archive.best_for(0).unwrap();
+        assert_eq!(best.objectives, [0.5, 0.5, 0.5]);
     }
 
     // --- Empty archive (spec-required test) ---

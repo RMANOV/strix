@@ -305,6 +305,74 @@ def test_tick_replaces_plan_assignments_with_auction_results(monkeypatch):
     assert any(d.drone_id == 1 and d.target_position == Vec3(20.0, 0.0, 0.0) for d in decisions)
 
 
+def test_run_auction_uses_stable_task_ids(monkeypatch):
+    observed_task_ids = []
+
+    class FakeAuctionDroneState:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeTask:
+        def __init__(self, **kwargs):
+            observed_task_ids.append(kwargs["id"])
+            self.__dict__.update(kwargs)
+
+    class FakeThreatState:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeAssignment:
+        def __init__(self, drone_id, task_id, bid_score):
+            self.drone_id = drone_id
+            self.task_id = task_id
+            self.bid_score = bid_score
+
+    class FakeResult:
+        def __init__(self, assignments):
+            self.assignments = assignments
+
+    class FakeAuctioneer:
+        def run_auction(self, _drones, tasks, _threats):
+            return FakeResult(
+                [FakeAssignment(drone_id=1, task_id=tasks[0].id, bid_score=9.0)]
+            )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "strix._strix_core",
+        types.SimpleNamespace(
+            AuctionDroneState=FakeAuctionDroneState,
+            Task=FakeTask,
+            ThreatState=FakeThreatState,
+        ),
+    )
+
+    brain = MissionBrain()
+    brain._rust_available = False
+    brain.register_drone(DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, 0.0)))
+    brain._rust_available = True
+    brain._auctioneer = FakeAuctioneer()
+    brain._active_plan = MissionPlan(
+        assignments=[
+            Decision(
+                drone_id=1,
+                kind=DecisionKind.GOTO,
+                target_position=Vec3(10.0, 0.0, 0.0),
+                speed_ms=12.0,
+                reason="task alpha",
+                confidence=0.7,
+            )
+        ]
+    )
+
+    first = brain._run_auction()
+    second = brain._run_auction()
+
+    assert first[0].task_id is not None
+    assert second[0].task_id == first[0].task_id
+    assert observed_task_ids[0] == observed_task_ids[1] == first[0].task_id
+
+
 def test_async_shims_complete_synchronously():
     brain = MissionBrain()
     brain.register_drone(DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, 0.0)))
@@ -320,3 +388,84 @@ def test_async_shims_complete_synchronously():
         coro.close()
 
     assert result == brain.tick_sync(0.1)
+
+
+def test_handle_loss_triggers_reauction():
+    class FakeAuctioneer:
+        def __init__(self):
+            self.needs_reauction = False
+
+        def trigger_reauction(self):
+            self.needs_reauction = True
+
+    brain = MissionBrain()
+    brain._auctioneer = FakeAuctioneer()
+    brain.register_drone(DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, 0.0)))
+    brain._active_plan = MissionPlan(assignments=[Decision(drone_id=1, target_position=Vec3(1.0, 0.0, 0.0))])
+
+    brain.handle_loss_sync(1, "test")
+
+    assert brain._auctioneer.needs_reauction is True
+    assert brain._active_plan.assignments == []
+
+
+def test_tick_honors_auctioneer_reauction_flag(monkeypatch):
+    class FakeAuctionDroneState:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeTask:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeThreatState:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeAssignment:
+        def __init__(self, drone_id, task_id, bid_score):
+            self.drone_id = drone_id
+            self.task_id = task_id
+            self.bid_score = bid_score
+
+    class FakeResult:
+        def __init__(self, assignments):
+            self.assignments = assignments
+
+    class FakeAuctioneer:
+        def __init__(self):
+            self.needs_reauction = True
+            self.calls = 0
+
+        def trigger_reauction(self):
+            self.needs_reauction = True
+
+        def run_auction(self, _drones, tasks, _threats):
+            self.calls += 1
+            self.needs_reauction = False
+            return FakeResult([FakeAssignment(drone_id=1, task_id=tasks[0].id, bid_score=9.0)])
+
+    monkeypatch.setitem(
+        sys.modules,
+        "strix._strix_core",
+        types.SimpleNamespace(
+            AuctionDroneState=FakeAuctionDroneState,
+            Task=FakeTask,
+            ThreatState=FakeThreatState,
+        ),
+    )
+
+    brain = MissionBrain(BrainConfig(auction_interval_ticks=99))
+    brain._rust_available = False
+    brain.register_drone(DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, 0.0)))
+    brain._rust_available = True
+    brain._auctioneer = FakeAuctioneer()
+    brain._active_plan = MissionPlan(
+        assignments=[Decision(drone_id=1, target_position=Vec3(5.0, 0.0, 0.0), reason="alpha")]
+    )
+
+    decisions = brain.tick_sync(0.1)
+
+    assert brain._auctioneer.calls == 1
+    assert brain._auctioneer.needs_reauction is False
+    assert len(decisions) == 1
