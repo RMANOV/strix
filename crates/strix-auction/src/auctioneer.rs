@@ -302,13 +302,13 @@ impl Auctioneer {
                         }
                     }
                 }
-                if valid {
+                if valid && total_score.is_finite() {
                     candidates.push((total_score, di, si));
                 }
             }
         }
 
-        candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.sort_by(|a, b| b.0.total_cmp(&a.0));
 
         let mut assignments = Vec::new();
         let mut assigned_tasks: HashSet<u32> = HashSet::new();

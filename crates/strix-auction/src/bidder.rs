@@ -141,6 +141,10 @@ impl Bidder {
             calculate_bid_with_fear(&components, self.fear)
         };
 
+        if !score.is_finite() {
+            return None;
+        }
+
         Some(Bid {
             drone_id: self.drone.id,
             task_id: task.id,
@@ -154,12 +158,9 @@ impl Bidder {
         let mut bids: Vec<Bid> = tasks
             .iter()
             .filter_map(|t| self.evaluate_task(t, threats))
+            .filter(|bid| bid.score.is_finite())
             .collect();
-        bids.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        bids.sort_by(|a, b| b.score.total_cmp(&a.score));
         bids
     }
 
@@ -577,6 +578,17 @@ mod tests {
         for w in bids.windows(2) {
             assert!(w[0].score >= w[1].score);
         }
+    }
+
+    #[test]
+    fn test_non_finite_bid_scores_are_rejected() {
+        let drone = sample_drone(1, 0.0, 0.0);
+        let mut task = sample_task(1, 10.0, 10.0);
+        task.priority = f64::NAN;
+
+        let bidder = Bidder::new(drone);
+        assert!(bidder.evaluate_task(&task, &[]).is_none());
+        assert!(bidder.bid_on_tasks(&[task], &[]).is_empty());
     }
 
     #[test]
