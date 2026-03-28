@@ -514,6 +514,14 @@ impl SwarmOrchestrator {
             let initial = (alive + self.loss_analyzer.total_losses() as u32).max(1);
             let fleet_attrition = 1.0 - (alive as f64 / initial as f64);
             let is_auction_tick = self.tick_count % self.config.auction_interval.max(1) == 0;
+            let fleet_velocities: Vec<Vector3<f64>> = telemetry
+                .iter()
+                .map(|(_, telem)| {
+                    Vector3::new(telem.velocity[0], telem.velocity[1], telem.velocity[2])
+                })
+                .collect();
+            let fleet_coherence =
+                strix_core::fleet_metrics::velocity_coherence(&fleet_velocities, 0.5);
 
             // Build per-drone fear inputs from available telemetry.
             let per_drone: Vec<(u32, crate::fear_adapter::DroneFearInputs)> = telemetry
@@ -536,7 +544,7 @@ impl SwarmOrchestrator {
                             cusum_triggered: self.last_cusum_breaks > 0,
                             regime,
                             speed,
-                            fleet_coherence: 1.0, // TODO: wire from formation quality
+                            fleet_coherence,
                         },
                     )
                 })
@@ -1087,6 +1095,9 @@ impl SwarmOrchestrator {
 
                         let hostile_act = threat_regime == strix_core::ThreatRegime::CounterAttack
                             && threat_dist < 200.0;
+                        let collateral_risk = self.estimate_collateral_risk(&task_pos, telemetry);
+                        let friendlies_at_risk =
+                            self.count_friendlies_at_risk(&task_pos, telemetry);
 
                         let ctx = EngagementContext {
                             threat_class,
@@ -1094,8 +1105,8 @@ impl SwarmOrchestrator {
                             hostile_act,
                             hostile_intent: threat_regime
                                 == strix_core::ThreatRegime::CounterAttack,
-                            collateral_risk: 0.0, // TODO: wire civilian presence model — escalation paths are tested but not yet live
-                            friendlies_at_risk: 0, // TODO: wire friendly force tracker — escalation paths are tested but not yet live
+                            collateral_risk,
+                            friendlies_at_risk,
                             regime: Regime::Engage,
                         };
 
@@ -1725,5 +1736,62 @@ impl SwarmOrchestrator {
                 (dist, regime)
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
+    }
+
+    fn estimate_collateral_risk(
+        &self,
+        point: &Vector3<f64>,
+        telemetry: &[(u32, Telemetry)],
+    ) -> f64 {
+        let nearby_friendlies = self.count_friendlies_at_risk(point, telemetry) as f64;
+        let friendly_pressure = if telemetry.is_empty() {
+            0.0
+        } else {
+            (nearby_friendlies / telemetry.len() as f64).clamp(0.0, 1.0)
+        };
+
+        let no_fly_zone_pressure = self
+            .config
+            .no_fly_zones
+            .iter()
+            .map(|zone| {
+                let dist = (&zone.center - point).norm();
+                if dist <= zone.radius {
+                    1.0
+                } else {
+                    (1.0 - (dist - zone.radius) / 100.0).clamp(0.0, 1.0)
+                }
+            })
+            .fold(0.0, |max_risk, risk| max_risk.max(risk));
+
+        let threat_pressure = self
+            .nearest_threat_to_point(point)
+            .map(|(dist, _)| (1.0 - dist / 400.0).clamp(0.0, 1.0))
+            .unwrap_or(0.0);
+
+        (friendly_pressure * 0.45 + no_fly_zone_pressure * 0.40 + threat_pressure * 0.15)
+            .clamp(0.0, 1.0)
+    }
+
+    fn count_friendlies_at_risk(
+        &self,
+        point: &Vector3<f64>,
+        telemetry: &[(u32, Telemetry)],
+    ) -> u32 {
+        let risk_radius = self
+            .config
+            .cbf_config
+            .as_ref()
+            .map(|cfg| (cfg.min_separation * 20.0).max(75.0))
+            .unwrap_or(100.0);
+
+        telemetry
+            .iter()
+            .filter(|(_, telem)| {
+                let drone_pos =
+                    Vector3::new(telem.position[0], telem.position[1], telem.position[2]);
+                (drone_pos - point).norm() <= risk_radius
+            })
+            .count() as u32
     }
 }
