@@ -12,6 +12,13 @@
 //!   safe_vel = desired_vel + correction
 //! where correction is the minimum needed to keep dh/dt + alpha*h >= 0
 //! (the CBF constraint ensuring the barrier stays positive).
+//!
+//! # Coordinate Convention — NED (North-East-Down)
+//!
+//! All positions follow the NED frame: X=North, Y=East, **Z=Down**.
+//! Negative Z values represent altitude above ground level (AGL).
+//! - `altitude_floor_ned = -500.0` means the drone may not exceed 500 m AGL.
+//! - `altitude_ceiling_ned = -5.0`  means the drone must stay above 5 m AGL.
 
 use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};

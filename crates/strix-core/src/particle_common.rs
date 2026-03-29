@@ -233,4 +233,100 @@ mod tests {
             );
         }
     }
+
+    // ── Invariant tests: normalize_weights edge cases ──────────────────────
+
+    #[test]
+    fn normalize_weights_all_equal_gives_uniform() {
+        let n = 10;
+        let mut weights = vec![1.0_f64; n];
+        normalize_weights(&mut weights);
+        let sum: f64 = weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-12, "weights must sum to 1.0");
+        let expected = 1.0 / n as f64;
+        for &w in &weights {
+            assert!(
+                (w - expected).abs() < 1e-12,
+                "equal weights should stay equal"
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_weights_one_dominant() {
+        // Only particle 0 has weight; rest are zero.
+        let n = 50;
+        let mut weights = vec![0.0_f64; n];
+        weights[0] = 1.0;
+        normalize_weights(&mut weights);
+        let sum: f64 = weights.iter().sum();
+        assert!(
+            (sum - 1.0).abs() < 1e-10,
+            "weights must sum to 1.0 after normalization"
+        );
+        // Weight 0 should dominate (be much larger than the rest after +1e-300 floor).
+        assert!(weights[0] > 0.5, "dominant weight must remain largest");
+    }
+
+    #[test]
+    fn normalize_weights_no_nan_or_negative_after_all_zero_input() {
+        let mut weights = vec![0.0_f64; 20];
+        normalize_weights(&mut weights);
+        for &w in &weights {
+            assert!(!w.is_nan(), "no weight should be NaN");
+            assert!(w >= 0.0, "no weight should be negative");
+        }
+        let sum: f64 = weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10, "weights must sum to 1.0");
+    }
+
+    // ── Invariant tests: effective_sample_size bounds ──────────────────────
+
+    #[test]
+    fn ess_in_valid_range_uniform() {
+        let n = 100_usize;
+        let weights = vec![1.0 / n as f64; n];
+        let ess = effective_sample_size(&weights);
+        assert!(ess >= 1.0, "ESS must be >= 1.0");
+        assert!(ess <= n as f64 + 1.0, "ESS must be <= N (allowing epsilon)");
+    }
+
+    #[test]
+    fn ess_in_valid_range_one_dominant() {
+        let n = 100_usize;
+        let mut weights = vec![0.0_f64; n];
+        weights[0] = 1.0;
+        let ess = effective_sample_size(&weights);
+        // ESS ≈ 1 for degenerate distribution; epsilon pushes it slightly above 1.
+        assert!(
+            ess >= 1.0 - 1e-6,
+            "ESS must be >= 1.0 for degenerate weights"
+        );
+        assert!(
+            ess <= 2.0,
+            "ESS should be near 1 for single-particle concentration"
+        );
+    }
+
+    // ── Invariant tests: systematic_resample_6d particle count unchanged ──
+
+    #[test]
+    fn systematic_resample_preserves_particle_count() {
+        for n in [1_usize, 5, 17, 100] {
+            let mut particles = Array2::<f64>::zeros((n, 6));
+            let mut weights = vec![1.0 / n as f64; n];
+            let mut regimes = vec![0u8; n];
+            systematic_resample_6d(&mut particles, &mut weights, &mut regimes);
+            assert_eq!(
+                particles.nrows(),
+                n,
+                "particle count must be unchanged after resample"
+            );
+            assert_eq!(
+                regimes.len(),
+                n,
+                "regime count must be unchanged after resample"
+            );
+        }
+    }
 }

@@ -12,6 +12,13 @@ Each tick runs this pipeline at 10 Hz, producing a list of Decisions that the
 Puppet Master layer (strix-adapters) translates into platform commands.
 """
 
+# Coordinate Convention — NED (North-East-Down)
+# All positions and velocities in this module use the NED frame:
+#   X = North (positive = North)
+#   Y = East  (positive = East)
+#   Z = Down  (positive = down; negative Z = altitude above ground)
+# Example: a drone at 50 m altitude has position.z = -50.0
+
 from __future__ import annotations
 
 import asyncio

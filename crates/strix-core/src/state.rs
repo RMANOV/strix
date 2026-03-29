@@ -2,6 +2,16 @@
 //!
 //! Defines the 6D state space (position + velocity), drone/fleet/threat
 //! representations, sensor observations, and regime classification.
+//!
+//! # Coordinate Convention — NED (North-East-Down)
+//!
+//! All positions and velocities in this crate use the **NED frame**:
+//! - **X = North** (positive = North)
+//! - **Y = East** (positive = East)
+//! - **Z = Down** (positive = down; *negative Z = altitude above ground*)
+//!
+//! Example: a drone at 50 m altitude has `position.z = -50.0`.
+//! Altitude floor/ceiling in [`CbfConfig`] use the same sign convention.
 
 use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};

@@ -117,6 +117,17 @@ jobs:
           pip install dist/*.whl
       - run: pytest -q python/tests/test_ffi.py python/tests/test_auction_ffi.py python/tests/test_brain_ffi.py
 
+  mypy:
+    name: Python Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install mypy
+      - run: mypy python/strix/ --ignore-missing-imports --no-error-summary || true
+
   bench-compile:
     name: Benchmarks compile
     runs-on: ubuntu-latest

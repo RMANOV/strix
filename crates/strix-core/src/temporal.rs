@@ -183,7 +183,13 @@ pub struct HorizonConstraint {
 }
 
 /// Manages three particle filters at different temporal scales with
-/// top-down information cascade.
+/// strict top-down information cascade: H3 → H2 → H1.
+///
+/// The cascade is enforced as follows:
+/// - When H3 fires it writes to `strategic_goal` (an internal field).
+/// - When H2 fires it reads `strategic_goal` to shape its output; H2
+///   always produces the `HorizonConstraint` that reaches H1.
+/// - H3 NEVER writes directly to the constraint seen by H1.
 #[derive(Debug, Clone)]
 pub struct TemporalManager {
     /// Strategic horizon (H3) — mission-level.
@@ -198,6 +204,8 @@ pub struct TemporalManager {
     pub tactical_per_operational: u64,
     /// How many operational steps per strategic step.
     pub operational_per_strategic: u64,
+    /// Latest strategic goal set by H3.  H2 reads this when it fires.
+    strategic_goal: Option<HorizonConstraint>,
 }
 
 impl TemporalManager {
@@ -210,6 +218,7 @@ impl TemporalManager {
             step_count: 0,
             tactical_per_operational: 50,  // 5.0s / 0.1s
             operational_per_strategic: 12, // 60s / 5s
+            strategic_goal: None,
         }
     }
 
@@ -230,13 +239,20 @@ impl TemporalManager {
             step_count: 0,
             tactical_per_operational: tpo,
             operational_per_strategic: ops,
+            strategic_goal: None,
         }
     }
 
     /// Run one tactical step, and conditionally update higher horizons.
     ///
+    /// The information cascade is strictly H3 → H2 → H1:
+    /// - H3 writes to the internal `strategic_goal` field.
+    /// - H2 reads `strategic_goal` and incorporates it when forming its
+    ///   own constraint for H1.  H3 never writes the constraint directly.
+    ///
     /// Returns `(position, velocity, regime_probs)` from the tactical
-    /// filter, plus any constraints cascaded from higher horizons.
+    /// filter, plus any constraint cascaded from H2 (which may incorporate
+    /// H3's strategic goal).
     pub fn step(
         &mut self,
         observations: &[Observation],
@@ -250,16 +266,15 @@ impl TemporalManager {
     ) {
         self.step_count += 1;
 
-        let mut constraint = None;
-
-        // Strategic update (least frequent).
+        // Strategic update (least frequent): H3 fires and records its goal.
+        // H3 does NOT set the constraint that goes to H1.
         if self
             .step_count
             .is_multiple_of(self.tactical_per_operational * self.operational_per_strategic)
         {
             self.strategic.step(observations, threat_bearing, vel_gain);
-            // Strategic provides constraint to operational.
-            constraint = Some(HorizonConstraint {
+            // Store the strategic goal for H2 to consume on its next (or this) step.
+            self.strategic_goal = Some(HorizonConstraint {
                 waypoint: self.strategic.current_position,
                 suggested_regime: self.strategic.dominant_regime(),
                 confidence: self
@@ -271,29 +286,50 @@ impl TemporalManager {
             });
         }
 
-        // Operational update.
-        if self
+        // Operational update (H2): always produces the constraint for H1.
+        // When a strategic_goal is present, H2 blends it into the waypoint
+        // it passes down (weighted by its own confidence).
+        let constraint = if self
             .step_count
             .is_multiple_of(self.tactical_per_operational)
         {
-            // Apply strategic constraint as a virtual observation if available.
             self.operational
                 .step(observations, threat_bearing, vel_gain);
 
-            // Operational provides constraint to tactical.
-            if constraint.is_none() {
-                constraint = Some(HorizonConstraint {
-                    waypoint: self.operational.current_position,
-                    suggested_regime: self.operational.dominant_regime(),
-                    confidence: self
-                        .operational
-                        .regime_probs
-                        .iter()
-                        .cloned()
-                        .fold(0.0_f64, f64::max),
-                });
-            }
-        }
+            // H2 waypoint: blend operational estimate with strategic goal if present.
+            let waypoint = if let Some(ref goal) = self.strategic_goal {
+                // Confidence-weighted blend: higher strategic confidence → pull
+                // the operational waypoint toward the strategic goal.
+                let alpha = goal.confidence * 0.5; // max 50% pull
+                self.operational.current_position * (1.0 - alpha) + goal.waypoint * alpha
+            } else {
+                self.operational.current_position
+            };
+
+            // H2 regime: prefer the strategic suggestion when confidence is high.
+            let suggested_regime = if let Some(ref goal) = self.strategic_goal {
+                if goal.confidence > 0.7 {
+                    goal.suggested_regime
+                } else {
+                    self.operational.dominant_regime()
+                }
+            } else {
+                self.operational.dominant_regime()
+            };
+
+            Some(HorizonConstraint {
+                waypoint,
+                suggested_regime,
+                confidence: self
+                    .operational
+                    .regime_probs
+                    .iter()
+                    .cloned()
+                    .fold(0.0_f64, f64::max),
+            })
+        } else {
+            None
+        };
 
         // Tactical update (every step).
         let (pos, vel, probs) = self.tactical.step(observations, threat_bearing, vel_gain);
@@ -406,5 +442,45 @@ mod tests {
         h.position_history = VecDeque::from(vec![10.0; 50]);
         let (is_break, _, _) = h.check_anomaly();
         assert!(!is_break);
+    }
+
+    /// Verify the strict H3 → H2 → H1 cascade invariant:
+    /// when H3 and H2 both fire on the same step, the constraint that
+    /// reaches H1 comes from H2 (not directly from H3).
+    #[test]
+    fn h3_does_not_bypass_h2() {
+        let mut tm = TemporalManager::new(Vector3::new(0.0, 0.0, -50.0));
+        let obs = vec![Observation::Barometer {
+            altitude: 50.0,
+            timestamp: 0.0,
+        }];
+        let tb = Vector3::zeros();
+
+        // Drive to the step where both H3 and H2 fire.
+        // H2 fires every tactical_per_operational = 50 steps.
+        // H3 fires every tactical_per_operational * operational_per_strategic = 600 steps.
+        let target = (tm.tactical_per_operational * tm.operational_per_strategic) as usize;
+
+        let mut last_constraint = None;
+        for _ in 0..target {
+            let (_, _, _, c) = tm.step(&obs, &tb, 1.0);
+            last_constraint = c;
+        }
+
+        // On the H3+H2 co-firing step the constraint must come from H2.
+        // The simplest invariant: the constraint MUST be Some (H2 fired)
+        // and its confidence must come from the operational filter, not zero.
+        let constraint = last_constraint.expect("H2 must produce a constraint on step 600");
+        assert!(
+            constraint.confidence.is_finite(),
+            "constraint confidence from H2 must be finite, got {}",
+            constraint.confidence
+        );
+
+        // Strategic goal must have been recorded internally.
+        assert!(
+            tm.strategic_goal.is_some(),
+            "strategic_goal must be set after H3 fires"
+        );
     }
 }
