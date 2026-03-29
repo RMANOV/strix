@@ -528,7 +528,7 @@ class AdversarialEngine:
             dz = p.z - obs_pos.z
             dist_sq = dx * dx + dy * dy + dz * dz
             likelihood = math.exp(-0.5 * dist_sq / sigma2)
-            p.weight *= max(likelihood, 1e-300)
+            p.weight = max(p.weight * likelihood, 1e-300)
 
     def _update_velocity(self, particles: list[_Particle], obs_vel: Vec3, confidence: float) -> None:
         """Update particle weights from a velocity observation."""
@@ -539,7 +539,7 @@ class AdversarialEngine:
             dvz = p.vz - obs_vel.z
             dist_sq = dvx * dvx + dvy * dvy + dvz * dvz
             likelihood = math.exp(-0.5 * dist_sq / sigma2)
-            p.weight *= max(likelihood, 1e-300)
+            p.weight = max(p.weight * likelihood, 1e-300)
 
     def _update_bearing(self, particles: list[_Particle], bearing_rad: float, confidence: float) -> None:
         """Update particle weights from a bearing-only observation."""
@@ -550,7 +550,7 @@ class AdversarialEngine:
             # Wrap to [-pi, pi]
             diff = (diff + math.pi) % (2 * math.pi) - math.pi
             likelihood = math.exp(-0.5 * diff * diff / sigma2)
-            p.weight *= max(likelihood, 1e-300)
+            p.weight = max(p.weight * likelihood, 1e-300)
 
     @staticmethod
     def _normalize_weights(particles: list[_Particle]) -> None:

@@ -66,16 +66,25 @@ pub struct RegimeSignals {
     pub threat_distance: f64,
     /// Threat closing rate (m/s, negative = approaching).
     pub closing_rate: f64,
+    /// Evade bias from antifragile kill zone data (0.0 = none, >0.5 = forced evade).
+    pub evade_bias: f64,
 }
 
 /// Detect the most appropriate regime from tactical signals.
 ///
 /// Decision logic:
+/// 0. If evade_bias > 0.5 (antifragile kill zone) → EVADE
 /// 1. If CUSUM triggered AND threat is closing → EVADE
 /// 2. If threat within engagement range AND Hurst > 0.5 (systematic) → ENGAGE
+///    unless time-to-contact < 5s (prefer EVADE)
 /// 3. If volatility compressed (calm before storm) → stay in current, but flag
 /// 4. Otherwise → PATROL
 pub fn detect_regime(signals: &RegimeSignals, current: Regime, config: &DetectionConfig) -> Regime {
+    // Priority 0: antifragile kill zone demands evasion.
+    if signals.evade_bias > 0.5 {
+        return Regime::Evade;
+    }
+
     // Priority 1: imminent threat requiring evasion.
     if signals.cusum_triggered
         && signals.closing_rate < -config.closing_rate_threshold
@@ -85,10 +94,15 @@ pub fn detect_regime(signals: &RegimeSignals, current: Regime, config: &Detectio
     }
 
     // Priority 2: engageable threat — systematic advance, within range.
+    // But if time-to-contact < 5s, prefer EVADE over ENGAGE (tactical gap fix).
     if signals.threat_distance < config.engage_distance
         && signals.hurst > 0.5
         && signals.closing_rate < 0.0
     {
+        let time_to_contact = signals.threat_distance / (-signals.closing_rate).max(1e-6);
+        if time_to_contact < 5.0 {
+            return Regime::Evade;
+        }
         return Regime::Engage;
     }
 
@@ -217,6 +231,7 @@ mod tests {
             volatility_ratio: 1.0,
             threat_distance: 100.0,
             closing_rate: -5.0,
+            evade_bias: 0.0,
         };
         let cfg = DetectionConfig::default();
         let result = detect_regime(&signals, Regime::Patrol, &cfg);
@@ -232,6 +247,7 @@ mod tests {
             volatility_ratio: 1.0,
             threat_distance: 300.0,
             closing_rate: -1.0,
+            evade_bias: 0.0,
         };
         let cfg = DetectionConfig::default();
         let result = detect_regime(&signals, Regime::Patrol, &cfg);
@@ -247,6 +263,7 @@ mod tests {
             volatility_ratio: 1.0,
             threat_distance: 1000.0,
             closing_rate: 0.0,
+            evade_bias: 0.0,
         };
         let cfg = DetectionConfig::default();
         let result = detect_regime(&signals, Regime::Patrol, &cfg);

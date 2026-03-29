@@ -271,11 +271,13 @@ impl SwarmOrchestrator {
         let mut threat_distance_histories = HashMap::new();
         let mut hysteresis_gates = HashMap::new();
 
-        // Initialize gossip network
+        // Initialize gossip network — exclude self_id from peers (no self-loop).
         let self_id = drone_ids.first().copied().unwrap_or(0);
         let mut gossip = GossipEngine::new(NodeId(self_id), config.gossip_fanout);
         for &id in drone_ids {
-            gossip.add_peer(NodeId(id));
+            if id != self_id {
+                gossip.add_peer(NodeId(id));
+            }
         }
 
         for &id in drone_ids {
@@ -931,6 +933,10 @@ impl SwarmOrchestrator {
                 max_intent_score = intent_result.score;
             }
 
+            let drone_pos_for_bias =
+                strix_auction::Position::new(drone_pos.x, drone_pos.y, drone_pos.z);
+            let evade_bias = self.loss_analyzer.evade_bias_at(&drone_pos_for_bias);
+
             let signals = RegimeSignals {
                 cusum_triggered,
                 cusum_direction,
@@ -938,6 +944,7 @@ impl SwarmOrchestrator {
                 volatility_ratio: self_vol_ratio,
                 threat_distance: nearest_threat_dist,
                 closing_rate,
+                evade_bias,
             };
 
             // Temporal: bias regime detection when constraint suggests EVADE.
@@ -1569,6 +1576,58 @@ impl SwarmOrchestrator {
             }
         } else {
             formation_quality = None;
+        }
+
+        // ── 2.6 EVADE minimum separation repulsion ───────────────────────
+        // Drones in EVADE regime that are too close to neighbours receive a
+        // repulsive velocity correction. This fires earlier than CBF (which
+        // only triggers at very close range) to close the all-EVADE gap.
+        {
+            let min_sep = self
+                .cbf_config
+                .as_ref()
+                .map(|c| c.min_separation)
+                .unwrap_or(10.0);
+            let all_evade_positions: Vec<(u32, Vector3<f64>)> = telemetry
+                .iter()
+                .filter(|(id, _)| self.regimes.get(id).copied() == Some(Regime::Evade))
+                .map(|(id, t)| {
+                    (
+                        *id,
+                        Vector3::new(t.position[0], t.position[1], t.position[2]),
+                    )
+                })
+                .collect();
+            let all_positions_snap: Vec<(u32, Vector3<f64>)> = telemetry
+                .iter()
+                .map(|(id, t)| {
+                    (
+                        *id,
+                        Vector3::new(t.position[0], t.position[1], t.position[2]),
+                    )
+                })
+                .collect();
+            for (drone_id, drone_pos) in &all_evade_positions {
+                let mut repulsion = Vector3::zeros();
+                for (other_id, other_pos) in &all_positions_snap {
+                    if other_id == drone_id {
+                        continue;
+                    }
+                    let diff = *drone_pos - *other_pos;
+                    let dist = diff.norm();
+                    if dist < min_sep && dist > 1e-6 {
+                        // Repulsive force proportional to penetration depth.
+                        let penetration = min_sep - dist;
+                        repulsion += diff / dist * penetration;
+                    }
+                }
+                if repulsion.norm() > 1e-6 {
+                    let entry = formation_corrections
+                        .entry(*drone_id)
+                        .or_insert_with(Vector3::zeros);
+                    *entry += repulsion;
+                }
+            }
         }
 
         // ── 3. Update threat trackers ────────────────────────────────────

@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger("strix.llm.military_llm")
 
@@ -106,7 +105,7 @@ class MilitaryLLM:
         # prompt = f"<|system|>You are a military command parser...\n<|user|>{text}\n<|assistant|>"
         # response = self._model(prompt, max_tokens=self._config.max_tokens)
         logger.info("parse_intent called (stub): '%s'", text[:80])
-        return {"raw_text": text, "parsed": False, "reason": "LLM not yet implemented"}
+        return None
 
     def narrate_situation(self, snapshot_dict: dict) -> str:
         """Generate a natural language situation briefing from world state.

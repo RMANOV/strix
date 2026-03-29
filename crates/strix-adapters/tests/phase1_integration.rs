@@ -204,6 +204,7 @@ fn phase1_regime_transitions() {
         volatility_ratio: 1.0,
         threat_distance: 2000.0,
         closing_rate: 0.0,
+        evade_bias: 0.0,
     };
     assert_eq!(
         detect_regime(&peaceful, Regime::Patrol, &cfg),
@@ -218,6 +219,7 @@ fn phase1_regime_transitions() {
         volatility_ratio: 1.0,
         threat_distance: 300.0,
         closing_rate: -3.0,
+        evade_bias: 0.0,
     };
     assert_eq!(
         detect_regime(&approach, Regime::Patrol, &cfg),
@@ -232,6 +234,7 @@ fn phase1_regime_transitions() {
         volatility_ratio: 1.5,
         threat_distance: 100.0,
         closing_rate: -5.0,
+        evade_bias: 0.0,
     };
     assert_eq!(
         detect_regime(&imminent, Regime::Engage, &cfg),

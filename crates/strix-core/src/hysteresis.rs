@@ -106,9 +106,13 @@ impl HysteresisGate {
     /// Force a regime transition, bypassing all gates.
     ///
     /// Used for emergency overrides (e.g., risk level Retreat/Survival).
+    /// Does NOT consume a rate-limit slot — emergency transitions must not
+    /// deplete the budget for subsequent normal transitions.
     pub fn force_transition(&mut self, regime: Regime, now: f64) {
         if regime != self.current {
-            self.apply_transition(regime, now);
+            self.current = regime;
+            self.entered_at = now;
+            // Intentionally skip transition_times.push() — no rate-limit slot consumed.
         }
     }
 

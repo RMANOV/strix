@@ -311,6 +311,7 @@ pub fn py_detect_regime(
         volatility_ratio: 1.0,
         threat_distance,
         closing_rate,
+        evade_bias: 0.0,
     };
 
     let result = regime::detect_regime(&signals, current, &DetectionConfig::default());

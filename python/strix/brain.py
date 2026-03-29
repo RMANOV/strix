@@ -509,9 +509,9 @@ class MissionBrain:
 
         logger.warning("DRONE LOST: id=%d cause=%s pos=(%s)", drone_id, cause, drone.position)
 
-        # Record kill zone
-        self._threats[10000 + drone_id] = ThreatObservation(
-            threat_id=10000 + drone_id,
+        # Record kill zone (offset 0x8000_0000 avoids collision with real threat IDs)
+        self._threats[0x8000_0000 + drone_id] = ThreatObservation(
+            threat_id=0x8000_0000 + drone_id,
             position=drone.position,
             confidence=0.9,
             threat_type=f"kill_zone:{cause}",
@@ -620,6 +620,7 @@ class MissionBrain:
                 continue
             pf = self._filters.get(drone.drone_id) if self._rust_available else None
             if pf is not None:
+                # NED: position.z is negative altitude, negate to get positive altitude for barometer
                 observations = [("barometer", -drone.position.z)]
                 tb = self._nearest_threat_bearing(drone)
                 pos, vel, _regime_probs = pf.step(observations, tb, 1.0, dt)

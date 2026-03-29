@@ -12,6 +12,8 @@
 //! The module also provides predictive projection and Hurst-based enemy
 //! movement classification.
 
+use std::collections::HashMap;
+
 use nalgebra::Vector3;
 use ndarray::Array2;
 use rand::Rng;
@@ -94,9 +96,11 @@ pub enum ThreatObservation {
         sigma: f64,
         timestamp: f64,
     },
-    /// Radio intercept — bearing only.
+    /// Radio intercept — bearing only (relative to observing drone's position).
     RadioIntercept {
         bearing: Vector3<f64>,
+        /// Position of the observing drone (bearing is relative to this point).
+        observer_position: Vector3<f64>,
         sigma: f64,
         timestamp: f64,
     },
@@ -124,6 +128,8 @@ pub struct ThreatTracker {
     /// Pre-allocated scratch buffer — reused across `predict_threat` calls to avoid
     /// heap allocation on every tick.
     scratch_buf: Vec<[f64; 6]>,
+    /// EMA-smoothed bearing per observer drone ID (keyed by u64 hash of observer pos).
+    smoothed_bearings: HashMap<u64, Vector3<f64>>,
 }
 
 impl ThreatTracker {
@@ -146,6 +152,7 @@ impl ThreatTracker {
             threat_id,
             transition_matrix: crate::state::default_threat_transition_matrix(),
             scratch_buf: vec![[0.0; 6]; n],
+            smoothed_bearings: HashMap::new(),
         }
     }
 
@@ -297,23 +304,48 @@ impl ThreatTracker {
                 }
                 ThreatObservation::RadioIntercept {
                     bearing,
+                    observer_position,
                     sigma,
                     timestamp: _,
                 } => {
                     if *sigma < 1e-6 {
                         continue;
                     }
+                    // EMA-smooth the bearing using observer position bits as key.
+                    let obs_key = observer_position.x.to_bits()
+                        ^ observer_position.y.to_bits().wrapping_shl(21)
+                        ^ observer_position.z.to_bits().wrapping_shl(42);
+                    const BEARING_ALPHA: f64 = 0.3;
+                    let smoothed = if let Some(prev) = self.smoothed_bearings.get(&obs_key) {
+                        *bearing * BEARING_ALPHA + *prev * (1.0 - BEARING_ALPHA)
+                    } else {
+                        *bearing
+                    };
+                    // Renormalise after blending.
+                    let smoothed_norm = smoothed.norm();
+                    let smoothed_unit = if smoothed_norm > 1e-6 {
+                        smoothed / smoothed_norm
+                    } else {
+                        *bearing
+                    };
+                    self.smoothed_bearings.insert(obs_key, smoothed_unit);
+
                     for i in 0..n {
-                        let pos = Vector3::new(
+                        let particle_pos = Vector3::new(
                             self.particles[[i, 0]],
                             self.particles[[i, 1]],
                             self.particles[[i, 2]],
                         );
-                        let norm = pos.norm();
+                        // Bearing is relative to the observing drone's position.
+                        let relative = particle_pos - observer_position;
+                        let norm = relative.norm();
                         if norm > 1e-6 {
-                            let unit = pos / norm;
-                            let diff_sq = (unit - bearing).norm_squared();
+                            let unit = relative / norm;
+                            let diff_sq = (unit - smoothed_unit).norm_squared();
                             self.weights[i] *= gaussian_likelihood(diff_sq, *sigma);
+                        } else {
+                            // Particle is at or very near the observer — assign minimum weight.
+                            self.weights[i] *= 0.01;
                         }
                     }
                 }

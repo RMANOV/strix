@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
 from typing import Optional
 
 from strix.brain import Constraint, MissionArea, MissionIntent, MissionType, Vec3
@@ -169,6 +168,8 @@ class IntentParser:
         MissionIntent
             Structured intent with type, area, constraints, and deadline.
         """
+        if len(text) > 2000:
+            text = text[:2000]
         text_lower = text.lower().strip()
         logger.info("Parsing: '%s'", text)
 
@@ -243,10 +244,13 @@ class IntentParser:
         # Coordinate extraction: "at X,Y,Z" or "coordinates X Y Z"
         coord_match = re.search(r"(?:at|coordinates?|coords?|position)\s+([-\d.]+)[,\s]+([-\d.]+)(?:[,\s]+([-\d.]+))?", text_lower)
         if coord_match:
-            x = float(coord_match.group(1))
-            y = float(coord_match.group(2))
-            z = float(coord_match.group(3)) if coord_match.group(3) else 0.0
-            return MissionArea(center=Vec3(x, y, z), radius_m=200.0)
+            try:
+                x = float(coord_match.group(1))
+                y = float(coord_match.group(2))
+                z = float(coord_match.group(3)) if coord_match.group(3) else 0.0
+                return MissionArea(center=Vec3(x, y, z), radius_m=200.0)
+            except ValueError:
+                return None
 
         return None
 

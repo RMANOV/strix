@@ -198,7 +198,8 @@ class DigitalTwin:
 
         Removes deposits whose intensity falls below 0.01.
         """
-        decay_factor = 1.0 - self._pheromone_decay_rate * dt
+        import math
+        decay_factor = math.exp(-self._pheromone_decay_rate * dt)
         surviving = []
         for p in self._pheromones:
             p.intensity *= decay_factor
