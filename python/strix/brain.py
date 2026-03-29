@@ -59,6 +59,15 @@ class BrainConfig:
     max_fleet_size: int = 256
     """Hard cap on fleet members (governs pre-allocated arrays)."""
 
+    default_packet_success_rate: float = 0.85
+    """Nominal packet success used for planning validation under degraded comms."""
+
+    stale_state_age_s: float = 0.25
+    """Nominal neighbor-state age used for planner validation."""
+
+    regime_hysteresis_margin: float = 0.15
+    """Minimum evidence gap required to change regimes."""
+
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -155,6 +164,7 @@ class DroneSnapshot:
     energy: float = 1.0
     alive: bool = True
     capabilities: int = 0
+    timestamp_s: float = 0.0
 
 
 @dataclass
@@ -167,6 +177,44 @@ class ThreatObservation:
     confidence: float = 0.5
     threat_type: str = "unknown"
     timestamp: float = 0.0
+
+
+@dataclass
+class CommsState:
+    """Observed communications quality for one drone or the fleet as a whole."""
+
+    packet_success_rate: float = 1.0
+    state_age_s: float = 0.0
+    latency_ms: float = 0.0
+
+
+class _FallbackLinkQualityTracker:
+    """Small sliding-window link tracker used when Rust comms FFI is unavailable."""
+
+    def __init__(self, window_size: int = 16) -> None:
+        self._window_size = max(window_size, 1)
+        self._history: dict[int, list[bool]] = {}
+
+    def record_success(self, peer_id: int) -> None:
+        self._push(peer_id, True)
+
+    def record_failure(self, peer_id: int) -> None:
+        self._push(peer_id, False)
+
+    def quality(self, peer_id: int) -> float:
+        window = self._history.get(peer_id)
+        if not window:
+            return 0.5
+        return sum(1.0 for sample in window if sample) / len(window)
+
+    def remove(self, peer_id: int) -> None:
+        self._history.pop(peer_id, None)
+
+    def _push(self, peer_id: int, success: bool) -> None:
+        history = self._history.setdefault(peer_id, [])
+        history.append(success)
+        if len(history) > self._window_size:
+            del history[0 : len(history) - self._window_size]
 
 
 @dataclass
@@ -229,6 +277,15 @@ class MissionBrain:
         self._running = False
         self._last_auction_tick = 0
         self._next_task_id = 0
+        self._network_comms = CommsState(
+            packet_success_rate=self.config.default_packet_success_rate,
+            state_age_s=self.config.stale_state_age_s,
+        )
+        self._drone_comms: dict[int, CommsState] = {}
+        self._last_arrival_s: dict[int, float] = {}
+        self._stale_windows: dict[int, int] = {}
+        self._runtime_comms_active = False
+        self._LinkQualityTracker = _FallbackLinkQualityTracker
 
         # Rust FFI: particle filters + auctioneer (graceful fallback)
         self._filters: dict[int, object] = {}
@@ -244,6 +301,14 @@ class MissionBrain:
         except ImportError:
             self._ParticleNavFilter = None
             logger.warning("MissionBrain: Rust FFI unavailable, using Python fallbacks")
+        else:
+            try:
+                from strix._strix_core import LinkQualityTracker  # noqa: F401
+
+                self._LinkQualityTracker = LinkQualityTracker
+            except ImportError:
+                pass
+        self._link_tracker = self._LinkQualityTracker(max(int(self.config.tick_hz * 2), 8))
 
         logger.info("MissionBrain initialised (particles=%d)", self.config.n_particles)
 
@@ -255,6 +320,21 @@ class MissionBrain:
         if len(self._fleet) >= self.config.max_fleet_size and drone.drone_id not in self._fleet:
             raise ValueError(f"Fleet full ({self.config.max_fleet_size} drones)")
         self._fleet[drone.drone_id] = drone
+        self._drone_comms.setdefault(
+            drone.drone_id,
+            CommsState(
+                packet_success_rate=self._network_comms.packet_success_rate,
+                state_age_s=self._network_comms.state_age_s,
+                latency_ms=self._network_comms.latency_ms,
+            ),
+        )
+        if previous is not None or drone.timestamp_s > 0.0:
+            self._runtime_comms_active = True
+            self._link_tracker.record_success(drone.drone_id)
+            self._stale_windows[drone.drone_id] = 0
+        self._last_arrival_s[drone.drone_id] = time.monotonic()
+        self._refresh_runtime_comms()
+
         if not self._rust_available:
             return
 
@@ -276,10 +356,41 @@ class MissionBrain:
         """Mark a drone as lost and remove it from active fleet."""
         self._fleet.pop(drone_id, None)
         self._filters.pop(drone_id, None)
+        self._drone_comms.pop(drone_id, None)
+        self._last_arrival_s.pop(drone_id, None)
+        self._stale_windows.pop(drone_id, None)
+        self._link_tracker.remove(drone_id)
 
     @property
     def fleet_size(self) -> int:
         return sum(1 for d in self._fleet.values() if d.alive)
+
+    def update_network_state(
+        self,
+        packet_success_rate: float,
+        state_age_s: float | None = None,
+        latency_ms: float | None = None,
+    ) -> None:
+        """Update fleet-wide communications health from an external source."""
+        self._network_comms = CommsState(
+            packet_success_rate=max(0.0, min(packet_success_rate, 1.0)),
+            state_age_s=self.config.stale_state_age_s if state_age_s is None else max(0.0, state_age_s),
+            latency_ms=0.0 if latency_ms is None else max(0.0, latency_ms),
+        )
+
+    def update_link_state(
+        self,
+        drone_id: int,
+        packet_success_rate: float,
+        state_age_s: float | None = None,
+        latency_ms: float | None = None,
+    ) -> None:
+        """Update observed link quality for one drone."""
+        self._drone_comms[drone_id] = CommsState(
+            packet_success_rate=max(0.0, min(packet_success_rate, 1.0)),
+            state_age_s=self._network_comms.state_age_s if state_age_s is None else max(0.0, state_age_s),
+            latency_ms=self._network_comms.latency_ms if latency_ms is None else max(0.0, latency_ms),
+        )
 
     # -- Intent pipeline -----------------------------------------------------
 
@@ -293,6 +404,7 @@ class MissionBrain:
             4. Package into a MissionPlan for commander review.
         """
         logger.info("Processing intent: %s over %s", intent.mission_type.name, intent.area)
+        self._refresh_runtime_comms()
 
         # Determine how many drones to allocate
         available = [d for d in self._fleet.values() if d.alive]
@@ -309,33 +421,20 @@ class MissionBrain:
         # Run the auction: score each drone's fitness for this mission
         scored = self._score_drones_for_intent(available, intent)
         selected = scored[:requested]
-
-        # Generate assignments
-        assignments = []
-        for drone_snap, _score in selected:
-            target = intent.area.center if intent.area else Vec3()
-            decision = Decision(
-                drone_id=drone_snap.drone_id,
-                kind=self._intent_to_decision_kind(intent.mission_type),
-                target_position=target,
-                speed_ms=15.0,
-                reason=f"Assigned to {intent.mission_type.name} mission",
-                confidence=0.8,
-            )
-            assignments.append(decision)
-
-        estimated_duration_s = self._estimate_duration(selected, intent)
+        assignments, plan_confidence, plan_summary = self._build_assignments_for_intent(selected, intent)
+        estimated_duration = self._estimate_duration(selected, intent)
         assignments = [self._with_task_id(assignment) for assignment in assignments]
         plan = MissionPlan(
             intent=intent,
             assignments=assignments,
-            estimated_duration_s=estimated_duration_s,
-            confidence=0.8 if len(selected) >= requested else 0.5,
+            estimated_duration_s=estimated_duration,
+            confidence=plan_confidence if len(selected) >= requested else max(0.35, plan_confidence * 0.75),
             regime=self._regime,
             explanation=(
                 f"Allocated {len(selected)}/{requested} drones. "
                 f"Current regime: {self._regime.name}. "
-                f"Estimated time: {estimated_duration_s:.0f}s."
+                f"Estimated time: {estimated_duration:.0f}s. "
+                f"{plan_summary}"
             ),
         )
 
@@ -362,6 +461,7 @@ class MissionBrain:
         """
         self._tick_count += 1
         decisions: list[Decision] = []
+        self._refresh_runtime_comms()
 
         # 1. PREDICT -- propagate particle filters forward
         self._predict_step(dt)
@@ -451,8 +551,20 @@ class MissionBrain:
             centroid = self._fleet_centroid()
             dist = centroid.distance_to(observation.position)
             if dist < 300.0:
-                logger.warning("High-confidence threat at %.0fm -- shifting to ENGAGE", dist)
-                self._regime = RegimeLabel.ENGAGE
+                link_quality = self._planner_packet_success_rate()
+                stale_age = self._network_state_age()
+                if link_quality < 0.5 or stale_age > 1.0:
+                    logger.warning(
+                        "High-confidence threat at %.0fm under degraded comms "
+                        "(link=%.2f stale=%.2fs) -- biasing to EVADE",
+                        dist,
+                        link_quality,
+                        stale_age,
+                    )
+                    self._regime = RegimeLabel.EVADE
+                else:
+                    logger.warning("High-confidence threat at %.0fm -- shifting to ENGAGE", dist)
+                    self._regime = RegimeLabel.ENGAGE
                 self._trigger_reauction()
 
     async def update_threat(self, observation: ThreatObservation) -> None:
@@ -523,24 +635,64 @@ class MissionBrain:
     def _check_regime(self) -> RegimeLabel:
         """Evaluate regime transitions from threat environment.
 
-        Uses the Markov transition matrix weighted by current evidence:
-        - High threat density near fleet -> ENGAGE
-        - Active fire / losses -> EVADE
-        - No threats detected -> PATROL
+        Uses weighted threat pressure with hysteresis rather than a pure count
+        of nearby contacts.  This reduces oscillation and makes adversarial
+        motion toward the fleet matter more than a static contact count.
         """
         if not self._threats:
             return RegimeLabel.PATROL
 
         centroid = self._fleet_centroid()
-        close_threats = sum(
-            1
-            for t in self._threats.values()
-            if centroid.distance_to(t.position) < 500.0 and t.confidence > 0.5
-        )
+        engage_pressure = 0.0
+        evade_pressure = 0.0
 
-        if close_threats >= 3:
+        for threat in self._threats.values():
+            distance = centroid.distance_to(threat.position)
+            proximity = max(0.0, 1.0 - distance / 700.0)
+            if proximity <= 0.0:
+                continue
+
+            approach_score = 0.0
+            speed = threat.velocity.norm()
+            if speed > 1e-6 and distance > 1e-6:
+                to_centroid = Vec3(
+                    centroid.x - threat.position.x,
+                    centroid.y - threat.position.y,
+                    centroid.z - threat.position.z,
+                )
+                approach_projection = (
+                    threat.velocity.x * to_centroid.x
+                    + threat.velocity.y * to_centroid.y
+                    + threat.velocity.z * to_centroid.z
+                ) / distance
+                approach_score = max(0.0, min(approach_projection / 25.0, 1.0))
+
+            kill_zone_bias = 0.25 if threat.threat_type.startswith("kill_zone:") else 0.0
+            confidence = max(0.0, min(threat.confidence, 1.0))
+
+            engage_pressure += confidence * (0.65 * proximity + 0.35 * approach_score)
+            evade_pressure += confidence * (0.45 * proximity + 0.55 * approach_score + kill_zone_bias)
+
+        if self._active_plan and self._active_plan.intent.mission_type == MissionType.STRIKE:
+            engage_pressure += 0.1 * self._active_plan.intent.priority
+
+        link_quality = self._planner_packet_success_rate()
+        stale_age = self._network_state_age()
+        if link_quality < 0.55 and (engage_pressure > 0.2 or evade_pressure > 0.2):
+            evade_pressure += (0.55 - link_quality) * 1.6
+        if stale_age > 0.75 and (engage_pressure > 0.2 or evade_pressure > 0.15):
+            evade_pressure += min((stale_age - 0.75) * 0.35, 0.45)
+        if link_quality < 0.45 and stale_age > 1.0 and engage_pressure > 0.25:
+            evade_pressure += 0.35
+
+        margin = self.config.regime_hysteresis_margin
+        if self._regime == RegimeLabel.EVADE and evade_pressure >= 0.35:
             return RegimeLabel.EVADE
-        elif close_threats >= 1:
+        if self._regime == RegimeLabel.ENGAGE and engage_pressure >= 0.25:
+            return RegimeLabel.ENGAGE
+        if evade_pressure >= 0.8 or (evade_pressure >= 0.6 and evade_pressure > engage_pressure + margin):
+            return RegimeLabel.EVADE
+        if engage_pressure >= 0.35 or engage_pressure > evade_pressure + margin:
             return RegimeLabel.ENGAGE
         return RegimeLabel.PATROL
 
@@ -609,22 +761,29 @@ class MissionBrain:
         decisions: list[Decision] = []
 
         for assignment in result.assignments:
+            # Find the corresponding task's location by ID (not index).
             template = task_templates.get(assignment.task_id)
             task_pos = template.target_position if template is not None else None
+            kind = template.kind if template is not None else DecisionKind.GOTO
+            speed_ms = template.speed_ms if template is not None else 10.0
+            confidence = max(0.0, min(assignment.bid_score / 10.0, 1.0))
+            reason = f"Auction assignment (score={assignment.bid_score:.2f})"
+            if template is not None:
+                confidence = max(confidence, template.confidence * 0.75)
+                reason = (
+                    f"Auction assignment (score={assignment.bid_score:.2f}, "
+                    f"seeded_from={template.kind.name})"
+                )
 
             decisions.append(
                 Decision(
                     drone_id=assignment.drone_id,
                     task_id=assignment.task_id,
-                    kind=template.kind if template is not None else DecisionKind.GOTO,
+                    kind=kind,
                     target_position=task_pos,
-                    speed_ms=template.speed_ms if template is not None else 10.0,
-                    reason=(
-                        f"Auction assignment (score={assignment.bid_score:.2f})"
-                        if template is None
-                        else f"{template.reason} via auction (score={assignment.bid_score:.2f})"
-                    ),
-                    confidence=max(0.0, min(assignment.bid_score / 10.0, 1.0)),
+                    speed_ms=speed_ms,
+                    reason=reason,
+                    confidence=confidence,
                 )
             )
 
@@ -688,11 +847,22 @@ class MissionBrain:
         for drone in drones:
             dist = drone.position.distance_to(target)
             proximity = 1.0 / max(dist, 1.0)
-            capability = 1.0  # placeholder: full match assumed
+            capability = self._capability_match(drone, intent)
             energy = drone.energy
-            risk = self._threat_exposure(drone.position)
+            route_risk = self._line_threat_exposure(drone.position, target)
+            local_risk = self._threat_exposure(drone.position)
+            target_pressure = self._target_threat_pressure(target)
+            risk = 0.35 * local_risk + 0.4 * route_risk + 0.25 * target_pressure
+            reserve_bias = self._reserve_bias(drone, intent)
 
-            score = intent.priority * 10.0 + capability * 3.0 + proximity * 5.0 + energy * 2.0 - risk * 4.0
+            score = (
+                intent.priority * 10.0
+                + capability * 3.0
+                + proximity * 5.0
+                + energy * 2.0
+                + reserve_bias
+                - risk * 4.0
+            )
             scored.append((drone, score))
 
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -709,6 +879,34 @@ class MissionBrain:
             if dist < lethal_radius:
                 exposure += (1.0 - dist / lethal_radius) * t.confidence
         return min(exposure, 1.0)
+
+    def _line_threat_exposure(self, start: Vec3, target: Vec3) -> float:
+        """Approximate route risk by sampling a straight-line path to target."""
+        if not self._threats:
+            return 0.0
+        samples = []
+        for alpha in (0.25, 0.5, 0.75, 1.0):
+            probe = Vec3(
+                start.x + (target.x - start.x) * alpha,
+                start.y + (target.y - start.y) * alpha,
+                start.z + (target.z - start.z) * alpha,
+            )
+            samples.append(self._threat_exposure(probe))
+        return sum(samples) / len(samples)
+
+    def _target_threat_pressure(self, target: Vec3) -> float:
+        """Measure how contested the mission area itself appears to be."""
+        if not self._threats:
+            return 0.0
+
+        pressure = 0.0
+        for threat in self._threats.values():
+            dist = target.distance_to(threat.position)
+            proximity = max(0.0, 1.0 - dist / 350.0)
+            if proximity <= 0.0:
+                continue
+            pressure += proximity * threat.confidence
+        return min(pressure, 1.5)
 
     def _fleet_centroid(self) -> Vec3:
         """Compute the weighted centroid of all alive drones."""
@@ -747,6 +945,254 @@ class MissionBrain:
             MissionType.RELAY: DecisionKind.RELAY_STATION,
         }
         return mapping.get(mission_type, DecisionKind.GOTO)
+
+    def _build_assignments_for_intent(
+        self,
+        selected: list[tuple[DroneSnapshot, float]],
+        intent: MissionIntent,
+    ) -> tuple[list[Decision], float, str]:
+        """Translate selected drones into routed mission assignments."""
+        selected_drones = [drone for drone, _ in selected]
+        if not selected_drones:
+            return [], 0.0, "No candidate drones selected."
+
+        if intent.area is None:
+            assignments = []
+            for drone, score in selected:
+                confidence = max(0.2, min(0.95, 0.45 + score / 25.0))
+                assignments.append(
+                    Decision(
+                        drone_id=drone.drone_id,
+                        kind=self._intent_to_decision_kind(intent.mission_type),
+                        target_position=None,
+                        speed_ms=self._mission_speed(intent, drone, 12.0),
+                        reason=f"{intent.mission_type.name} fallback assignment without mission area",
+                        confidence=confidence,
+                    )
+                )
+            avg_conf = sum(decision.confidence for decision in assignments) / len(assignments)
+            return assignments, avg_conf, "No mission area provided; generated fallback tasking."
+
+        from strix.temporal.multi_horizon import (
+            FleetState,
+            MultiHorizonPlanner,
+            planner_validation_metrics,
+            tactical_to_decisions,
+        )
+
+        planner = MultiHorizonPlanner()
+        state = FleetState(
+            drones=[
+                DroneSnapshot(
+                    drone_id=drone.drone_id,
+                    position=Vec3(drone.position.x, drone.position.y, drone.position.z),
+                    velocity=Vec3(drone.velocity.x, drone.velocity.y, drone.velocity.z),
+                    regime=drone.regime,
+                    energy=drone.energy,
+                    alive=drone.alive,
+                    capabilities=drone.capabilities,
+                )
+                for drone in selected_drones
+            ],
+            regime=self._regime,
+            threats=[threat.position for threat in self._threats.values() if threat.confidence > 0.25],
+            obstacles=self._intent_obstacles(intent),
+            neighbor_state_ages_s=self._neighbor_state_ages(selected_drones),
+            packet_success_rate=self._planner_packet_success_rate(selected_drones),
+            timestamp=time.monotonic(),
+        )
+        state.recompute_metrics()
+
+        tactical_plans = planner.plan_tactical(state)
+        operational_plan = planner.plan_operational(state)
+        planner.plan_strategic(state)
+        integrated = planner.cascade_plans()
+        tactical_decisions = tactical_to_decisions(tactical_plans)
+        validation = planner_validation_metrics(tactical_plans)
+        score_by_drone = {drone.drone_id: score for drone, score in selected}
+
+        assignments: list[Decision] = []
+        for decision in tactical_decisions:
+            drone = self._fleet.get(decision.drone_id)
+            if drone is None:
+                continue
+
+            if decision.kind == DecisionKind.LOITER:
+                assignments.append(
+                    Decision(
+                        drone_id=decision.drone_id,
+                        kind=DecisionKind.LOITER,
+                        target_position=None,
+                        speed_ms=0.0,
+                        reason=f"{intent.mission_type.name} vetoed by planner: {decision.reason}",
+                        confidence=max(0.15, decision.confidence),
+                    )
+                )
+                continue
+
+            target_position = self._clamp_to_area(decision.target_position or intent.area.center, intent.area)
+            route_risk = self._line_threat_exposure(drone.position, target_position)
+            bid_score = score_by_drone.get(decision.drone_id, 0.0)
+            mission_speed = self._mission_speed(intent, drone, decision.speed_ms)
+            confidence = 0.45 * decision.confidence + 0.3 * operational_plan.coordination_confidence
+            confidence += 0.15 * max(0.0, min(bid_score / 20.0, 1.0))
+            confidence += 0.10 * max(0.0, 1.0 - route_risk)
+            confidence = max(0.15, min(confidence, 0.98))
+
+            assignments.append(
+                Decision(
+                    drone_id=decision.drone_id,
+                    kind=self._intent_to_decision_kind(intent.mission_type),
+                    target_position=target_position,
+                    speed_ms=mission_speed,
+                    reason=(
+                        f"{intent.mission_type.name} planner route; "
+                        f"validation={decision.confidence:.2f}; route_risk={route_risk:.2f}"
+                    ),
+                    confidence=confidence,
+                )
+            )
+
+        if not assignments:
+            return [], 0.0, "Planner produced no executable assignments."
+
+        overall_confidence = sum(assignment.confidence for assignment in assignments) / len(assignments)
+        if not integrated.coherent:
+            overall_confidence *= 0.7
+        summary = (
+            f"Planner valid_fraction={validation['valid_fraction']:.2f}; "
+            f"mean_validation={validation['mean_validation_confidence']:.2f}; "
+            f"link={validation['packet_success_rate']:.2f}; "
+            f"stale_max={validation['max_neighbor_age_s']:.2f}s; "
+            f"coordination={operational_plan.coordination_confidence:.2f}"
+        )
+        return assignments, overall_confidence, summary
+
+    def _planner_packet_success_rate(self, drones: list[DroneSnapshot] | None = None) -> float:
+        self._refresh_runtime_comms()
+        observed = [
+            self._effective_comms_state(drone.drone_id).packet_success_rate
+            for drone in (drones or [])
+            if drone.alive
+        ]
+        if observed:
+            return max(0.0, min(sum(observed) / len(observed), 1.0))
+        return self._network_comms.packet_success_rate
+
+    def _network_state_age(self) -> float:
+        self._refresh_runtime_comms()
+        observed = [state.state_age_s for state in self._drone_comms.values()]
+        if observed:
+            return max(max(observed), self._network_comms.state_age_s)
+        return self._network_comms.state_age_s
+
+    def _neighbor_state_ages(self, drones: list[DroneSnapshot]) -> dict[int, float]:
+        return {
+            drone.drone_id: self._effective_comms_state(drone.drone_id).state_age_s
+            for drone in drones
+        }
+
+    def _effective_comms_state(self, drone_id: int) -> CommsState:
+        return self._drone_comms.get(drone_id, self._network_comms)
+
+    def _refresh_runtime_comms(self, now: float | None = None) -> None:
+        """Derive comms health from telemetry freshness when live updates are flowing."""
+        if not self._runtime_comms_active:
+            return
+
+        now = time.monotonic() if now is None else now
+        expected_interval = max(1.0 / max(self.config.tick_hz, 1e-6), 0.05)
+        overdue_window = max(expected_interval * 1.5, self.config.stale_state_age_s)
+        observed_qualities: list[float] = []
+        observed_ages: list[float] = []
+
+        for drone_id, drone in self._fleet.items():
+            if not drone.alive:
+                continue
+
+            arrival = self._last_arrival_s.get(drone_id)
+            if arrival is None:
+                continue
+
+            age = max(0.0, now - arrival)
+            missed_windows = int(age / overdue_window) if overdue_window > 1e-6 else 0
+            already_recorded = self._stale_windows.get(drone_id, 0)
+            while already_recorded < missed_windows:
+                self._link_tracker.record_failure(drone_id)
+                already_recorded += 1
+            self._stale_windows[drone_id] = missed_windows
+
+            base_state = self._drone_comms.get(drone_id, self._network_comms)
+            quality = max(0.0, min(self._link_tracker.quality(drone_id), 1.0))
+            self._drone_comms[drone_id] = CommsState(
+                packet_success_rate=quality,
+                state_age_s=age,
+                latency_ms=base_state.latency_ms,
+            )
+            observed_qualities.append(quality)
+            observed_ages.append(age)
+
+        if observed_qualities:
+            self._network_comms = CommsState(
+                packet_success_rate=sum(observed_qualities) / len(observed_qualities),
+                state_age_s=max(observed_ages),
+                latency_ms=self._network_comms.latency_ms,
+            )
+
+    @staticmethod
+    def _intent_obstacles(intent: MissionIntent) -> list[tuple[Vec3, float]]:
+        obstacles: list[tuple[Vec3, float]] = []
+        for constraint in intent.constraints:
+            if constraint.avoid and constraint.area is not None:
+                obstacles.append((constraint.area.center, max(constraint.area.radius_m, 10.0)))
+        return obstacles
+
+    @staticmethod
+    def _clamp_to_area(target: Vec3, area: MissionArea) -> Vec3:
+        dx = target.x - area.center.x
+        dy = target.y - area.center.y
+        horizontal = (dx**2 + dy**2) ** 0.5
+        if horizontal > area.radius_m and horizontal > 1e-6:
+            scale = area.radius_m / horizontal
+            dx *= scale
+            dy *= scale
+        return Vec3(area.center.x + dx, area.center.y + dy, target.z)
+
+    @staticmethod
+    def _mission_speed(intent: MissionIntent, drone: DroneSnapshot, planner_speed: float) -> float:
+        base = {
+            MissionType.RECON: 12.0,
+            MissionType.STRIKE: 18.0,
+            MissionType.ESCORT: 14.0,
+            MissionType.DEFEND: 9.0,
+            MissionType.PATROL: 8.0,
+            MissionType.RELAY: 10.0,
+        }.get(intent.mission_type, 12.0)
+        if drone.energy < 0.25:
+            base *= 0.8
+        return max(4.0, min(max(base, planner_speed), 25.0))
+
+    @staticmethod
+    def _capability_match(drone: DroneSnapshot, intent: MissionIntent) -> float:
+        has_sensor = bool(drone.capabilities & 0b0001)
+        has_weapon = bool(drone.capabilities & 0b0010)
+        has_relay = bool(drone.capabilities & 0b1000)
+
+        if intent.mission_type == MissionType.RECON:
+            return 1.2 if has_sensor else 0.7
+        if intent.mission_type == MissionType.STRIKE:
+            return 1.3 if has_weapon else 0.5
+        if intent.mission_type == MissionType.RELAY:
+            return 1.2 if has_relay else 0.6
+        return 1.0
+
+    @staticmethod
+    def _reserve_bias(drone: DroneSnapshot, intent: MissionIntent) -> float:
+        if intent.mission_type in {MissionType.DEFEND, MissionType.RELAY}:
+            return 0.75 * drone.energy
+        if intent.mission_type == MissionType.STRIKE and drone.energy < 0.2:
+            return -1.0
+        return 0.0
 
     @staticmethod
     def _estimate_duration(

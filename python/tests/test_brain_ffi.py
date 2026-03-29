@@ -5,6 +5,7 @@ and auction engine when available, and falls back to Python
 implementations otherwise.
 """
 
+import asyncio
 import sys
 import types
 
@@ -174,6 +175,79 @@ class TestBrainFallback:
         result = brain._run_auction()
         assert result == []
 
+    def test_process_intent_uses_planner_routing(self):
+        """Mission planning should route through tactical planning, not fixed center tasking."""
+        brain = MissionBrain(BrainConfig(default_packet_success_rate=0.65, stale_state_age_s=1.0))
+        brain._rust_available = False
+        brain._filters = {}
+
+        brain.register_drone(
+            DroneSnapshot(
+                drone_id=1,
+                position=Vec3(0.0, 0.0, -50.0),
+                velocity=Vec3(8.0, 0.0, 0.0),
+                energy=0.9,
+            )
+        )
+        brain.register_drone(
+            DroneSnapshot(
+                drone_id=2,
+                position=Vec3(20.0, 10.0, -50.0),
+                velocity=Vec3(6.0, 2.0, 0.0),
+                energy=0.8,
+            )
+        )
+
+        intent = MissionIntent(
+            mission_type=MissionType.RECON,
+            area=MissionArea(center=Vec3(150.0, 40.0, -50.0), radius_m=120.0),
+            priority=0.8,
+            drone_count=2,
+        )
+
+        plan = asyncio.run(brain.process_intent(intent))
+
+        assert len(plan.assignments) == 2
+        assert "Planner valid_fraction" in plan.explanation
+        assert all("planner" in assignment.reason.lower() for assignment in plan.assignments)
+        assert any(
+            assignment.target_position is not None
+            and (
+                abs(assignment.target_position.x - intent.area.center.x) > 1.0
+                or abs(assignment.target_position.y - intent.area.center.y) > 1.0
+            )
+            for assignment in plan.assignments
+        )
+        assert any(abs(assignment.confidence - 0.8) > 1e-6 for assignment in plan.assignments)
+
+    def test_real_link_state_overrides_nominal_planner_degradedness(self):
+        brain = MissionBrain(BrainConfig(default_packet_success_rate=0.9, stale_state_age_s=0.2))
+        brain._rust_available = False
+        brain._filters = {}
+
+        brain.register_drone(
+            DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, -50.0), velocity=Vec3(7.0, 0.0, 0.0))
+        )
+        brain.register_drone(
+            DroneSnapshot(drone_id=2, position=Vec3(20.0, 0.0, -50.0), velocity=Vec3(7.0, 0.0, 0.0))
+        )
+        brain.update_network_state(packet_success_rate=0.82, state_age_s=0.4)
+        brain.update_link_state(1, packet_success_rate=0.45, state_age_s=1.6, latency_ms=180.0)
+        brain.update_link_state(2, packet_success_rate=0.55, state_age_s=0.8, latency_ms=120.0)
+
+        intent = MissionIntent(
+            mission_type=MissionType.RECON,
+            area=MissionArea(center=Vec3(120.0, 20.0, -50.0), radius_m=80.0),
+            priority=0.7,
+            drone_count=2,
+        )
+        plan = asyncio.run(brain.process_intent(intent))
+
+        assert "link=0.50" in plan.explanation
+        assert "stale_max=1.60s" in plan.explanation
+        assert brain._planner_packet_success_rate([brain._fleet[1], brain._fleet[2]]) == pytest.approx(0.5)
+        assert brain._neighbor_state_ages([brain._fleet[1], brain._fleet[2]]) == {1: 1.6, 2: 0.8}
+
 
 class TestNearestThreatBearing:
     def test_no_threats(self):
@@ -192,6 +266,43 @@ class TestNearestThreatBearing:
         assert abs(bearing[0] - 1.0) < 1e-10
         assert abs(bearing[1]) < 1e-10
         assert abs(bearing[2]) < 1e-10
+
+
+class TestRegimeInference:
+    def test_weighted_pressure_prefers_engage_for_fast_approach(self):
+        brain = MissionBrain()
+        brain.register_drone(DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, -50.0)))
+        asyncio.run(
+            brain.update_threat(
+                ThreatObservation(
+                    threat_id=7,
+                    position=Vec3(200.0, 0.0, -50.0),
+                    velocity=Vec3(-10.0, 0.0, 0.0),
+                    confidence=0.9,
+                    threat_type="sam",
+                )
+            )
+        )
+
+        assert brain._check_regime() == RegimeLabel.ENGAGE
+
+    def test_poor_real_comms_biases_regime_toward_evade(self):
+        brain = MissionBrain()
+        brain.register_drone(DroneSnapshot(drone_id=1, position=Vec3(0.0, 0.0, -50.0)))
+        brain.update_network_state(packet_success_rate=0.35, state_age_s=1.2)
+        asyncio.run(
+            brain.update_threat(
+                ThreatObservation(
+                    threat_id=9,
+                    position=Vec3(250.0, 0.0, -50.0),
+                    velocity=Vec3(-12.0, 0.0, 0.0),
+                    confidence=0.95,
+                    threat_type="sam",
+                )
+            )
+        )
+
+        assert brain._check_regime() == RegimeLabel.EVADE
 
 
 class TestAuctionIntegration:

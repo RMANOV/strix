@@ -166,6 +166,12 @@ pub struct Aggregates {
     pub coordination_churn_total: usize,
     pub coordination_churn_peak: usize,
     pub coordination_burden_mean: f64,
+    pub gossip_convergence_mean: f64,
+    pub gossip_convergence_min: f64,
+    pub formation_quality_mean: f64,
+    pub deadlock_escape_ticks: usize,
+    pub deadlock_escape_drones_total: usize,
+    pub deadlock_escape_drones_peak: usize,
     pub drones_lost: usize,
     pub drones_survived: usize,
     pub max_intent_score: f64,
@@ -208,6 +214,10 @@ pub struct TickSnapshot {
     pub threat_positions: HashMap<u32, [f64; 3]>,
     pub intent_score: f64,
     pub assignments: Vec<(u32, u32)>,
+    pub gossip_convergence: f64,
+    pub formation_quality: Option<f64>,
+    pub cbf_active_constraints: u32,
+    pub deadlock_escape_count: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +277,17 @@ impl fmt::Display for BattleReport {
             f,
             "  Coordination load: total={} peak={} burden={:.3}",
             a.coordination_churn_total, a.coordination_churn_peak, a.coordination_burden_mean
+        )?;
+        writeln!(
+            f,
+            "  Gossip convergence: mean={:.3} min={:.3}",
+            a.gossip_convergence_mean, a.gossip_convergence_min
+        )?;
+        writeln!(f, "  Formation quality: {:.3}", a.formation_quality_mean)?;
+        writeln!(
+            f,
+            "  Deadlock escapes:  ticks={} drones_total={} peak={}",
+            a.deadlock_escape_ticks, a.deadlock_escape_drones_total, a.deadlock_escape_drones_peak
         )?;
         writeln!(f, "  Drones lost:       {}", a.drones_lost)?;
         writeln!(f, "  Drones survived:   {}", a.drones_survived)?;

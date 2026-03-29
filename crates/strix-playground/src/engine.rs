@@ -62,6 +62,20 @@ pub struct Engine {
     coordination_churn_total: usize,
     /// Peak assignment churn in a single tick.
     coordination_churn_peak: usize,
+    /// Sum of gossip convergence values over all ticks.
+    gossip_convergence_sum: f64,
+    /// Minimum gossip convergence observed.
+    gossip_convergence_min: f64,
+    /// Sum of formation quality values across ticks where formation is active.
+    formation_quality_sum: f64,
+    /// Number of ticks with a formation quality sample.
+    formation_quality_samples: usize,
+    /// Number of ticks with a deadlock escape response.
+    deadlock_escape_ticks: usize,
+    /// Total drones involved in deadlock escape responses.
+    deadlock_escape_drones_total: usize,
+    /// Peak drones involved in a single deadlock escape response.
+    deadlock_escape_drones_peak: usize,
     /// Track previous kill zone count.
     prev_kill_zones: usize,
     /// Track cumulative distance per drone.
@@ -115,6 +129,13 @@ impl Engine {
             cbf_constraints_peak: 0,
             coordination_churn_total: 0,
             coordination_churn_peak: 0,
+            gossip_convergence_sum: 0.0,
+            gossip_convergence_min: 1.0,
+            formation_quality_sum: 0.0,
+            formation_quality_samples: 0,
+            deadlock_escape_ticks: 0,
+            deadlock_escape_drones_total: 0,
+            deadlock_escape_drones_peak: 0,
             prev_kill_zones: 0,
             distances: HashMap::new(),
             prev_positions: HashMap::new(),
@@ -415,6 +436,19 @@ impl Engine {
         self.coordination_churn_total += coordination_churn;
         self.coordination_churn_peak = self.coordination_churn_peak.max(coordination_churn);
         self.prev_assignments = current_assignments;
+        self.gossip_convergence_sum += decision.gossip_convergence;
+        self.gossip_convergence_min = self.gossip_convergence_min.min(decision.gossip_convergence);
+        if let Some(formation_quality) = decision.formation_quality {
+            self.formation_quality_sum += formation_quality;
+            self.formation_quality_samples += 1;
+        }
+        if decision.deadlock_escape_count > 0 {
+            self.deadlock_escape_ticks += 1;
+            self.deadlock_escape_drones_total += decision.deadlock_escape_count;
+            self.deadlock_escape_drones_peak = self
+                .deadlock_escape_drones_peak
+                .max(decision.deadlock_escape_count);
+        }
 
         // Detect new kill zones
         if decision.kill_zone_count > self.prev_kill_zones {
@@ -492,6 +526,10 @@ impl Engine {
             threat_positions,
             intent_score: decision.max_intent_score,
             assignments,
+            gossip_convergence: decision.gossip_convergence,
+            formation_quality: decision.formation_quality,
+            cbf_active_constraints: decision.cbf_active_constraints,
+            deadlock_escape_count: decision.deadlock_escape_count,
         });
     }
 
@@ -606,6 +644,12 @@ impl Engine {
         let burden_denominator = (total_ticks.max(1) * self.n_drones_initial.max(1)) as f64;
         let cbf_burden_mean = self.cbf_constraints_total as f64 / burden_denominator;
         let coordination_burden_mean = self.coordination_churn_total as f64 / burden_denominator;
+        let gossip_convergence_mean = self.gossip_convergence_sum / total_ticks.max(1) as f64;
+        let formation_quality_mean = if self.formation_quality_samples == 0 {
+            0.0
+        } else {
+            self.formation_quality_sum / self.formation_quality_samples as f64
+        };
 
         let aggregates = Aggregates {
             total_ticks,
@@ -622,6 +666,16 @@ impl Engine {
             coordination_churn_total: self.coordination_churn_total,
             coordination_churn_peak: self.coordination_churn_peak,
             coordination_burden_mean,
+            gossip_convergence_mean,
+            gossip_convergence_min: if total_ticks == 0 {
+                0.0
+            } else {
+                self.gossip_convergence_min
+            },
+            formation_quality_mean,
+            deadlock_escape_ticks: self.deadlock_escape_ticks,
+            deadlock_escape_drones_total: self.deadlock_escape_drones_total,
+            deadlock_escape_drones_peak: self.deadlock_escape_drones_peak,
             drones_lost: self.lost_drones.len(),
             drones_survived: self.n_drones_initial - self.lost_drones.len(),
             max_intent_score,

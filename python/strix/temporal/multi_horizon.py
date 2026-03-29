@@ -93,6 +93,10 @@ class TacticalPlan:
     waypoints: list[Waypoint] = field(default_factory=list)
     obstacle_clearance_m: float = 0.0
     min_separation_m: float = 5.0
+    required_separation_m: float = 3.0
+    validation_confidence: float = 1.0
+    max_neighbor_age_s: float = 0.0
+    packet_success_rate: float = 1.0
     valid: bool = True
     veto_reason: str = ""
     timestamp: float = 0.0
@@ -121,6 +125,7 @@ class OperationalPlan:
     formation_heading_rad: float = 0.0
     speed_ms: float = 15.0
     sensor_coverage_pct: float = 0.0
+    coordination_confidence: float = 1.0
     valid: bool = True
     timestamp: float = 0.0
 
@@ -186,6 +191,8 @@ class FleetState:
     regime: RegimeLabel = RegimeLabel.PATROL
     threats: list[Vec3] = field(default_factory=list)
     obstacles: list[tuple[Vec3, float]] = field(default_factory=list)  # (center, radius)
+    neighbor_state_ages_s: dict[int, float] = field(default_factory=dict)
+    packet_success_rate: float = 1.0
     timestamp: float = 0.0
 
     def recompute_metrics(self) -> None:
@@ -268,24 +275,48 @@ class MultiHorizonPlanner:
         plans: dict[int, TacticalPlan] = {}
 
         alive_drones = [d for d in state.drones if d.alive]
+        required_separation = self._required_separation_threshold(state)
+        validation_confidence = self._validation_confidence_baseline(state)
+        max_neighbor_age = self._max_neighbor_state_age(state)
 
         for drone in alive_drones:
             waypoints = self._generate_tactical_waypoints(drone, state, cfg)
             clearance = self._compute_waypoint_clearance(waypoints, state.obstacles)
-            separation = self._compute_rollout_min_separation(drone, waypoints, alive_drones)
+            separation = self._compute_rollout_min_separation(
+                drone,
+                waypoints,
+                alive_drones,
+                state.neighbor_state_ages_s,
+            )
+            plan_confidence = self._validation_confidence(
+                validation_confidence,
+                clearance,
+                separation,
+                required_separation,
+            )
 
             veto_reasons = []
             if clearance <= 2.0:
                 veto_reasons.append(f"obstacle clearance {clearance:.1f}m < 2m")
-            if separation <= 3.0:
-                veto_reasons.append(f"separation {separation:.1f}m < 3m")
+            if separation <= required_separation:
+                veto_reasons.append(
+                    f"separation {separation:.1f}m < required {required_separation:.1f}m"
+                )
+            if max_neighbor_age > 1.0:
+                veto_reasons.append(f"stale neighbor state {max_neighbor_age:.1f}s")
+            if state.packet_success_rate < 0.6:
+                veto_reasons.append(f"packet success {state.packet_success_rate:.2f}")
 
             plan = TacticalPlan(
                 drone_id=drone.drone_id,
                 waypoints=waypoints,
                 obstacle_clearance_m=clearance,
                 min_separation_m=separation,
-                valid=clearance > 2.0 and separation > 3.0 and len(waypoints) > 0,
+                required_separation_m=required_separation,
+                validation_confidence=plan_confidence,
+                max_neighbor_age_s=max_neighbor_age,
+                packet_success_rate=state.packet_success_rate,
+                valid=clearance > 2.0 and separation > required_separation and len(waypoints) > 0,
                 veto_reason="; ".join(veto_reasons),
                 timestamp=now,
             )
@@ -323,6 +354,7 @@ class MultiHorizonPlanner:
 
         # Compute sensor coverage
         coverage = self._estimate_sensor_coverage(alive, state)
+        coordination_confidence = self._operational_coordination_confidence(state, coverage, n)
 
         plan = OperationalPlan(
             formation=slots,
@@ -330,7 +362,8 @@ class MultiHorizonPlanner:
             formation_heading_rad=self._estimate_formation_heading(alive, state),
             speed_ms=self._select_cruise_speed(state),
             sensor_coverage_pct=coverage,
-            valid=n >= 2,
+            coordination_confidence=coordination_confidence,
+            valid=n >= 2 and coordination_confidence > 0.25,
             timestamp=now,
         )
 
@@ -610,8 +643,17 @@ class MultiHorizonPlanner:
 
         clearance = MultiHorizonPlanner._compute_waypoint_clearance(waypoints, state.obstacles)
         alive_drones = [d for d in state.drones if d.alive]
-        separation = MultiHorizonPlanner._compute_rollout_min_separation(drone, waypoints, alive_drones)
+        separation = MultiHorizonPlanner._compute_rollout_min_separation(
+            drone,
+            waypoints,
+            alive_drones,
+            state.neighbor_state_ages_s,
+        )
         threat_exposure = MultiHorizonPlanner._path_threat_exposure(waypoints, state.threats)
+        required_separation = MultiHorizonPlanner._required_separation_threshold(state)
+        max_neighbor_age = MultiHorizonPlanner._max_neighbor_state_age(state)
+        comms_penalty = (1.0 - max(0.0, min(state.packet_success_rate, 1.0))) * 12.0
+        stale_penalty = min(max_neighbor_age, 4.0) * 2.5
         last = waypoints[-1].position
         progress = (
             (last.x - drone.position.x) * preferred_direction.x
@@ -619,11 +661,17 @@ class MultiHorizonPlanner:
         )
 
         clearance_bonus = 25.0 if math.isinf(clearance) else max(-8.0, min(clearance, 25.0))
-        separation_bonus = 20.0 if math.isinf(separation) else max(-8.0, min(separation - 3.0, 20.0))
+        separation_bonus = (
+            20.0 if math.isinf(separation) else max(-8.0, min(separation - required_separation, 20.0))
+        )
         clearance_shortfall = 0.0 if math.isinf(clearance) else max(0.0, 2.0 - clearance)
-        separation_shortfall = 0.0 if math.isinf(separation) else max(0.0, 3.0 - separation)
+        separation_shortfall = (
+            0.0 if math.isinf(separation) else max(0.0, required_separation - separation)
+        )
         unsafe_penalty = 60.0 if not math.isinf(clearance) and clearance < 2.0 else 0.0
-        deconflict_penalty = 40.0 if not math.isinf(separation) and separation < 3.0 else 0.0
+        deconflict_penalty = (
+            40.0 if not math.isinf(separation) and separation < required_separation else 0.0
+        )
         threat_weight = 45.0 if state.regime == RegimeLabel.EVADE else 25.0
         turn_penalty = abs(heading_offset_rad) * 6.0
         speed_penalty = abs(speed_ms - nominal_speed_ms) * 0.25
@@ -639,6 +687,8 @@ class MultiHorizonPlanner:
             - deconflict_penalty
             - 40.0 * clearance_shortfall
             - 25.0 * separation_shortfall
+            - comms_penalty
+            - stale_penalty
         )
 
     @staticmethod
@@ -658,6 +708,7 @@ class MultiHorizonPlanner:
         drone: DroneSnapshot,
         waypoints: list[Waypoint],
         all_drones: list[DroneSnapshot],
+        neighbor_state_ages_s: dict[int, float],
     ) -> float:
         """Minimum predicted separation from the rest of the current fleet snapshot."""
         others = [other for other in all_drones if other.drone_id != drone.drone_id and other.alive]
@@ -667,9 +718,61 @@ class MultiHorizonPlanner:
         min_sep = float("inf")
         for wp in waypoints:
             for other in others:
-                dist = wp.position.distance_to(other.position)
+                age_s = max(0.0, neighbor_state_ages_s.get(other.drone_id, 0.0))
+                projected_other = Vec3(
+                    other.position.x + other.velocity.x * age_s,
+                    other.position.y + other.velocity.y * age_s,
+                    other.position.z + other.velocity.z * age_s,
+                )
+                dist = wp.position.distance_to(projected_other)
                 min_sep = min(min_sep, dist)
         return min_sep
+
+    @staticmethod
+    def _max_neighbor_state_age(state: FleetState) -> float:
+        if not state.neighbor_state_ages_s:
+            return 0.0
+        return max(state.neighbor_state_ages_s.values())
+
+    @staticmethod
+    def _required_separation_threshold(state: FleetState) -> float:
+        max_age = MultiHorizonPlanner._max_neighbor_state_age(state)
+        link = max(0.0, min(state.packet_success_rate, 1.0))
+        return 3.0 + min(max_age * 1.5, 4.0) + (1.0 - link) * 5.0
+
+    @staticmethod
+    def _validation_confidence_baseline(state: FleetState) -> float:
+        freshness = max(0.0, 1.0 - MultiHorizonPlanner._max_neighbor_state_age(state) / 4.0)
+        link = max(0.0, min(state.packet_success_rate, 1.0))
+        return 0.55 * freshness + 0.45 * link
+
+    @staticmethod
+    def _validation_confidence(
+        baseline_confidence: float,
+        clearance: float,
+        separation: float,
+        required_separation: float,
+    ) -> float:
+        clearance_score = (
+            1.0 if math.isinf(clearance) else max(0.0, min((clearance - 2.0) / 8.0 + 0.5, 1.0))
+        )
+        separation_score = (
+            1.0
+            if math.isinf(separation)
+            else max(0.0, min((separation - required_separation) / 8.0 + 0.5, 1.0))
+        )
+        confidence = 0.4 * baseline_confidence + 0.3 * clearance_score + 0.3 * separation_score
+        return max(0.05, min(confidence, 1.0))
+
+    @staticmethod
+    def _operational_coordination_confidence(state: FleetState, coverage: float, n_alive: int) -> float:
+        if n_alive == 0:
+            return 0.0
+        link = max(0.0, min(state.packet_success_rate, 1.0))
+        freshness = max(0.0, 1.0 - MultiHorizonPlanner._max_neighbor_state_age(state) / 5.0)
+        coverage_score = max(0.0, min(coverage / 100.0, 1.0))
+        density_score = min(n_alive / 4.0, 1.0)
+        return 0.35 * link + 0.25 * freshness + 0.2 * coverage_score + 0.2 * density_score
 
     @staticmethod
     def _path_threat_exposure(waypoints: list[Waypoint], threats: list[Vec3]) -> float:
@@ -894,8 +997,12 @@ def tactical_to_decisions(
                 kind=DecisionKind.GOTO,
                 target_position=wp.position,
                 speed_ms=max(vel_norm, 1.0),
-                reason=f"tactical H1 waypoint (clearance={plan.obstacle_clearance_m:.1f}m)",
-                confidence=1.0,
+                reason=(
+                    "tactical H1 waypoint "
+                    f"(clearance={plan.obstacle_clearance_m:.1f}m, "
+                    f"sep={plan.min_separation_m:.1f}/{plan.required_separation_m:.1f}m)"
+                ),
+                confidence=plan.validation_confidence,
             ))
         else:
             decisions.append(Decision(
@@ -907,3 +1014,32 @@ def tactical_to_decisions(
                 confidence=0.3,
             ))
     return decisions
+
+
+def planner_validation_metrics(plans: dict[int, "TacticalPlan"]) -> dict[str, float]:
+    """Summarize tactical-plan validation health for regression and mission logic."""
+    if not plans:
+        return {
+            "valid_fraction": 0.0,
+            "mean_validation_confidence": 0.0,
+            "worst_obstacle_clearance_m": 0.0,
+            "worst_separation_margin_m": 0.0,
+            "max_neighbor_age_s": 0.0,
+            "packet_success_rate": 0.0,
+        }
+
+    values = list(plans.values())
+    valid_fraction = sum(1 for plan in values if plan.valid) / len(values)
+    mean_confidence = sum(plan.validation_confidence for plan in values) / len(values)
+    worst_clearance = min(plan.obstacle_clearance_m for plan in values)
+    worst_margin = min(plan.min_separation_m - plan.required_separation_m for plan in values)
+    max_age = max(plan.max_neighbor_age_s for plan in values)
+    packet_success = min(plan.packet_success_rate for plan in values)
+    return {
+        "valid_fraction": valid_fraction,
+        "mean_validation_confidence": mean_confidence,
+        "worst_obstacle_clearance_m": worst_clearance,
+        "worst_separation_margin_m": worst_margin,
+        "max_neighbor_age_s": max_age,
+        "packet_success_rate": packet_success,
+    }
