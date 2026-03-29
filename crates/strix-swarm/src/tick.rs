@@ -1456,15 +1456,23 @@ impl SwarmOrchestrator {
                 deadlock_escape_count += deadlock.involved_count;
             }
 
-            for (drone_id, drone_pos) in &all_positions {
-                // Neighbor states = all drones except this one.
-                let neighbors: Vec<NeighborState> = all_positions
+            // Pre-build a flat neighbor list for all drones: avoids N allocations.
+            // For each drone we'll pass a slice-like view by collecting once and skipping self.
+            let all_neighbors: Vec<NeighborState> = all_positions
+                .iter()
+                .map(|(id, pos)| NeighborState {
+                    position: *pos,
+                    velocity: vel_map.get(id).copied().unwrap_or_else(Vector3::zeros),
+                })
+                .collect();
+
+            for (local_idx, (drone_id, drone_pos)) in all_positions.iter().enumerate() {
+                // Build neighbor iterator inline — skip self index, no allocation.
+                let neighbors: Vec<NeighborState> = all_neighbors
                     .iter()
-                    .filter(|(id, _)| id != drone_id)
-                    .map(|(id, pos)| NeighborState {
-                        position: *pos,
-                        velocity: vel_map.get(id).copied().unwrap_or_else(Vector3::zeros),
-                    })
+                    .enumerate()
+                    .filter(|(i, _)| *i != local_idx)
+                    .map(|(_, n)| n.clone())
                     .collect();
 
                 // Desired velocity = telemetry velocity + formation correction.

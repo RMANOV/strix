@@ -183,7 +183,7 @@ impl ThreatTracker {
         let regimes = self.regimes.clone();
         let normal = Normal::new(0.0, 1.0).expect("Normal(0,1) has valid parameters");
 
-        buf.par_iter_mut().enumerate().for_each(|(i, p)| {
+        let update_particle = |(i, p): (usize, &mut [f64; 6])| {
             let mut rng = rand::thread_rng();
             let regime = regimes[i];
 
@@ -251,7 +251,14 @@ impl ThreatTracker {
             p[3] = new_vx;
             p[4] = new_vy;
             p[5] = new_vz;
-        });
+        };
+
+        // Only parallelize above break-even; below 500 particles rayon overhead exceeds gain.
+        if n > 500 {
+            buf.par_iter_mut().enumerate().for_each(update_particle);
+        } else {
+            buf.iter_mut().enumerate().for_each(update_particle);
+        }
 
         for (i, row) in buf.iter().enumerate().take(n) {
             for (j, val) in row.iter().enumerate() {

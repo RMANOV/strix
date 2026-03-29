@@ -12,10 +12,10 @@
 //!
 //! Anti-entropy: periodic full state exchange with one random peer.
 
-use rand::prelude::SliceRandom;
+use rand::prelude::IteratorRandom;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{NodeId, Position3D};
 
@@ -156,7 +156,7 @@ pub struct GossipEngine {
     /// Known threats (keyed by threat id, union semantics).
     pub known_threats: HashMap<u64, ThreatRecord>,
     /// Known peer ids for fan-out selection.
-    pub peers: Vec<NodeId>,
+    pub peers: HashSet<NodeId>,
     /// Number of peers to contact per round.
     pub fanout: usize,
 }
@@ -168,7 +168,7 @@ impl GossipEngine {
             self_id,
             known_states: HashMap::new(),
             known_threats: HashMap::new(),
-            peers: Vec::new(),
+            peers: HashSet::new(),
             fanout,
         }
     }
@@ -180,14 +180,14 @@ impl GossipEngine {
 
     /// Register a peer.
     pub fn add_peer(&mut self, peer: NodeId) {
-        if peer != self.self_id && !self.peers.contains(&peer) {
-            self.peers.push(peer);
+        if peer != self.self_id {
+            self.peers.insert(peer);
         }
     }
 
     /// Remove a peer (e.g. declared dead).
     pub fn remove_peer(&mut self, peer: NodeId) {
-        self.peers.retain(|&p| p != peer);
+        self.peers.remove(&peer);
     }
 
     /// Update our own state.
@@ -261,10 +261,7 @@ impl GossipEngine {
 
     /// Select `fanout` random peers for this gossip round.
     pub fn select_peers<R: Rng>(&self, rng: &mut R) -> Vec<NodeId> {
-        let mut candidates = self.peers.clone();
-        candidates.shuffle(rng);
-        candidates.truncate(self.fanout);
-        candidates
+        self.peers.iter().copied().choose_multiple(rng, self.fanout)
     }
 
     /// Build a digest message for sending to a peer.

@@ -13,6 +13,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::bidder::{Bid, Bidder, ScenarioContext};
@@ -163,21 +164,23 @@ impl Auctioneer {
         sub_swarm_map: &HashMap<u32, u32>,
         kill_zone_penalties: &[(crate::Position, f64, f64)],
     ) -> Vec<Bid> {
-        let mut all_bids = Vec::new();
-        for drone in drones {
-            let mut bidder = Bidder::new(drone.clone()).with_fear(self.fear);
-            if let Some(&ssid) = sub_swarm_map.get(&drone.id) {
-                bidder = bidder.with_sub_swarm(ssid);
-            }
-            if !kill_zone_penalties.is_empty() {
-                bidder = bidder.with_kill_zone_penalties(kill_zone_penalties.to_vec());
-            }
-            if let Some(ctx) = self.scenario_contexts.get(&drone.id) {
-                bidder = bidder.with_scenario_context(ctx.clone());
-            }
-            let bids = self.compress_bids(tasks, bidder.bid_on_tasks(tasks, threats));
-            all_bids.extend(bids);
-        }
+        // Each drone's bidding is independent — parallelize across drones.
+        let mut all_bids: Vec<Bid> = drones
+            .par_iter()
+            .flat_map(|drone| {
+                let mut bidder = Bidder::new(drone.clone()).with_fear(self.fear);
+                if let Some(&ssid) = sub_swarm_map.get(&drone.id) {
+                    bidder = bidder.with_sub_swarm(ssid);
+                }
+                if !kill_zone_penalties.is_empty() {
+                    bidder = bidder.with_kill_zone_penalties(kill_zone_penalties.to_vec());
+                }
+                if let Some(ctx) = self.scenario_contexts.get(&drone.id) {
+                    bidder = bidder.with_scenario_context(ctx.clone());
+                }
+                self.compress_bids(tasks, bidder.bid_on_tasks(tasks, threats))
+            })
+            .collect();
         // Filter bids below threshold.
         all_bids.retain(|b| b.score >= self.min_bid_threshold);
         all_bids

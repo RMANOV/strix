@@ -199,7 +199,7 @@ pub fn predict_particles_6d_with_buf(
     let tb = *threat_bearing;
     let normal = Normal::new(0.0, 1.0).expect("Normal(0,1) has valid parameters");
 
-    buf.par_iter_mut().enumerate().for_each(|(i, p)| {
+    let update_particle = |(i, p): (usize, &mut [f64; 6])| {
         let mut rng = rand::thread_rng();
 
         let regime = regimes[i];
@@ -263,7 +263,14 @@ pub fn predict_particles_6d_with_buf(
         p[3] = new_vx;
         p[4] = new_vy;
         p[5] = new_vz;
-    });
+    };
+
+    // Only parallelize above break-even; below 500 particles rayon overhead exceeds gain.
+    if n > 500 {
+        buf.par_iter_mut().enumerate().for_each(update_particle);
+    } else {
+        buf.iter_mut().enumerate().for_each(update_particle);
+    }
 
     // Write back.
     for i in 0..n {
