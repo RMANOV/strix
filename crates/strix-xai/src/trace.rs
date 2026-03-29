@@ -10,6 +10,51 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+fn sanitize_timestamp(value: f64) -> f64 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn sanitize_confidence(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn sanitize_unit_interval(value: Option<f64>) -> Option<f64> {
+    value.and_then(|value| value.is_finite().then_some(value.clamp(0.0, 1.0)))
+}
+
+fn sanitize_tension(value: Option<f64>) -> Option<f64> {
+    value.and_then(|value| value.is_finite().then_some(value.clamp(-1.0, 1.0)))
+}
+
+fn sanitize_inputs(inputs: &mut TraceInputs) {
+    inputs.fear_level = sanitize_unit_interval(inputs.fear_level);
+    inputs.courage_level = sanitize_unit_interval(inputs.courage_level);
+    inputs.tension = sanitize_tension(inputs.tension);
+    inputs.calibration_quality = sanitize_unit_interval(inputs.calibration_quality);
+}
+
+fn sanitize_trace(trace: &mut DecisionTrace) {
+    trace.timestamp = sanitize_timestamp(trace.timestamp);
+    sanitize_inputs(&mut trace.inputs);
+    trace.confidence = sanitize_confidence(trace.confidence);
+    trace
+        .alternatives_considered
+        .retain(|alternative| alternative.score.is_finite());
+}
+
+pub(crate) fn sanitized_trace(mut trace: DecisionTrace) -> DecisionTrace {
+    sanitize_trace(&mut trace);
+    trace
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -175,9 +220,13 @@ impl TraceRecorder {
     ///
     /// Returns the assigned trace ID.
     pub fn record(&mut self, mut trace: DecisionTrace) -> u64 {
+        sanitize_trace(&mut trace);
         let id = self.next_id;
         self.next_id += 1;
         trace.id = id;
+        if self.traces.len() >= 10_000 {
+            self.traces.remove(0);
+        }
         self.traces.push(trace);
         id
     }
@@ -192,16 +241,22 @@ impl TraceRecorder {
 
     /// Query traces matching a filter.
     pub fn query(&self, filter: &TraceQuery) -> Vec<&DecisionTrace> {
+        let after = filter.after.filter(|value| value.is_finite());
+        let before = filter.before.filter(|value| value.is_finite());
+        let min_confidence = filter
+            .min_confidence
+            .filter(|value| value.is_finite())
+            .map(|value| value.clamp(0.0, 1.0));
         let mut results: Vec<&DecisionTrace> = self
             .traces
             .iter()
             .filter(|t| {
-                if let Some(after) = filter.after {
+                if let Some(after) = after {
                     if t.timestamp < after {
                         return false;
                     }
                 }
-                if let Some(before) = filter.before {
+                if let Some(before) = before {
                     if t.timestamp > before {
                         return false;
                     }
@@ -216,7 +271,7 @@ impl TraceRecorder {
                         return false;
                     }
                 }
-                if let Some(min_conf) = filter.min_confidence {
+                if let Some(min_conf) = min_confidence {
                     if t.confidence < min_conf {
                         return false;
                     }
@@ -249,7 +304,8 @@ impl TraceRecorder {
 
     /// Export all traces as a JSON string.
     pub fn export_json(&self) -> Result<String, TraceError> {
-        serde_json::to_string_pretty(&self.traces)
+        let traces: Vec<DecisionTrace> = self.traces.iter().cloned().map(sanitized_trace).collect();
+        serde_json::to_string_pretty(&traces)
             .map_err(|e| TraceError::SerializationError(e.to_string()))
     }
 
@@ -282,7 +338,7 @@ impl DecisionTrace {
     pub fn new(timestamp: f64, decision_type: DecisionType) -> Self {
         Self {
             id: 0, // assigned by TraceRecorder
-            timestamp,
+            timestamp: sanitize_timestamp(timestamp),
             decision_type,
             inputs: TraceInputs {
                 drone_ids: Vec::new(),
@@ -307,6 +363,7 @@ impl DecisionTrace {
     /// Set the inputs.
     pub fn with_inputs(mut self, inputs: TraceInputs) -> Self {
         self.inputs = inputs;
+        sanitize_inputs(&mut self.inputs);
         self
     }
 
@@ -331,17 +388,19 @@ impl DecisionTrace {
 
     /// Set the confidence.
     pub fn with_confidence(mut self, confidence: f64) -> Self {
-        self.confidence = confidence;
+        self.confidence = sanitize_confidence(confidence);
         self
     }
 
     /// Add an alternative that was considered.
     pub fn with_alternative(mut self, description: &str, score: f64, reason: &str) -> Self {
-        self.alternatives_considered.push(Alternative {
-            description: description.to_string(),
-            score,
-            rejection_reason: reason.to_string(),
-        });
+        if score.is_finite() {
+            self.alternatives_considered.push(Alternative {
+                description: description.to_string(),
+                score,
+                rejection_reason: reason.to_string(),
+            });
+        }
         self
     }
 }
@@ -522,5 +581,52 @@ mod tests {
         let decoded: TraceInputs = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.fear_level, None);
         assert_eq!(decoded.tension, None);
+    }
+
+    #[test]
+    fn record_sanitizes_non_finite_trace_fields() {
+        let mut recorder = TraceRecorder::new();
+        let mut trace = sample_trace(1.0, DecisionType::TaskAssignment);
+        trace.timestamp = f64::NAN;
+        trace.confidence = f64::INFINITY;
+        trace.inputs.fear_level = Some(f64::NAN);
+        trace.inputs.courage_level = Some(2.0);
+        trace.inputs.tension = Some(f64::NEG_INFINITY);
+        trace.inputs.calibration_quality = Some(-1.0);
+        trace.alternatives_considered.push(Alternative {
+            description: "poison".into(),
+            score: f64::NAN,
+            rejection_reason: "invalid".into(),
+        });
+
+        let id = recorder.record(trace);
+        let stored = recorder.get(id).unwrap();
+
+        assert_eq!(stored.timestamp, 0.0);
+        assert_eq!(stored.confidence, 0.0);
+        assert_eq!(stored.inputs.fear_level, None);
+        assert_eq!(stored.inputs.courage_level, Some(1.0));
+        assert_eq!(stored.inputs.tension, None);
+        assert_eq!(stored.inputs.calibration_quality, Some(0.0));
+        assert!(stored
+            .alternatives_considered
+            .iter()
+            .all(|alt| alt.score.is_finite()));
+    }
+
+    #[test]
+    fn query_ignores_non_finite_filter_values() {
+        let mut recorder = TraceRecorder::new();
+        recorder.record(sample_trace(1.0, DecisionType::TaskAssignment));
+        recorder.record(sample_trace(2.0, DecisionType::TaskAssignment));
+
+        let query = TraceQuery {
+            after: Some(f64::NAN),
+            before: Some(f64::INFINITY),
+            min_confidence: Some(f64::NAN),
+            ..Default::default()
+        };
+
+        assert_eq!(recorder.query(&query).len(), 2);
     }
 }

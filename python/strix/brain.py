@@ -15,8 +15,10 @@ Puppet Master layer (strix-adapters) translates into platform commands.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
@@ -273,7 +275,7 @@ class MissionBrain:
         self._regime = RegimeLabel.PATROL
         self._tick_count = 0
         self._active_plan: MissionPlan | None = None
-        self._pending_intents: list[MissionIntent] = []
+        self._pending_intents: deque[MissionIntent] = deque()
         self._running = False
         self._last_auction_tick = 0
         self._next_task_id = 0
@@ -340,9 +342,8 @@ class MissionBrain:
 
         needs_filter_reset = drone.drone_id not in self._filters
         if previous is not None:
-            position_changed = previous.position.distance_to(drone.position) > 1e-6
-            velocity_changed = previous.velocity.distance_to(drone.velocity) > 1e-6
-            if position_changed or velocity_changed or previous.alive != drone.alive:
+            position_jumped = previous.position.distance_to(drone.position) >= 5.0
+            if position_jumped or previous.alive != drone.alive:
                 needs_filter_reset = True
 
         if needs_filter_reset:
@@ -517,7 +518,7 @@ class MissionBrain:
             timestamp=time.monotonic(),
         )
 
-        drone.alive = False
+        self._fleet[drone_id] = dataclasses.replace(drone, alive=False)
 
         # Check attrition level
         total = len(self._fleet)
@@ -581,12 +582,17 @@ class MissionBrain:
         while self._running:
             t0 = time.monotonic()
 
-            # Process any queued intents
-            while self._pending_intents:
-                intent = self._pending_intents.pop(0)
+            # Process at most one queued intent per tick
+            if self._pending_intents:
+                intent = self._pending_intents.popleft()
                 self.process_intent_sync(intent)
 
-            decisions = self.tick_sync(dt)
+            elapsed = time.monotonic() - t0
+            actual_dt = max(elapsed, dt)  # at least nominal, never negative
+            if elapsed > dt * 1.5:
+                logger.warning("Tick overrun: elapsed=%.3fs nominal=%.3fs", elapsed, dt)
+
+            decisions = self.tick_sync(actual_dt)
             if decisions:
                 logger.debug("Tick %d: %d decisions", self._tick_count, len(decisions))
 

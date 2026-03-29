@@ -271,6 +271,15 @@ pub fn predict_particles_6d_with_buf(
             particles[[i, j]] = buf[i][j];
         }
     }
+
+    // NaN sanitization: reset any degenerate particle coordinates to 0.
+    for i in 0..n {
+        for j in 0..6 {
+            if !particles[[i, j]].is_finite() {
+                particles[[i, j]] = 0.0;
+            }
+        }
+    }
 }
 
 /// Sequential (deterministic) variant of [`predict_particles_6d_with_buf`].
@@ -405,6 +414,16 @@ pub fn update_weights_6d(
                 timestamp: _,
                 gyro: _,
             } => {
+                // Skip observation if telemetry velocity/acceleration contains NaN.
+                if !acceleration.x.is_finite()
+                    || !acceleration.y.is_finite()
+                    || !acceleration.z.is_finite()
+                {
+                    continue;
+                }
+                if sensor_cfg.imu_accel_noise < 1e-6 {
+                    continue;
+                }
                 // IMU acceleration → velocity likelihood.
                 // Particle velocity change should be consistent with
                 // observed acceleration.
@@ -422,6 +441,9 @@ pub fn update_weights_6d(
                 altitude,
                 timestamp: _,
             } => {
+                if sensor_cfg.baro_noise < 1e-6 {
+                    continue;
+                }
                 for i in 0..n {
                     let diff = particles[[i, 2]] + altitude; // NED: z=-alt, so diff = z+alt ≈ 0 for correct particles
                     weights[i] *= gaussian_likelihood(diff * diff, sensor_cfg.baro_noise);

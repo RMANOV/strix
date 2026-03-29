@@ -174,7 +174,7 @@ pub fn detect_intent(signals: &IntentSignals, config: &IntentConfig) -> IntentAs
     let closing_rate_contribution = if signals.closing_rate < -1.0 {
         0.3_f64.min((-signals.closing_rate - 1.0) / 10.0)
     } else if signals.closing_rate > 1.0 {
-        -0.3_f64.min((signals.closing_rate - 1.0) / 10.0)
+        -((signals.closing_rate - 1.0) / 10.0).min(0.3)
     } else {
         0.0
     };

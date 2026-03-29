@@ -9,6 +9,8 @@
 //!
 //! After N losses the swarm should be measurably better at avoiding the same threat.
 
+use std::collections::VecDeque;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{Position, Regime, ThreatType};
@@ -122,11 +124,11 @@ pub struct RegimeAdjustment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LossAnalyzer {
     /// All recorded loss events.
-    pub loss_records: Vec<LossRecord>,
+    pub loss_records: VecDeque<LossRecord>,
     /// Active kill zones (updated after each loss).
     pub kill_zones: Vec<KillZone>,
     /// Regime-transition adjustments derived from losses.
-    pub regime_adjustments: Vec<RegimeAdjustment>,
+    pub regime_adjustments: VecDeque<RegimeAdjustment>,
     /// Growth factor: how much the kill-zone radius expands with each
     /// additional loss at the same location.
     pub zone_growth_factor: f64,
@@ -141,9 +143,9 @@ pub struct LossAnalyzer {
 impl Default for LossAnalyzer {
     fn default() -> Self {
         Self {
-            loss_records: Vec::new(),
+            loss_records: VecDeque::new(),
             kill_zones: Vec::new(),
-            regime_adjustments: Vec::new(),
+            regime_adjustments: VecDeque::new(),
             zone_growth_factor: 1.2,
             merge_distance: 500.0,
         }
@@ -176,9 +178,9 @@ impl LossAnalyzer {
         // Cap loss_records to prevent unbounded memory growth.
         const MAX_LOSS_RECORDS: usize = 1024;
         if self.loss_records.len() >= MAX_LOSS_RECORDS {
-            self.loss_records.remove(0);
+            self.loss_records.pop_front();
         }
-        self.loss_records.push(record.clone());
+        self.loss_records.push_back(record.clone());
         self.adapt_from_loss(&record);
         orphans
     }
@@ -220,10 +222,9 @@ impl LossAnalyzer {
         // Cap regime_adjustments to prevent unbounded memory growth in long missions.
         const MAX_REGIME_ADJUSTMENTS: usize = 256;
         if self.regime_adjustments.len() >= MAX_REGIME_ADJUSTMENTS {
-            // Remove oldest adjustment to make room.
-            self.regime_adjustments.remove(0);
+            self.regime_adjustments.pop_front();
         }
-        self.regime_adjustments.push(RegimeAdjustment {
+        self.regime_adjustments.push_back(RegimeAdjustment {
             near: record.position,
             radius: record.classification.default_kill_zone_radius() * 1.5,
             evade_bias: 0.15 * self.loss_count_near(record.position) as f64,
@@ -237,7 +238,9 @@ impl LossAnalyzer {
             if dist < self.merge_distance {
                 kz.loss_count += 1;
                 // Expand the radius with each additional loss (anti-fragile growth).
+                let initial_radius = kz.classification.default_kill_zone_radius();
                 kz.radius *= self.zone_growth_factor;
+                kz.radius = kz.radius.min(initial_radius * 10.0);
                 // Increase penalty (more dangerous than we thought).
                 kz.penalty = (kz.penalty * 1.1).min(1.0);
                 // Shift centre towards the new loss (weighted average).

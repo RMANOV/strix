@@ -266,6 +266,9 @@ impl ThreatTracker {
                     sigma,
                     timestamp: _,
                 } => {
+                    if *sigma < 1e-6 {
+                        continue;
+                    }
                     for i in 0..n {
                         let dx = self.particles[[i, 0]] - position.x;
                         let dy = self.particles[[i, 1]] - position.y;
@@ -280,6 +283,9 @@ impl ThreatTracker {
                     sigma,
                     timestamp: _,
                 } => {
+                    if *sigma < 1e-6 {
+                        continue;
+                    }
                     let expected_pos = bearing * *estimated_range;
                     for i in 0..n {
                         let dx = self.particles[[i, 0]] - expected_pos.x;
@@ -294,6 +300,9 @@ impl ThreatTracker {
                     sigma,
                     timestamp: _,
                 } => {
+                    if *sigma < 1e-6 {
+                        continue;
+                    }
                     for i in 0..n {
                         let pos = Vector3::new(
                             self.particles[[i, 0]],

@@ -6,7 +6,42 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::trace::{DecisionTrace, DecisionType, TraceRecorder};
+use crate::trace::{sanitized_trace, DecisionTrace, DecisionType, TraceRecorder};
+
+fn sanitize_threshold(value: Option<f64>) -> f64 {
+    value
+        .filter(|value| value.is_finite())
+        .map(|value| value.clamp(0.0, 1.0))
+        .unwrap_or(0.0)
+}
+
+fn sanitize_fear(value: Option<f64>) -> Option<f64> {
+    value
+        .filter(|value| value.is_finite())
+        .map(|value| value.clamp(0.0, 1.0))
+}
+
+fn sanitize_threat_distance(value: Option<f64>) -> Option<f64> {
+    value
+        .filter(|value| value.is_finite())
+        .map(|value| value.max(0.0))
+}
+
+fn compare_traces(a: &DecisionTrace, b: &DecisionTrace) -> std::cmp::Ordering {
+    a.timestamp
+        .total_cmp(&b.timestamp)
+        .then_with(|| a.id.cmp(&b.id))
+        .then_with(|| a.output.action.cmp(&b.output.action))
+}
+
+fn normalize_traces<I>(traces: I) -> Vec<DecisionTrace>
+where
+    I: IntoIterator<Item = DecisionTrace>,
+{
+    let mut traces: Vec<DecisionTrace> = traces.into_iter().map(sanitized_trace).collect();
+    traces.sort_by(compare_traces);
+    traces
+}
 
 // ---------------------------------------------------------------------------
 // Timeline event
@@ -148,7 +183,7 @@ pub struct PlanDiff {
 
 /// Build a [`MissionReplay`] from a [`TraceRecorder`].
 pub fn build_replay(mission_id: &str, recorder: &TraceRecorder) -> MissionReplay {
-    let traces: Vec<DecisionTrace> = recorder.iter().cloned().collect();
+    let traces = normalize_traces(recorder.iter().cloned());
 
     // Build timeline from traces
     let timeline: Vec<TimelineEvent> = traces
@@ -172,7 +207,7 @@ pub fn build_replay(mission_id: &str, recorder: &TraceRecorder) -> MissionReplay
                 .first()
                 .expect("traces non-empty: len >= 2")
                 .timestamp;
-        if total_decisions > 1 {
+        if total_decisions > 1 && total_span.is_finite() && total_span >= 0.0 {
             (total_span / (total_decisions - 1) as f64) * 1000.0
         } else {
             0.0
@@ -308,15 +343,13 @@ pub enum WhatIfRecommendation {
 /// compares against the (optionally overridden) threshold to determine
 /// whether the original decision would still proceed.
 pub fn what_if(trace: &DecisionTrace, params: &WhatIfParams) -> WhatIfResult {
-    let threshold = params.confidence_threshold.unwrap_or(0.0);
+    let trace = sanitized_trace(trace.clone());
+    let threshold = sanitize_threshold(params.confidence_threshold);
     let would_proceed_original = trace.confidence >= threshold;
 
-    // Compute effective confidence based on parameter modifications.
     let mut effective_confidence = trace.confidence;
 
-    // Fear override affects confidence: higher fear reduces confidence in aggressive actions.
-    if let Some(fear) = params.fear_override {
-        let fear = fear.clamp(0.0, 1.0);
+    if let Some(fear) = sanitize_fear(params.fear_override) {
         let is_aggressive = matches!(
             trace.decision_type,
             DecisionType::TaskAssignment | DecisionType::ThreatResponse
@@ -326,18 +359,20 @@ pub fn what_if(trace: &DecisionTrace, params: &WhatIfParams) -> WhatIfResult {
         }
     }
 
-    // Drone count affects confidence: fewer drones reduces confidence.
     if let Some(count) = params.drone_count_override {
         let original_count = trace.inputs.drone_ids.len().max(1);
         let ratio = count as f64 / original_count as f64;
         effective_confidence *= ratio.clamp(0.5, 1.5);
     }
 
-    // Threat distance affects confidence: closer threats reduce confidence.
-    if let Some(dist) = params.threat_distance_override {
+    if let Some(dist) = sanitize_threat_distance(params.threat_distance_override) {
         if dist < 500.0 {
             effective_confidence *= dist / 500.0;
         }
+    }
+
+    if !effective_confidence.is_finite() {
+        effective_confidence = 0.0;
     }
 
     let confidence_delta = effective_confidence - trace.confidence;
@@ -347,8 +382,9 @@ pub fn what_if(trace: &DecisionTrace, params: &WhatIfParams) -> WhatIfResult {
         .iter()
         .max_by(|a, b| {
             a.score
-                .partial_cmp(&b.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&b.score)
+                .then_with(|| b.description.cmp(&a.description))
+                .then_with(|| b.rejection_reason.cmp(&a.rejection_reason))
         })
         .cloned();
 
@@ -404,16 +440,16 @@ pub fn compare_plans(
     label_b: &str,
     traces_b: &[DecisionTrace],
 ) -> PlanComparison {
-    // Find differences by matching on timestamp proximity
+    let traces_a = normalize_traces(traces_a.iter().cloned());
+    let traces_b = normalize_traces(traces_b.iter().cloned());
     let mut differences = Vec::new();
-    let tolerance = 1.0; // seconds
+    let tolerance = 1.0;
 
-    for ta in traces_a {
-        // Find the closest trace in B by timestamp
+    for ta in &traces_a {
         let closest_b = traces_b.iter().min_by(|b1, b2| {
             let d1 = (b1.timestamp - ta.timestamp).abs();
             let d2 = (b2.timestamp - ta.timestamp).abs();
-            d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+            d1.total_cmp(&d2).then_with(|| compare_traces(b1, b2))
         });
 
         if let Some(tb) = closest_b {
@@ -454,7 +490,7 @@ pub fn export_timeline(replay: &MissionReplay) -> Result<String, serde_json::Err
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace::{DecisionTrace, DecisionType, TraceInputs, TraceRecorder};
+    use crate::trace::{Alternative, DecisionTrace, DecisionType, TraceInputs, TraceRecorder};
 
     fn make_trace(ts: f64, dt: DecisionType, regime: &str, action: &str) -> DecisionTrace {
         DecisionTrace::new(ts, dt)
@@ -801,5 +837,90 @@ mod tests {
         assert_eq!(replay.statistics.total_decisions, 0);
         assert_eq!(replay.statistics.avg_decision_time_ms, 0.0);
         assert!(replay.statistics.mission_success);
+    }
+
+    #[test]
+    fn build_replay_sanitizes_and_sorts_trace_times() {
+        let mut recorder = TraceRecorder::new();
+        recorder.record(make_trace(
+            10.0,
+            DecisionType::TaskAssignment,
+            "PATROL",
+            "late",
+        ));
+        let mut bad = make_trace(1.0, DecisionType::TaskAssignment, "PATROL", "bad");
+        bad.timestamp = f64::NAN;
+        recorder.record(bad);
+        recorder.record(make_trace(
+            5.0,
+            DecisionType::TaskAssignment,
+            "PATROL",
+            "mid",
+        ));
+
+        let replay = build_replay("sorted", &recorder);
+        let timestamps: Vec<f64> = replay.traces.iter().map(|trace| trace.timestamp).collect();
+        let actions: Vec<&str> = replay
+            .timeline
+            .iter()
+            .map(|event| event.label.as_str())
+            .collect();
+
+        assert_eq!(timestamps, vec![0.0, 5.0, 10.0]);
+        assert_eq!(actions, vec!["bad", "mid", "late"]);
+        assert!((replay.statistics.avg_decision_time_ms - 5000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn what_if_ignores_invalid_params_and_alternatives() {
+        let mut trace = DecisionTrace::new(1.0, DecisionType::TaskAssignment)
+            .with_output("Proceed", serde_json::Value::Null)
+            .with_confidence(0.75)
+            .with_alternative("Fallback", 0.65, "valid");
+        trace.confidence = f64::NAN;
+        trace.alternatives_considered.push(Alternative {
+            description: "Poison".into(),
+            score: f64::NAN,
+            rejection_reason: "invalid".into(),
+        });
+
+        let result = what_if(
+            &trace,
+            &WhatIfParams {
+                confidence_threshold: Some(f64::NAN),
+                fear_override: Some(f64::INFINITY),
+                threat_distance_override: Some(f64::NAN),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(result.original_confidence, 0.0);
+        assert_eq!(result.fallback, "Fallback");
+        assert!(result.impact.confidence_delta.is_finite());
+    }
+
+    #[test]
+    fn compare_plans_uses_deterministic_matching_for_invalid_timestamps() {
+        let mut plan_a = vec![make_trace(
+            1.0,
+            DecisionType::TaskAssignment,
+            "PATROL",
+            "Hold",
+        )];
+        let mut plan_b = vec![
+            make_trace(0.0, DecisionType::TaskAssignment, "PATROL", "Move east"),
+            make_trace(2.0, DecisionType::TaskAssignment, "PATROL", "Move west"),
+        ];
+        plan_a[0].timestamp = f64::NAN;
+        plan_a[0].id = 10;
+        plan_b[0].id = 20;
+        plan_b[1].id = 21;
+        plan_b[1].timestamp = f64::NAN;
+
+        let comparison = compare_plans("A", &plan_a, "B", &plan_b);
+
+        assert_eq!(comparison.differences.len(), 1);
+        assert_eq!(comparison.differences[0].timestamp, 0.0);
+        assert_eq!(comparison.differences[0].plan_b_action, "Move east");
     }
 }

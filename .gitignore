@@ -30,3 +30,6 @@ Thumbs.db
 
 # Press releases (internal marketing, never in git)
 press-releases/
+
+# Docs (internal, never in git)
+docs/

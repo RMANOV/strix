@@ -174,6 +174,10 @@ pub fn cbf_filter_with_neighbor_states(
             let penetration = (effective_separation - dist).max(0.5);
             let push = (config.alpha * penetration + cancel_approach).min(config.max_correction);
             correction += direction * push;
+            let mag = correction.norm();
+            if mag > config.max_correction {
+                correction *= config.max_correction / mag;
+            }
             active_count += 1;
             continue;
         }
@@ -185,6 +189,10 @@ pub fn cbf_filter_with_neighbor_states(
             let radial_rel = relative_vel.dot(&direction);
             let cancel_approach = (-radial_rel).max(0.0) * 0.5;
             correction += direction * (needed + cancel_approach).min(config.max_correction);
+            let mag = correction.norm();
+            if mag > config.max_correction {
+                correction *= config.max_correction / mag;
+            }
             active_count += 1;
         }
     }
@@ -201,12 +209,20 @@ pub fn cbf_filter_with_neighbor_states(
             let penetration = (-h_floor).max(0.5);
             correction.z +=
                 (config.alpha * penetration + (-effective_vz).max(0.0)).min(config.max_correction);
+            let mag = correction.norm();
+            if mag > config.max_correction {
+                correction *= config.max_correction / mag;
+            }
             active_count += 1;
         } else {
             let dh_dt = desired_vel.z + correction.z;
             let constraint = dh_dt + config.alpha * h_floor;
             if constraint < 0.0 {
                 correction.z += (-constraint).min(config.max_correction);
+                let mag = correction.norm();
+                if mag > config.max_correction {
+                    correction *= config.max_correction / mag;
+                }
                 active_count += 1;
             }
         }
@@ -220,12 +236,20 @@ pub fn cbf_filter_with_neighbor_states(
             let penetration = (-h_ceil).max(0.5);
             correction.z -=
                 (config.alpha * penetration + effective_vz.max(0.0)).min(config.max_correction);
+            let mag = correction.norm();
+            if mag > config.max_correction {
+                correction *= config.max_correction / mag;
+            }
             active_count += 1;
         } else {
             let dh_dt = -(desired_vel.z + correction.z);
             let constraint = dh_dt + config.alpha * h_ceil;
             if constraint < 0.0 {
                 correction.z -= (-constraint).min(config.max_correction);
+                let mag = correction.norm();
+                if mag > config.max_correction {
+                    correction *= config.max_correction / mag;
+                }
                 active_count += 1;
             }
         }
@@ -246,6 +270,10 @@ pub fn cbf_filter_with_neighbor_states(
             let penetration = (effective_radius - dist).max(0.5);
             let push = (config.alpha * penetration + inward_speed).min(config.max_correction);
             correction += direction * push;
+            let mag = correction.norm();
+            if mag > config.max_correction {
+                correction *= config.max_correction / mag;
+            }
             active_count += 1;
             continue;
         }
@@ -255,6 +283,10 @@ pub fn cbf_filter_with_neighbor_states(
         if constraint < 0.0 {
             let needed = -constraint / (2.0 * dist.max(1e-6));
             correction += direction * (needed + inward_speed * 0.5).min(config.max_correction);
+            let mag = correction.norm();
+            if mag > config.max_correction {
+                correction *= config.max_correction / mag;
+            }
             active_count += 1;
         }
     }
