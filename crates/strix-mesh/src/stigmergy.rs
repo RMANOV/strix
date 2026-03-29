@@ -18,6 +18,39 @@ use std::collections::HashMap;
 
 use crate::{NodeId, Position3D};
 
+fn position_is_finite(position: &Position3D) -> bool {
+    position.0.iter().all(|value| value.is_finite())
+}
+
+fn finite_time(value: f64) -> Option<f64> {
+    value.is_finite().then_some(value)
+}
+
+fn finite_decay_rate(value: f64) -> f64 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+fn coord_to_index(coord: f64, inv_resolution: f64) -> i64 {
+    if !coord.is_finite() || !inv_resolution.is_finite() {
+        return 0;
+    }
+
+    let scaled = (coord * inv_resolution).floor();
+    if !scaled.is_finite() {
+        if scaled.is_sign_positive() {
+            i64::MAX
+        } else {
+            i64::MIN
+        }
+    } else {
+        scaled.clamp(i64::MIN as f64, i64::MAX as f64) as i64
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pheromone types
 // ---------------------------------------------------------------------------
@@ -91,26 +124,56 @@ impl CellData {
 
     /// Get concentration after applying lazy evaporation.
     fn get(&self, ptype: PheromoneType, now: f64, decay_rate: f64) -> f64 {
-        let raw = self.concentrations.get(&ptype).copied().unwrap_or(0.0);
-        let last = self.last_update.get(&ptype).copied().unwrap_or(now);
+        let Some(now) = finite_time(now) else {
+            return 0.0;
+        };
+
+        let raw = self
+            .concentrations
+            .get(&ptype)
+            .copied()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(0.0);
+        let last = self
+            .last_update
+            .get(&ptype)
+            .copied()
+            .and_then(finite_time)
+            .unwrap_or(now);
         let dt = (now - last).max(0.0);
-        raw * (-decay_rate * dt).exp()
+        let value = raw * (-finite_decay_rate(decay_rate) * dt).exp();
+        if value.is_finite() && value > 0.0 {
+            value
+        } else {
+            0.0
+        }
     }
 
     /// Deposit and return new concentration.
     fn deposit(&mut self, ptype: PheromoneType, amount: f64, now: f64, decay_rate: f64) -> f64 {
+        let Some(now) = finite_time(now) else {
+            return self.get(ptype, 0.0, decay_rate);
+        };
+        if !amount.is_finite() || amount <= 0.0 {
+            return self.get(ptype, now, decay_rate);
+        }
+
         // Guard against out-of-order timestamps that would roll back
         // last_update and corrupt future evaporation calculations.
         let last = self
             .last_update
             .get(&ptype)
             .copied()
+            .and_then(finite_time)
             .unwrap_or(f64::NEG_INFINITY);
         let effective_now = now.max(last);
 
         // First evaporate existing.
         let current = self.get(ptype, effective_now, decay_rate);
         let new_val = current + amount;
+        if !new_val.is_finite() {
+            return current;
+        }
         self.concentrations.insert(ptype, new_val);
         self.last_update.insert(ptype, effective_now);
         new_val
@@ -162,8 +225,12 @@ impl PheromoneField {
     /// - `decay_rate`: exponential decay constant per second (default 0.05).
     pub fn new(resolution: f64, decay_rate: f64) -> Self {
         Self {
-            resolution: resolution.max(0.1),
-            decay_rate: decay_rate.max(0.0),
+            resolution: if resolution.is_finite() {
+                resolution.max(0.1)
+            } else {
+                0.1
+            },
+            decay_rate: finite_decay_rate(decay_rate),
             cells: HashMap::new(),
         }
     }
@@ -182,6 +249,14 @@ impl PheromoneField {
 
     /// Deposit pheromone at a position.
     pub fn deposit(&mut self, pheromone: &Pheromone) {
+        if !position_is_finite(&pheromone.position)
+            || !pheromone.intensity.is_finite()
+            || pheromone.intensity <= 0.0
+            || !pheromone.timestamp.is_finite()
+        {
+            return;
+        }
+
         let key = self.pos_to_key(&pheromone.position);
         let cell = self.cells.entry(key).or_insert_with(CellData::new);
         cell.deposit(
@@ -195,6 +270,10 @@ impl PheromoneField {
     /// Read pheromone level at a position (with lazy evaporation).
     /// Returns the concentration of the requested type.
     pub fn sense(&self, position: &Position3D, ptype: PheromoneType, now: f64) -> f64 {
+        if !position_is_finite(position) || !now.is_finite() {
+            return 0.0;
+        }
+
         let key = self.pos_to_key(position);
         self.cells
             .get(&key)
@@ -203,6 +282,10 @@ impl PheromoneField {
 
     /// Read all pheromone levels at a position.
     pub fn sense_all(&self, position: &Position3D, now: f64) -> HashMap<PheromoneType, f64> {
+        if !position_is_finite(position) || !now.is_finite() {
+            return HashMap::new();
+        }
+
         let key = self.pos_to_key(position);
         let mut result = HashMap::new();
         if let Some(cell) = self.cells.get(&key) {
@@ -224,6 +307,10 @@ impl PheromoneField {
 
     /// Eagerly evaporate all cells to `now`. Removes dead cells.
     pub fn evaporate(&mut self, now: f64) {
+        if !now.is_finite() {
+            return;
+        }
+
         let decay = self.decay_rate;
         self.cells.retain(|_key, cell| {
             cell.evaporate_all(now, decay);
@@ -239,6 +326,14 @@ impl PheromoneField {
     ///
     /// Uses central-difference across neighbouring cells.
     pub fn gradient(&self, position: &Position3D, ptype: PheromoneType, now: f64) -> [f64; 3] {
+        if !position_is_finite(position)
+            || !now.is_finite()
+            || !self.resolution.is_finite()
+            || self.resolution <= 0.0
+        {
+            return [0.0, 0.0, 0.0];
+        }
+
         let r = self.resolution;
         let p = position.0;
 
@@ -260,9 +355,9 @@ impl PheromoneField {
     fn pos_to_key(&self, pos: &Position3D) -> CellKey {
         let inv = 1.0 / self.resolution;
         CellKey {
-            x: (pos.0[0] * inv).floor() as i64,
-            y: (pos.0[1] * inv).floor() as i64,
-            z: (pos.0[2] * inv).floor() as i64,
+            x: coord_to_index(pos.0[0], inv),
+            y: coord_to_index(pos.0[1], inv),
+            z: coord_to_index(pos.0[2], inv),
         }
     }
 }
@@ -310,6 +405,60 @@ mod tests {
 
         let val = field.sense(&Position3D([5.0, 5.0, 5.0]), PheromoneType::Threat, 0.0);
         assert!((val - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn invalid_deposit_is_ignored() {
+        let mut field = PheromoneField::new(10.0, 0.0);
+        field.deposit(&Pheromone {
+            position: Position3D([5.0, 5.0, 5.0]),
+            ptype: PheromoneType::Threat,
+            intensity: f64::NAN,
+            timestamp: 0.0,
+            depositor: NodeId(0),
+        });
+
+        assert_eq!(field.active_cells(), 0);
+        assert!(
+            (field.sense(&Position3D([5.0, 5.0, 5.0]), PheromoneType::Threat, 0.0)).abs() < 1e-10
+        );
+    }
+
+    #[test]
+    fn invalid_deposit_does_not_poison_existing_cell() {
+        let mut field = PheromoneField::new(10.0, 0.0);
+        deposit_at(&mut field, 5.0, 5.0, 5.0, PheromoneType::Threat, 1.0, 0.0);
+        field.deposit(&Pheromone {
+            position: Position3D([5.0, 5.0, 5.0]),
+            ptype: PheromoneType::Threat,
+            intensity: f64::INFINITY,
+            timestamp: 1.0,
+            depositor: NodeId(0),
+        });
+
+        let val = field.sense(&Position3D([5.0, 5.0, 5.0]), PheromoneType::Threat, 1.0);
+        assert!((val - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn invalid_query_returns_zero_signal() {
+        let mut field = PheromoneField::new(10.0, 0.0);
+        deposit_at(&mut field, 5.0, 5.0, 5.0, PheromoneType::Target, 1.0, 0.0);
+
+        let val = field.sense(
+            &Position3D([f64::NAN, 5.0, 5.0]),
+            PheromoneType::Target,
+            0.0,
+        );
+        assert!((val - 0.0).abs() < 1e-10);
+        assert_eq!(
+            field.gradient(
+                &Position3D([f64::NAN, 0.0, 0.0]),
+                PheromoneType::Target,
+                0.0
+            ),
+            [0.0, 0.0, 0.0]
+        );
     }
 
     #[test]

@@ -19,6 +19,48 @@ use std::collections::HashMap;
 
 use crate::{NodeId, Position3D};
 
+fn position_is_finite(position: &Position3D) -> bool {
+    position.0.iter().all(|value| value.is_finite())
+}
+
+fn finite_timestamp(value: f64) -> f64 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn finite_fraction(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn sanitize_drone_state(state: &DroneState) -> Option<DroneState> {
+    position_is_finite(&state.position).then(|| DroneState {
+        node_id: state.node_id,
+        position: state.position,
+        battery: finite_fraction(state.battery),
+        regime: state.regime.clone(),
+        version: state.version,
+        timestamp: finite_timestamp(state.timestamp),
+    })
+}
+
+fn sanitize_threat(record: &ThreatRecord) -> Option<ThreatRecord> {
+    position_is_finite(&record.position).then(|| ThreatRecord {
+        threat_id: record.threat_id,
+        reporter: record.reporter,
+        position: record.position,
+        threat_level: finite_fraction(record.threat_level),
+        timestamp: finite_timestamp(record.timestamp),
+        resolved: record.resolved,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // State snapshot — the thing we gossip about
 // ---------------------------------------------------------------------------
@@ -156,6 +198,10 @@ impl GossipEngine {
         regime: String,
         timestamp: f64,
     ) {
+        if !position_is_finite(&position) {
+            return;
+        }
+
         let version = self
             .known_states
             .get(&self.self_id)
@@ -165,10 +211,10 @@ impl GossipEngine {
             DroneState {
                 node_id: self.self_id,
                 position,
-                battery,
+                battery: finite_fraction(battery),
                 regime,
                 version,
-                timestamp,
+                timestamp: finite_timestamp(timestamp),
             },
         );
     }
@@ -181,14 +227,18 @@ impl GossipEngine {
         threat_level: f64,
         timestamp: f64,
     ) {
+        if !position_is_finite(&position) {
+            return;
+        }
+
         self.known_threats.insert(
             threat_id,
             ThreatRecord {
                 threat_id,
                 reporter: self.self_id,
                 position,
-                threat_level,
-                timestamp,
+                threat_level: finite_fraction(threat_level),
+                timestamp: finite_timestamp(timestamp),
                 resolved: false,
             },
         );
@@ -197,8 +247,12 @@ impl GossipEngine {
     /// Prune stale threats older than `max_age` relative to `now`.
     /// Also removes resolved threats. Call periodically to prevent unbounded growth.
     pub fn prune_threats(&mut self, now: f64, max_age: f64) {
+        if !now.is_finite() || !max_age.is_finite() || max_age < 0.0 {
+            return;
+        }
+
         self.known_threats
-            .retain(|_, t| !t.resolved && (now - t.timestamp) < max_age);
+            .retain(|_, t| !t.resolved && (now - finite_timestamp(t.timestamp)) < max_age);
     }
 
     // -----------------------------------------------------------------------
@@ -217,13 +271,18 @@ impl GossipEngine {
     pub fn build_digest(&self) -> GossipMessage {
         let versions: HashMap<NodeId, u64> = self
             .known_states
-            .iter()
-            .map(|(&id, s)| (id, s.version))
+            .values()
+            .filter_map(sanitize_drone_state)
+            .map(|state| (state.node_id, state.version))
             .collect();
         GossipMessage::Digest {
             sender: self.self_id,
             versions,
-            threat_count: self.known_threats.len(),
+            threat_count: self
+                .known_threats
+                .values()
+                .filter_map(sanitize_threat)
+                .count(),
         }
     }
 
@@ -243,17 +302,25 @@ impl GossipEngine {
         let drone_states: Vec<DroneState> = self
             .known_states
             .values()
-            .filter(|s| {
+            .filter_map(sanitize_drone_state)
+            .filter(|state| {
                 peer_versions
-                    .get(&s.node_id)
-                    .is_none_or(|&pv| s.version > pv)
+                    .get(&state.node_id)
+                    .is_none_or(|&pv| state.version > pv)
             })
-            .cloned()
             .collect();
 
         // If peer has fewer threats, send all (union semantics — safe to resend).
-        let threats: Vec<ThreatRecord> = if peer_threat_count < self.known_threats.len() {
-            self.known_threats.values().cloned().collect()
+        let local_threat_count = self
+            .known_threats
+            .values()
+            .filter_map(sanitize_threat)
+            .count();
+        let threats: Vec<ThreatRecord> = if peer_threat_count < local_threat_count {
+            self.known_threats
+                .values()
+                .filter_map(sanitize_threat)
+                .collect()
         } else {
             Vec::new()
         };
@@ -285,24 +352,34 @@ impl GossipEngine {
 
         // Merge drone states — newer version wins.
         for incoming in drone_states {
+            let Some(incoming) = sanitize_drone_state(incoming) else {
+                continue;
+            };
             let dominated = self
                 .known_states
                 .get(&incoming.node_id)
-                .is_none_or(|existing| incoming.version > existing.version);
+                .is_none_or(|existing| {
+                    sanitize_drone_state(existing).is_none() || incoming.version > existing.version
+                });
             if dominated {
-                self.known_states.insert(incoming.node_id, incoming.clone());
+                self.known_states.insert(incoming.node_id, incoming);
             }
         }
 
         // Merge threats — union, newer timestamp wins per threat_id.
         for incoming in threats {
-            let should_insert = self
-                .known_threats
-                .get(&incoming.threat_id)
-                .is_none_or(|existing| incoming.timestamp > existing.timestamp);
-            if should_insert {
+            let Some(incoming) = sanitize_threat(incoming) else {
+                continue;
+            };
+            let should_insert =
                 self.known_threats
-                    .insert(incoming.threat_id, incoming.clone());
+                    .get(&incoming.threat_id)
+                    .is_none_or(|existing| {
+                        sanitize_threat(existing)
+                            .is_none_or(|existing| incoming.timestamp > existing.timestamp)
+                    });
+            if should_insert {
+                self.known_threats.insert(incoming.threat_id, incoming);
             }
         }
     }
@@ -338,8 +415,16 @@ impl GossipEngine {
     pub fn build_anti_entropy(&self) -> GossipMessage {
         GossipMessage::StateExchange {
             sender: self.self_id,
-            drone_states: self.known_states.values().cloned().collect(),
-            threats: self.known_threats.values().cloned().collect(),
+            drone_states: self
+                .known_states
+                .values()
+                .filter_map(sanitize_drone_state)
+                .collect(),
+            threats: self
+                .known_threats
+                .values()
+                .filter_map(sanitize_threat)
+                .collect(),
         }
     }
 }
@@ -436,6 +521,89 @@ mod tests {
         assert!(a.known_threats.contains_key(&200));
         assert!(b.known_threats.contains_key(&100));
         assert!(b.known_threats.contains_key(&200));
+    }
+
+    #[test]
+    fn update_self_state_sanitizes_numeric_fields() {
+        let mut engine = make_engine(0, &[]);
+        engine.update_self_state(Position3D([1.0, 2.0, 3.0]), 2.0, "search".into(), f64::NAN);
+
+        let state = engine.known_states.get(&NodeId(0)).unwrap();
+        assert!((state.battery - 1.0).abs() < 1e-10);
+        assert!((state.timestamp - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn report_threat_ignores_non_finite_position() {
+        let mut engine = make_engine(0, &[]);
+        engine.report_threat(7, Position3D([f64::NAN, 0.0, 0.0]), 0.8, 1.0);
+        assert!(!engine.known_threats.contains_key(&7));
+    }
+
+    #[test]
+    fn merge_state_replaces_non_finite_threat_timestamp() {
+        let mut engine = make_engine(0, &[]);
+        engine.known_threats.insert(
+            5,
+            ThreatRecord {
+                threat_id: 5,
+                reporter: NodeId(1),
+                position: Position3D([0.0, 0.0, 0.0]),
+                threat_level: 0.5,
+                timestamp: f64::NAN,
+                resolved: false,
+            },
+        );
+
+        engine.merge_state(&GossipMessage::StateExchange {
+            sender: NodeId(2),
+            drone_states: vec![],
+            threats: vec![ThreatRecord {
+                threat_id: 5,
+                reporter: NodeId(2),
+                position: Position3D([1.0, 1.0, 0.0]),
+                threat_level: 0.9,
+                timestamp: 1.0,
+                resolved: false,
+            }],
+        });
+
+        let threat = engine.known_threats.get(&5).unwrap();
+        assert!((threat.timestamp - 1.0).abs() < 1e-10);
+        assert_eq!(threat.reporter, NodeId(2));
+    }
+
+    #[test]
+    fn merge_state_replaces_invalid_existing_drone_state() {
+        let mut engine = make_engine(0, &[]);
+        engine.known_states.insert(
+            NodeId(3),
+            DroneState {
+                node_id: NodeId(3),
+                position: Position3D([f64::NAN, 0.0, 0.0]),
+                battery: 0.5,
+                regime: "bad".into(),
+                version: 5,
+                timestamp: 0.0,
+            },
+        );
+
+        engine.merge_state(&GossipMessage::StateExchange {
+            sender: NodeId(3),
+            drone_states: vec![DroneState {
+                node_id: NodeId(3),
+                position: Position3D([1.0, 2.0, 3.0]),
+                battery: 0.9,
+                regime: "good".into(),
+                version: 5,
+                timestamp: 1.0,
+            }],
+            threats: vec![],
+        });
+
+        let state = engine.known_states.get(&NodeId(3)).unwrap();
+        assert_eq!(state.position, Position3D([1.0, 2.0, 3.0]));
+        assert_eq!(state.regime, "good");
     }
 
     #[test]

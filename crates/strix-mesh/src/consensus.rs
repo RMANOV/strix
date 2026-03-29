@@ -14,6 +14,38 @@ use std::collections::HashMap;
 
 use crate::NodeId;
 
+fn finite_unit(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.5 // unknown capability → neutral midpoint, not worst-case
+    }
+}
+
+fn finite_rank(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 2.0)
+    } else {
+        0.0
+    }
+}
+
+fn finite_timestamp(value: f64) -> f64 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn finite_positive_interval(value: f64) -> f64 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        1.0
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Rank
 // ---------------------------------------------------------------------------
@@ -36,10 +68,10 @@ impl DroneCapability {
     ///
     /// Weights: sensor 0.3, battery 0.2, centrality 0.2, experience 0.3.
     pub fn rank_score(&self) -> f64 {
-        0.3 * self.sensor_quality
-            + 0.2 * self.battery
-            + 0.2 * self.position_centrality
-            + 0.3 * self.experience.min(1.0) // cap at 1.0 for normalization
+        0.3 * finite_unit(self.sensor_quality)
+            + 0.2 * finite_unit(self.battery)
+            + 0.2 * finite_unit(self.position_centrality)
+            + 0.3 * finite_unit(self.experience)
     }
 }
 
@@ -63,22 +95,45 @@ impl RankManager {
 
     /// Set initial rank from capability profile.
     pub fn set_initial_rank(&mut self, node: NodeId, capability: &DroneCapability) {
-        self.ranks.insert(node, capability.rank_score());
+        self.ranks
+            .insert(node, finite_rank(capability.rank_score()));
     }
 
     /// Get current rank for a drone (returns 0.0 if unknown).
     pub fn rank(&self, node: NodeId) -> f64 {
-        self.ranks.get(&node).copied().unwrap_or(0.0)
+        self.ranks.get(&node).copied().map_or(0.0, finite_rank)
     }
 
     /// Adjust rank based on mission performance.
     ///
     /// `delta` is typically in [-0.1, +0.1]. Rank is clamped to [0.0, 2.0].
     pub fn adjust_rank(&mut self, node: NodeId, delta: f64) {
+        if !delta.is_finite() {
+            return;
+        }
+
         let current = self.rank(node);
-        let new_rank = (current + delta).clamp(0.0, 2.0);
+        let updated = current + delta;
+        let new_rank = if updated.is_finite() {
+            updated.clamp(0.0, 2.0)
+        } else if updated.is_sign_positive() {
+            2.0
+        } else {
+            0.0
+        };
         self.ranks.insert(node, new_rank);
-        *self.performance_delta.entry(node).or_insert(0.0) += delta;
+
+        let perf = self.performance_score(node) + delta;
+        self.performance_delta.insert(
+            node,
+            if perf.is_finite() {
+                perf
+            } else if perf.is_sign_positive() {
+                f64::MAX
+            } else {
+                f64::MIN
+            },
+        );
     }
 
     /// Remove a drone (e.g. declared dead).
@@ -89,7 +144,11 @@ impl RankManager {
 
     /// Get cumulative performance adjustment for a drone.
     pub fn performance_score(&self, node: NodeId) -> f64 {
-        self.performance_delta.get(&node).copied().unwrap_or(0.0)
+        self.performance_delta
+            .get(&node)
+            .copied()
+            .filter(|value| value.is_finite())
+            .unwrap_or(0.0)
     }
 }
 
@@ -137,9 +196,7 @@ pub fn elect_leader(candidates: &[NodeId], rank_manager: &RankManager) -> Option
     let leader = *candidates.iter().max_by(|&&a, &&b| {
         let ra = rank_manager.rank(a);
         let rb = rank_manager.rank(b);
-        ra.partial_cmp(&rb)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
+        ra.total_cmp(&rb).then_with(|| a.0.cmp(&b.0))
     })?;
 
     // In the bully algorithm, each node announces itself to all
@@ -197,14 +254,15 @@ impl HeartbeatMonitor {
             last_heartbeat: HashMap::new(),
             miss_count: HashMap::new(),
             miss_limit,
-            interval,
+            interval: finite_positive_interval(interval),
             dead_nodes: Vec::new(),
         }
     }
 
     /// Record a heartbeat from a node.
     pub fn record_heartbeat(&mut self, node: NodeId, timestamp: f64) -> Option<HeartbeatEvent> {
-        self.last_heartbeat.insert(node, timestamp);
+        self.last_heartbeat
+            .insert(node, finite_timestamp(timestamp));
         self.miss_count.insert(node, 0);
 
         // Resurrection?
@@ -217,7 +275,9 @@ impl HeartbeatMonitor {
 
     /// Register a node to be monitored.
     pub fn register(&mut self, node: NodeId, current_time: f64) {
-        self.last_heartbeat.entry(node).or_insert(current_time);
+        self.last_heartbeat
+            .entry(node)
+            .or_insert(finite_timestamp(current_time));
         self.miss_count.entry(node).or_insert(0);
     }
 
@@ -230,18 +290,27 @@ impl HeartbeatMonitor {
     where
         F: Fn(NodeId) -> bool,
     {
+        if !now.is_finite() {
+            return Vec::new();
+        }
+
         let mut events = Vec::new();
-        let deadline = now - self.interval * self.miss_limit as f64;
+        let interval = finite_positive_interval(self.interval);
+        let deadline = now - interval * self.miss_limit as f64;
 
         let nodes: Vec<NodeId> = self.last_heartbeat.keys().copied().collect();
         for node in nodes {
             if self.dead_nodes.contains(&node) {
                 continue;
             }
-            let last = self.last_heartbeat.get(&node).copied().unwrap_or(0.0);
+            let last = self
+                .last_heartbeat
+                .get(&node)
+                .copied()
+                .map_or(0.0, finite_timestamp);
             if last < deadline {
                 let misses = self.miss_count.entry(node).or_insert(0);
-                *misses = ((now - last) / self.interval).floor() as u32;
+                *misses = ((now - last) / interval).floor() as u32;
                 if *misses >= self.miss_limit {
                     self.dead_nodes.push(node);
                     events.push(HeartbeatEvent::NodeDead {
@@ -344,6 +413,34 @@ mod tests {
     }
 
     #[test]
+    fn elect_leader_ignores_non_finite_ranks() {
+        let rm = make_rank_manager(&[(0, f64::NAN), (1, f64::INFINITY), (2, 0.8)]);
+        let candidates: Vec<NodeId> = vec![NodeId(0), NodeId(1), NodeId(2)];
+        let result = elect_leader(&candidates, &rm).unwrap();
+        assert_eq!(result.leader, NodeId(2));
+        assert!((result.leader_rank - 0.8).abs() < 1e-10);
+    }
+
+    #[test]
+    fn capability_rank_score_clamps_invalid_inputs() {
+        let cap = DroneCapability {
+            sensor_quality: f64::NAN,
+            battery: 2.0,
+            position_centrality: -1.0,
+            experience: f64::INFINITY,
+        };
+        assert!((cap.rank_score() - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn adjust_rank_ignores_non_finite_delta() {
+        let mut rm = make_rank_manager(&[(0, 0.5)]);
+        rm.adjust_rank(NodeId(0), f64::NAN);
+        assert!((rm.rank(NodeId(0)) - 0.5).abs() < 1e-10);
+        assert!((rm.performance_score(NodeId(0)) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
     fn heartbeat_detect_dead_node() {
         let mut monitor = HeartbeatMonitor::new(1.0, 3);
         monitor.register(NodeId(0), 0.0);
@@ -398,6 +495,24 @@ mod tests {
             HeartbeatEvent::NodeDead { was_leader, .. } => assert!(was_leader),
             _ => panic!("expected NodeDead"),
         }
+    }
+
+    #[test]
+    fn heartbeat_monitor_ignores_non_finite_times() {
+        let mut monitor = HeartbeatMonitor::new(0.0, 3);
+        monitor.register(NodeId(0), f64::NAN);
+
+        assert!(monitor.check(f64::NAN, |_| false).is_empty());
+
+        let events = monitor.check(4.0, |_| false);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events.first(),
+            Some(&HeartbeatEvent::NodeDead {
+                node: NodeId(0),
+                ..
+            })
+        ));
     }
 
     #[test]

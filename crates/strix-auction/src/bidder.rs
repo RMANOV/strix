@@ -160,7 +160,12 @@ impl Bidder {
             .filter_map(|t| self.evaluate_task(t, threats))
             .filter(|bid| bid.score.is_finite())
             .collect();
-        bids.sort_by(|a, b| b.score.total_cmp(&a.score));
+        bids.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.task_id.cmp(&b.task_id))
+                .then_with(|| a.drone_id.cmp(&b.drone_id))
+        });
         bids
     }
 

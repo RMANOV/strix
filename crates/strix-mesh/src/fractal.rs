@@ -16,6 +16,14 @@ use std::collections::HashMap;
 
 use crate::NodeId;
 
+fn effective_rank(rank: f64) -> f64 {
+    if rank.is_finite() {
+        rank
+    } else {
+        f64::NEG_INFINITY
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Hierarchy level
 // ---------------------------------------------------------------------------
@@ -486,9 +494,15 @@ pub fn promote_leader(
 
     // Elect highest-ranked member.
     let new_leader = *group.members.iter().max_by(|a, b| {
-        let ra = hierarchy.nodes.get(a).map_or(0.0, |n| n.rank);
-        let rb = hierarchy.nodes.get(b).map_or(0.0, |n| n.rank);
-        ra.partial_cmp(&rb).unwrap_or(std::cmp::Ordering::Equal)
+        let ra = hierarchy
+            .nodes
+            .get(a)
+            .map_or(f64::NEG_INFINITY, |n| effective_rank(n.rank));
+        let rb = hierarchy
+            .nodes
+            .get(b)
+            .map_or(f64::NEG_INFINITY, |n| effective_rank(n.rank));
+        ra.total_cmp(&rb).then_with(|| a.0.cmp(&b.0))
     })?;
 
     // Collect shards from all members to reconstruct PF state.
@@ -723,6 +737,25 @@ mod tests {
         assert_ne!(new_leader, old_leader);
         assert!(!h.nodes.contains_key(&old_leader));
         assert!(h.nodes.get(&new_leader).unwrap().is_leader);
+    }
+
+    #[test]
+    fn promote_leader_ignores_non_finite_ranks() {
+        let ids = make_ids(3);
+        let mut h = build_hierarchy(&ids);
+        h.groups.insert(
+            HierarchyLevel::Pair,
+            vec![Group {
+                leader: NodeId(0),
+                members: ids.clone(),
+                level: HierarchyLevel::Pair,
+            }],
+        );
+        h.nodes.get_mut(&NodeId(1)).unwrap().rank = f64::NAN;
+        h.nodes.get_mut(&NodeId(2)).unwrap().rank = 1.0;
+
+        let new_leader = promote_leader(&mut h, HierarchyLevel::Pair, NodeId(0)).unwrap();
+        assert_eq!(new_leader, NodeId(2));
     }
 
     #[test]

@@ -291,29 +291,21 @@ impl Auctioneer {
         let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
         for di in 0..drone_ids.len() {
             for (si, slot) in slot_task_ids.iter().enumerate() {
-                let mut total_score = 0.0;
-                let mut valid = true;
-                for &tid in slot {
-                    match lookup(di, tid) {
-                        Some(score) if score >= self.min_bid_threshold => total_score += score,
-                        _ => {
-                            valid = false;
-                            break;
-                        }
-                    }
-                }
-                if valid && total_score.is_finite() {
+                if let Some(total_score) = score_slot(slot, &lookup, di, self.min_bid_threshold) {
                     candidates.push((total_score, di, si));
                 }
             }
         }
 
-        candidates.sort_by(|a, b| b.0.total_cmp(&a.0));
+        candidates.sort_by(|a, b| {
+            b.0.total_cmp(&a.0)
+                .then_with(|| drone_ids[a.1].cmp(&drone_ids[b.1]))
+                .then_with(|| a.2.cmp(&b.2))
+        });
 
         let mut assignments = Vec::new();
         let mut assigned_tasks: HashSet<u32> = HashSet::new();
         let mut used_drones: HashSet<u32> = HashSet::new();
-        let mut total_welfare = 0.0;
 
         for (_slot_score, di, si) in candidates {
             let did = drone_ids[di];
@@ -335,21 +327,10 @@ impl Auctioneer {
                     bid_score: score,
                 });
                 assigned_tasks.insert(tid);
-                total_welfare += score;
             }
         }
 
-        let unassigned_tasks: Vec<u32> = all_task_ids
-            .iter()
-            .filter(|tid| !assigned_tasks.contains(tid))
-            .copied()
-            .collect();
-
-        AuctionResult {
-            assignments,
-            unassigned_tasks,
-            total_welfare,
-        }
+        finalize_result(&all_task_ids, assignments)
     }
 
     fn solve_assignment(
@@ -430,12 +411,8 @@ impl Auctioneer {
         let mut cost_matrix = vec![vec![0.0f64; n]; n];
         for (di, _did) in drone_ids.iter().enumerate() {
             for (si, slot) in slot_task_ids.iter().enumerate() {
-                // Super-task score = sum of individual bid scores.
-                let total_score: f64 = slot
-                    .iter()
-                    .map(|&tid| lookup(di, tid).unwrap_or(-big_penalty))
-                    .sum();
-                cost_matrix[di][si] = -total_score;
+                cost_matrix[di][si] = score_slot(slot, &lookup, di, self.min_bid_threshold)
+                    .map_or(big_penalty, |total_score| -total_score);
             }
             cost_matrix[di][slot_task_ids.len()..n].fill(0.0);
         }
@@ -448,8 +425,6 @@ impl Auctioneer {
 
         // Interpret results — expand super-tasks back to individual assignments.
         let mut assignments = Vec::new();
-        let mut assigned_tasks: HashSet<u32> = HashSet::new();
-        let mut total_welfare = 0.0;
 
         for (di, &si) in assignment_vec.iter().enumerate() {
             if di >= drone_ids.len() || si >= slot_task_ids.len() {
@@ -457,12 +432,7 @@ impl Auctioneer {
             }
             let slot = &slot_task_ids[si];
 
-            // Check that the drone has valid bids for at least one task in the slot.
-            let has_any_bid = slot
-                .iter()
-                .any(|&tid| lookup(di, tid).is_some_and(|s| s >= self.min_bid_threshold));
-
-            if has_any_bid {
+            if score_slot(slot, &lookup, di, self.min_bid_threshold).is_some() {
                 let did = drone_ids[di];
                 for &tid in slot {
                     let score = lookup(di, tid).unwrap_or(0.0);
@@ -471,23 +441,11 @@ impl Auctioneer {
                         task_id: tid,
                         bid_score: score,
                     });
-                    assigned_tasks.insert(tid);
-                    total_welfare += score;
                 }
             }
         }
 
-        let unassigned_tasks: Vec<u32> = all_task_ids
-            .iter()
-            .filter(|tid| !assigned_tasks.contains(tid))
-            .copied()
-            .collect();
-
-        AuctionResult {
-            assignments,
-            unassigned_tasks,
-            total_welfare,
-        }
+        finalize_result(&all_task_ids, assignments)
     }
 }
 
@@ -499,6 +457,9 @@ fn group_bundles(tasks: &[Task]) -> HashMap<u32, Vec<u32>> {
             map.entry(bid).or_default().push(task.id);
         }
     }
+    for task_ids in map.values_mut() {
+        task_ids.sort_unstable();
+    }
     map
 }
 
@@ -506,7 +467,11 @@ fn build_slot_task_ids(all_task_ids: &[u32], bundles: &HashMap<u32, Vec<u32>>) -
     let mut slot_task_ids: Vec<Vec<u32>> = Vec::new();
     let mut already_bundled: HashSet<u32> = HashSet::new();
 
-    for member_ids in bundles.values() {
+    let mut bundle_ids: Vec<u32> = bundles.keys().copied().collect();
+    bundle_ids.sort_unstable();
+
+    for bundle_id in bundle_ids {
+        let member_ids = &bundles[&bundle_id];
         if member_ids.len() > 1 {
             slot_task_ids.push(member_ids.clone());
             for &tid in member_ids {
@@ -522,6 +487,55 @@ fn build_slot_task_ids(all_task_ids: &[u32], bundles: &HashMap<u32, Vec<u32>>) -
     }
 
     slot_task_ids
+}
+
+fn score_slot<F>(
+    slot: &[u32],
+    lookup: &F,
+    drone_index: usize,
+    min_bid_threshold: f64,
+) -> Option<f64>
+where
+    F: Fn(usize, u32) -> Option<f64>,
+{
+    let mut total_score = 0.0;
+    for &task_id in slot {
+        match lookup(drone_index, task_id) {
+            Some(score) if score.is_finite() && score >= min_bid_threshold => {
+                total_score += score;
+            }
+            _ => return None,
+        }
+    }
+    total_score.is_finite().then_some(total_score)
+}
+
+fn finalize_result(all_task_ids: &[u32], mut assignments: Vec<Assignment>) -> AuctionResult {
+    assignments.sort_by(|a, b| {
+        a.task_id
+            .cmp(&b.task_id)
+            .then_with(|| a.drone_id.cmp(&b.drone_id))
+    });
+
+    let assigned_tasks: HashSet<u32> = assignments
+        .iter()
+        .map(|assignment| assignment.task_id)
+        .collect();
+    let unassigned_tasks = all_task_ids
+        .iter()
+        .filter(|task_id| !assigned_tasks.contains(*task_id))
+        .copied()
+        .collect();
+    let total_welfare = assignments
+        .iter()
+        .map(|assignment| assignment.bid_score)
+        .sum();
+
+    AuctionResult {
+        assignments,
+        unassigned_tasks,
+        total_welfare,
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -620,6 +634,7 @@ pub fn hungarian(cost: &[Vec<f64>]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bidder::{Bid, BidComponents};
     use crate::{Capabilities, DroneState, Position, Regime, Task};
 
     fn make_drone(id: u32, x: f64, y: f64) -> DroneState {
@@ -654,6 +669,29 @@ mod tests {
             bundle_id: None,
             dark_pool: None,
         }
+    }
+
+    fn make_bid(drone_id: u32, task_id: u32, score: f64) -> Bid {
+        Bid {
+            drone_id,
+            task_id,
+            score,
+            components: BidComponents {
+                proximity: 0.0,
+                capability: 1.0,
+                energy: 1.0,
+                risk_exposure: 0.0,
+                urgency_bonus: 0.0,
+            },
+        }
+    }
+
+    fn assignment_pairs(result: &AuctionResult) -> Vec<(u32, u32)> {
+        result
+            .assignments
+            .iter()
+            .map(|assignment| (assignment.drone_id, assignment.task_id))
+            .collect()
     }
 
     // ── Hungarian algorithm ─────────────────────────────────────────────────
@@ -830,6 +868,135 @@ mod tests {
         assert_eq!(bids.len(), 2, "bundle mates should survive bid compression");
         assert!(task_ids.contains(&10));
         assert!(task_ids.contains(&11));
+    }
+
+    #[test]
+    fn test_run_auction_breaks_equal_score_ties_by_task_id_under_bid_cap() {
+        let drones = vec![make_drone(1, 0.0, 0.0)];
+        let task_10 = make_task(10, 10.0, 0.0);
+        let task_20 = make_task(20, 0.0, 10.0);
+
+        let mut auctioneer_a = Auctioneer::new().with_bid_cap(1);
+        let result_a = auctioneer_a.run_auction(
+            &drones,
+            &[task_20.clone(), task_10.clone()],
+            &[],
+            &HashMap::new(),
+            &[],
+        );
+
+        let mut auctioneer_b = Auctioneer::new().with_bid_cap(1);
+        let result_b =
+            auctioneer_b.run_auction(&drones, &[task_10, task_20], &[], &HashMap::new(), &[]);
+
+        assert_eq!(assignment_pairs(&result_a), vec![(1, 10)]);
+        assert_eq!(assignment_pairs(&result_b), vec![(1, 10)]);
+        assert!((result_a.total_welfare - result_b.total_welfare).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_build_slot_task_ids_sorts_bundle_members_deterministically() {
+        let tasks = vec![
+            Task {
+                id: 11,
+                location: Position::new(6.0, 6.0, 50.0),
+                required_capabilities: Capabilities::default(),
+                priority: 0.5,
+                urgency: 0.5,
+                bundle_id: Some(7),
+                dark_pool: None,
+            },
+            Task {
+                id: 10,
+                location: Position::new(5.0, 5.0, 50.0),
+                required_capabilities: Capabilities::default(),
+                priority: 0.5,
+                urgency: 0.5,
+                bundle_id: Some(7),
+                dark_pool: None,
+            },
+            make_task(30, 100.0, 100.0),
+        ];
+
+        let bundles = group_bundles(&tasks);
+        let slot_task_ids = build_slot_task_ids(&[10, 11, 30], &bundles);
+
+        assert_eq!(slot_task_ids, vec![vec![10, 11], vec![30]]);
+    }
+
+    #[test]
+    fn test_optimal_solver_requires_full_bundle_to_clear_threshold() {
+        let tasks = vec![
+            Task {
+                id: 10,
+                location: Position::new(5.0, 5.0, 50.0),
+                required_capabilities: Capabilities::default(),
+                priority: 0.5,
+                urgency: 0.5,
+                bundle_id: Some(1),
+                dark_pool: None,
+            },
+            Task {
+                id: 11,
+                location: Position::new(8.0, 8.0, 50.0),
+                required_capabilities: Capabilities::default(),
+                priority: 0.5,
+                urgency: 0.5,
+                bundle_id: Some(1),
+                dark_pool: None,
+            },
+        ];
+        let bids = vec![make_bid(1, 10, 5.0), make_bid(1, 11, 0.5)];
+
+        let auctioneer = Auctioneer::new().with_min_bid(1.0);
+        let result = auctioneer.solve_assignment(&tasks, &bids, &group_bundles(&tasks));
+
+        assert!(result.assignments.is_empty());
+        assert_eq!(result.unassigned_tasks, vec![10, 11]);
+        assert_eq!(result.total_welfare, 0.0);
+    }
+
+    #[test]
+    fn test_run_auction_is_stable_under_adversarial_task_permutations() {
+        let drones = vec![make_drone(1, 0.0, 0.0)];
+        let permutations = vec![
+            vec![
+                make_task(30, 40.0, 0.0),
+                make_task(20, 0.0, 10.0),
+                make_task(10, 10.0, 0.0),
+            ],
+            vec![
+                make_task(10, 10.0, 0.0),
+                make_task(30, 40.0, 0.0),
+                make_task(20, 0.0, 10.0),
+            ],
+            vec![
+                make_task(20, 0.0, 10.0),
+                make_task(10, 10.0, 0.0),
+                make_task(30, 40.0, 0.0),
+            ],
+            vec![
+                make_task(30, 40.0, 0.0),
+                make_task(10, 10.0, 0.0),
+                make_task(20, 0.0, 10.0),
+            ],
+        ];
+
+        let mut baseline_auctioneer = Auctioneer::new().with_bid_cap(1);
+        let baseline =
+            baseline_auctioneer.run_auction(&drones, &permutations[0], &[], &HashMap::new(), &[]);
+        let baseline_pairs = assignment_pairs(&baseline);
+        let baseline_unassigned = baseline.unassigned_tasks.clone();
+        let baseline_total_welfare = baseline.total_welfare;
+
+        for tasks in permutations.into_iter().skip(1) {
+            let mut auctioneer = Auctioneer::new().with_bid_cap(1);
+            let result = auctioneer.run_auction(&drones, &tasks, &[], &HashMap::new(), &[]);
+
+            assert_eq!(assignment_pairs(&result), baseline_pairs);
+            assert_eq!(result.unassigned_tasks, baseline_unassigned);
+            assert!((result.total_welfare - baseline_total_welfare).abs() < 1e-12);
+        }
     }
 
     #[test]

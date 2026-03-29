@@ -1762,7 +1762,7 @@ impl SwarmOrchestrator {
                     (1.0 - (dist - zone.radius) / 100.0).clamp(0.0, 1.0)
                 }
             })
-            .fold(0.0, |max_risk, risk| max_risk.max(risk));
+            .fold(0.0_f64, |max_risk: f64, risk| max_risk.max(risk));
 
         let threat_pressure = self
             .nearest_threat_to_point(point)
