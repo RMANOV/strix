@@ -482,7 +482,8 @@ impl SwarmOrchestrator {
         self.auctioneer.trigger_reauction();
 
         // Record trace
-        let alive_ids: Vec<u32> = self.nav_filters.keys().copied().collect();
+        let mut alive_ids: Vec<u32> = self.nav_filters.keys().copied().collect();
+        alive_ids.sort_unstable();
         let trace = DecisionTrace::new(self.sim_time, DecisionType::ReAuction)
             .with_inputs(TraceInputs {
                 drone_ids: alive_ids,
@@ -1516,11 +1517,33 @@ impl SwarmOrchestrator {
         dt: f64,
     ) -> SwarmDecision {
         self.tick_count += 1;
+        if !self.sim_time.is_finite() || self.sim_time < 0.0 {
+            self.sim_time = 0.0;
+        }
+        let dt = convert::sanitize_dt(dt);
         self.sim_time += dt;
+        if !self.sim_time.is_finite() {
+            self.sim_time = 0.0;
+        }
 
-        let fear = self.compute_fear_state(telemetry);
-        let fleet = self.update_navigation(telemetry, &fear, dt);
-        let regimes = self.detect_regimes_and_intent(telemetry, &fear, &fleet, dt);
+        let telemetry: Vec<(u32, Telemetry)> = telemetry
+            .iter()
+            .map(|(id, telem)| {
+                let fallback_position = self
+                    .prev_positions
+                    .get(id)
+                    .map(|position| [position.x, position.y, position.z])
+                    .unwrap_or([0.0; 3]);
+                (
+                    *id,
+                    convert::sanitize_telemetry(telem, fallback_position, self.sim_time),
+                )
+            })
+            .collect();
+
+        let fear = self.compute_fear_state(&telemetry);
+        let fleet = self.update_navigation(&telemetry, &fear, dt);
+        let regimes = self.detect_regimes_and_intent(&telemetry, &fear, &fleet, dt);
 
         // Accumulate traces from detect phase
         let mut traces_recorded = regimes.traces_recorded;
@@ -1644,11 +1667,11 @@ impl SwarmOrchestrator {
         }
 
         let (roe_denials, roe_escalations, auction_traces) =
-            self.run_roe_and_auction(telemetry, tasks, &fear, &fleet, &regimes);
+            self.run_roe_and_auction(&telemetry, tasks, &fear, &fleet, &regimes);
         traces_recorded += auction_traces;
 
         let (cbf_active_constraints, deadlock_escape_count) =
-            self.propagate_and_safety(telemetry, &fear, &mut formation_corrections);
+            self.propagate_and_safety(&telemetry, &fear, &mut formation_corrections);
 
         // ── 7. Track fear signals + record outcome ──────────────────────
         self.last_intent_score = regimes.max_intent_score;
@@ -1778,7 +1801,8 @@ impl SwarmOrchestrator {
 
     /// Force all non-EVADE drones into EVADE regime, bypassing hysteresis.
     fn force_all_evade(&mut self, regime_changes: &mut Vec<(u32, Regime, Regime)>) {
-        let drone_ids: Vec<u32> = self.regimes.keys().copied().collect();
+        let mut drone_ids: Vec<u32> = self.regimes.keys().copied().collect();
+        drone_ids.sort_unstable();
         for drone_id in drone_ids {
             if self.regimes.get(&drone_id).copied() != Some(Regime::Evade) {
                 if let Some(gate) = self.hysteresis_gates.get_mut(&drone_id) {
@@ -1906,5 +1930,54 @@ impl SwarmOrchestrator {
                 (drone_pos - point).norm() <= risk_radius
             })
             .count() as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use strix_adapters::traits::{FlightMode, GpsFix};
+
+    fn invalid_telemetry() -> Telemetry {
+        Telemetry {
+            position: [f64::NAN, 25.0, f64::INFINITY],
+            velocity: [f64::NEG_INFINITY, 4.0, f64::NAN],
+            attitude: [f64::NAN, f64::NEG_INFINITY, f64::NAN],
+            battery: f64::NAN,
+            gps_fix: GpsFix::Fix3D,
+            armed: true,
+            mode: FlightMode::Guided,
+            timestamp: f64::NAN,
+        }
+    }
+
+    #[test]
+    fn tick_sanitizes_invalid_dt_and_telemetry_ingress() {
+        let mut orchestrator = SwarmOrchestrator::new(&[1], SwarmConfig::default());
+        let telemetry = vec![(1, invalid_telemetry())];
+        let tasks: Vec<Task> = Vec::new();
+
+        let decision = orchestrator.tick(&telemetry, &tasks, f64::NAN);
+
+        assert_eq!(orchestrator.sim_time(), 0.0);
+        let position = decision.positions.get(&1).unwrap();
+        assert!(position.x.is_finite());
+        assert!(position.y.is_finite());
+        assert!(position.z.is_finite());
+
+        let self_state = orchestrator.gossip.known_states.get(&NodeId(1)).unwrap();
+        assert_eq!(self_state.battery, 0.0);
+        assert!(self_state.timestamp.is_finite());
+    }
+
+    #[test]
+    fn force_all_evade_runs_in_sorted_drone_order() {
+        let mut orchestrator = SwarmOrchestrator::new(&[3, 1, 2], SwarmConfig::default());
+        let mut changes = Vec::new();
+
+        orchestrator.force_all_evade(&mut changes);
+
+        let changed_ids: Vec<u32> = changes.into_iter().map(|(id, _, _)| id).collect();
+        assert_eq!(changed_ids, vec![1, 2, 3]);
     }
 }

@@ -181,6 +181,8 @@ pub fn predict_particles_6d_with_buf(
     assert_eq!(n, regimes.len(), "particle / regime length mismatch");
     assert_eq!(particles.ncols(), 6, "particles must have 6 columns");
 
+    let dt = if dt.is_finite() && dt >= 0.0 { dt } else { 0.0 };
+    let vel_gain = if vel_gain.is_finite() { vel_gain } else { 0.0 };
     let dt_sqrt = dt.max(1e-8).sqrt();
 
     // Resize buffer to match particle count (no-op if capacity already sufficient).
@@ -196,7 +198,11 @@ pub fn predict_particles_6d_with_buf(
         ];
     }
 
-    let tb = *threat_bearing;
+    let tb = if threat_bearing.iter().all(|value| value.is_finite()) {
+        *threat_bearing
+    } else {
+        Vector3::zeros()
+    };
     let normal = Normal::new(0.0, 1.0).expect("Normal(0,1) has valid parameters");
 
     let update_particle = |(i, p): (usize, &mut [f64; 6])| {
@@ -304,6 +310,8 @@ pub fn predict_particles_6d_seeded<R: Rng>(
     rng: &mut R,
 ) {
     let n = particles.nrows();
+    let dt = if dt.is_finite() && dt >= 0.0 { dt } else { 0.0 };
+    let vel_gain = if vel_gain.is_finite() { vel_gain } else { 0.0 };
     let dt_sqrt = dt.max(1e-8).sqrt();
     buf.resize(n, [0.0; 6]);
     for (i, p) in buf.iter_mut().enumerate() {
@@ -316,7 +324,11 @@ pub fn predict_particles_6d_seeded<R: Rng>(
             particles[[i, 5]],
         ];
     }
-    let tb = *threat_bearing;
+    let tb = if threat_bearing.iter().all(|value| value.is_finite()) {
+        *threat_bearing
+    } else {
+        Vector3::zeros()
+    };
     let normal = Normal::new(0.0, 1.0).expect("Normal(0,1)");
     for (i, p) in buf.iter_mut().enumerate() {
         let regime = regimes[i];
@@ -355,6 +367,13 @@ pub fn predict_particles_6d_seeded<R: Rng>(
     for i in 0..n {
         for j in 0..6 {
             particles[[i, j]] = buf[i][j];
+        }
+    }
+    for i in 0..n {
+        for j in 0..6 {
+            if !particles[[i, j]].is_finite() {
+                particles[[i, j]] = 0.0;
+            }
         }
     }
 }
@@ -414,6 +433,8 @@ pub fn update_weights_6d(
     let n = particles.nrows();
     assert_eq!(n, weights.len());
 
+    let vector_is_finite = |vector: &Vector3<f64>| vector.iter().all(|value| value.is_finite());
+
     for obs in observations {
         match obs {
             Observation::Imu {
@@ -428,7 +449,7 @@ pub fn update_weights_6d(
                 {
                     continue;
                 }
-                if sensor_cfg.imu_accel_noise < 1e-6 {
+                if !sensor_cfg.imu_accel_noise.is_finite() || sensor_cfg.imu_accel_noise < 1e-6 {
                     continue;
                 }
                 // IMU acceleration → velocity likelihood.
@@ -448,7 +469,10 @@ pub fn update_weights_6d(
                 altitude,
                 timestamp: _,
             } => {
-                if sensor_cfg.baro_noise < 1e-6 {
+                if !altitude.is_finite() {
+                    continue;
+                }
+                if !sensor_cfg.baro_noise.is_finite() || sensor_cfg.baro_noise < 1e-6 {
                     continue;
                 }
                 for i in 0..n {
@@ -460,6 +484,12 @@ pub fn update_weights_6d(
                 heading,
                 timestamp: _,
             } => {
+                if !vector_is_finite(heading) {
+                    continue;
+                }
+                if !sensor_cfg.mag_noise.is_finite() || sensor_cfg.mag_noise < 1e-6 {
+                    continue;
+                }
                 for i in 0..n {
                     // Heading likelihood: compare velocity direction vs
                     // magnetometer heading vector.
@@ -478,6 +508,13 @@ pub fn update_weights_6d(
                 direction: _,
                 timestamp: _,
             } => {
+                if !distance.is_finite() {
+                    continue;
+                }
+                if !sensor_cfg.rangefinder_noise.is_finite() || sensor_cfg.rangefinder_noise < 1e-6
+                {
+                    continue;
+                }
                 // Altitude cross-check — rangefinder measures AGL.
                 for i in 0..n {
                     // In NED, z is down, so altitude above ground ≈ -z.
@@ -491,10 +528,16 @@ pub fn update_weights_6d(
                 confidence,
                 timestamp: _,
             } => {
+                if !vector_is_finite(delta_position) || !confidence.is_finite() {
+                    continue;
+                }
+                if !sensor_cfg.vo_noise.is_finite() || sensor_cfg.vo_noise < 1e-6 {
+                    continue;
+                }
                 // Position delta likelihood — scale noise by inverse
                 // confidence so low-confidence VO is down-weighted.
                 let base_sigma2 = sensor_cfg.vo_noise * sensor_cfg.vo_noise + 1e-12;
-                let sigma2 = base_sigma2 / (confidence.max(0.01));
+                let sigma2 = base_sigma2 / confidence.clamp(0.01, 1.0);
                 for i in 0..n {
                     let diff_sq = (particles[[i, 0]] - delta_position.x).powi(2)
                         + (particles[[i, 1]] - delta_position.y).powi(2)
@@ -509,6 +552,14 @@ pub fn update_weights_6d(
                 emitter_id: _,
                 timestamp: _,
             } => {
+                if !vector_is_finite(bearing) {
+                    continue;
+                }
+                if !sensor_cfg.radio_bearing_noise.is_finite()
+                    || sensor_cfg.radio_bearing_noise < 1e-6
+                {
+                    continue;
+                }
                 for i in 0..n {
                     let pos = Vector3::new(particles[[i, 0]], particles[[i, 1]], particles[[i, 2]]);
                     let norm = pos.norm();
@@ -849,12 +900,15 @@ impl ParticleNavFilter {
                     delta_position,
                     confidence,
                     ..
-                } if *confidence > 0.1 => {
+                } if delta_position.iter().all(|value| value.is_finite())
+                    && confidence.is_finite()
+                    && *confidence > 0.1 =>
+                {
                     // delta_position is a relative displacement (current − previous).
                     // Add it to the current estimate to get an absolute anchor.
                     return Some(current_pos + delta_position);
                 }
-                Observation::Barometer { altitude, .. } => {
+                Observation::Barometer { altitude, .. } if altitude.is_finite() => {
                     // Barometer gives z only; x,y unknown — return partial hint.
                     return Some(Vector3::new(current_pos.x, current_pos.y, -altitude));
                 }
@@ -926,6 +980,37 @@ mod tests {
 
         let sum: f64 = weights.iter().sum();
         assert!((sum - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn update_ignores_non_finite_observations() {
+        let n = 16;
+        let particles = Array2::<f64>::zeros((n, 6));
+        let mut weights = vec![1.0 / n as f64; n];
+        let obs = vec![
+            Observation::Barometer {
+                altitude: f64::NAN,
+                timestamp: 0.0,
+            },
+            Observation::Magnetometer {
+                heading: Vector3::new(f64::NAN, 0.0, 0.0),
+                timestamp: 0.0,
+            },
+            Observation::VisualOdometry {
+                delta_position: Vector3::new(0.0, f64::INFINITY, 0.0),
+                confidence: f64::NAN,
+                timestamp: 0.0,
+            },
+        ];
+
+        let _collapsed =
+            update_weights_6d(&particles, &mut weights, &obs, &SensorConfig::default());
+
+        let sum: f64 = weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10);
+        assert!(weights
+            .iter()
+            .all(|weight| weight.is_finite() && *weight >= 0.0));
     }
 
     #[test]

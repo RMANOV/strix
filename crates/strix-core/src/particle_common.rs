@@ -26,12 +26,44 @@ use rand::Rng;
 /// * `weights` — mutable slice of raw (unnormalised) importance weights.
 ///   After this call the weights will sum to 1.0.
 pub fn normalize_weights(weights: &mut [f64]) {
-    for w in weights.iter_mut() {
-        *w += 1e-300;
+    if weights.is_empty() {
+        return;
     }
+
+    let max_weight = weights
+        .iter()
+        .copied()
+        .filter(|weight| weight.is_finite() && *weight >= 0.0)
+        .fold(0.0_f64, f64::max);
+
+    if max_weight <= 0.0 {
+        let uniform = 1.0 / weights.len() as f64;
+        for weight in weights.iter_mut() {
+            *weight = uniform;
+        }
+        return;
+    }
+
+    for weight in weights.iter_mut() {
+        let scaled = if weight.is_finite() && *weight >= 0.0 {
+            *weight / max_weight
+        } else {
+            0.0
+        };
+        *weight = scaled + 1e-300;
+    }
+
     let total: f64 = weights.iter().sum();
-    for w in weights.iter_mut() {
-        *w /= total;
+    if !total.is_finite() || total <= 0.0 {
+        let uniform = 1.0 / weights.len() as f64;
+        for weight in weights.iter_mut() {
+            *weight = uniform;
+        }
+        return;
+    }
+
+    for weight in weights.iter_mut() {
+        *weight /= total;
     }
 }
 
@@ -47,6 +79,9 @@ pub fn normalize_weights(weights: &mut [f64]) {
 /// The `+1e-12` epsilon prevents division by zero for zero-noise sensors.
 #[inline]
 pub fn gaussian_likelihood(diff_sq: f64, sigma: f64) -> f64 {
+    if !diff_sq.is_finite() || !sigma.is_finite() || sigma < 0.0 {
+        return 0.0;
+    }
     let sigma2 = sigma * sigma + 1e-12;
     (-0.5 * diff_sq / sigma2).exp()
 }
@@ -187,6 +222,13 @@ mod tests {
     }
 
     #[test]
+    fn gaussian_likelihood_rejects_invalid_inputs() {
+        assert_eq!(gaussian_likelihood(f64::NAN, 1.0), 0.0);
+        assert_eq!(gaussian_likelihood(1.0, f64::NAN), 0.0);
+        assert_eq!(gaussian_likelihood(1.0, -1.0), 0.0);
+    }
+
+    #[test]
     fn systematic_resample_uniform_weights() {
         let n = 50;
         let mut particles = Array2::<f64>::zeros((n, 6));
@@ -278,6 +320,32 @@ mod tests {
         }
         let sum: f64 = weights.iter().sum();
         assert!((sum - 1.0).abs() < 1e-10, "weights must sum to 1.0");
+    }
+
+    #[test]
+    fn normalize_weights_handles_non_finite_and_negative_inputs() {
+        let mut weights = vec![f64::NAN, f64::INFINITY, -1.0, 2.0];
+        normalize_weights(&mut weights);
+        let sum: f64 = weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10);
+        assert!(weights
+            .iter()
+            .all(|weight| weight.is_finite() && *weight >= 0.0));
+        assert!(
+            weights[3] > 0.99,
+            "finite positive weight should dominate: {weights:?}"
+        );
+    }
+
+    #[test]
+    fn normalize_weights_handles_huge_finite_values() {
+        let mut weights = vec![f64::MAX, f64::MAX, f64::MAX];
+        normalize_weights(&mut weights);
+        let sum: f64 = weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10);
+        assert!(weights
+            .iter()
+            .all(|weight| weight.is_finite() && *weight > 0.0));
     }
 
     // ── Invariant tests: effective_sample_size bounds ──────────────────────

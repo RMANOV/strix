@@ -11,6 +11,87 @@ use crate::pareto::{ParetoArchive, ParetoSolution};
 /// Reference point for hypervolume computation (worst-case objectives).
 pub const HV_REFERENCE: [f64; 3] = [0.0, 0.0, 0.0];
 
+fn finite_or_zero(value: f64) -> f64 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn compare_f64_slices(a: &[f64], b: &[f64]) -> std::cmp::Ordering {
+    a.len().cmp(&b.len()).then_with(|| {
+        a.iter()
+            .zip(b.iter())
+            .find_map(|(left, right)| {
+                let ordering = left.total_cmp(right);
+                (ordering != std::cmp::Ordering::Equal).then_some(ordering)
+            })
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
+fn compare_score_slices(a: &[[f64; 3]], b: &[[f64; 3]]) -> std::cmp::Ordering {
+    a.len().cmp(&b.len()).then_with(|| {
+        a.iter()
+            .zip(b.iter())
+            .find_map(|(left, right)| {
+                let ordering = left
+                    .iter()
+                    .zip(right.iter())
+                    .find_map(|(l, r)| {
+                        let ordering = l.total_cmp(r);
+                        (ordering != std::cmp::Ordering::Equal).then_some(ordering)
+                    })
+                    .unwrap_or(std::cmp::Ordering::Equal);
+                (ordering != std::cmp::Ordering::Equal).then_some(ordering)
+            })
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
+fn sanitize_solution(solution: &ParetoSolution) -> ParetoSolution {
+    ParetoSolution {
+        params: solution
+            .params
+            .iter()
+            .copied()
+            .map(finite_or_zero)
+            .collect(),
+        objectives: solution.objectives.map(finite_or_zero),
+        scenario_scores: solution
+            .scenario_scores
+            .iter()
+            .map(|scores| (*scores).map(finite_or_zero))
+            .collect(),
+        iteration: solution.iteration,
+        crowding_distance: finite_or_zero(solution.crowding_distance),
+    }
+}
+
+fn compare_solution(a: &ParetoSolution, b: &ParetoSolution) -> std::cmp::Ordering {
+    a.iteration
+        .cmp(&b.iteration)
+        .then_with(|| {
+            a.objectives[0]
+                .total_cmp(&b.objectives[0])
+                .then_with(|| a.objectives[1].total_cmp(&b.objectives[1]))
+                .then_with(|| a.objectives[2].total_cmp(&b.objectives[2]))
+        })
+        .then_with(|| compare_f64_slices(&a.params, &b.params))
+        .then_with(|| compare_score_slices(&a.scenario_scores, &b.scenario_scores))
+}
+
+fn compare_by_objective(
+    objective: usize,
+    a: &ParetoSolution,
+    b: &ParetoSolution,
+) -> std::cmp::Ordering {
+    a.objectives[objective]
+        .total_cmp(&b.objectives[objective])
+        .then_with(|| compare_solution(a, b))
+}
+
 /// Full optimization result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizationReport {
@@ -44,22 +125,30 @@ impl OptimizationReport {
         total_evaluations: usize,
         elapsed_secs: f64,
     ) -> Self {
-        let solutions = archive.solutions.clone();
+        let mut solutions: Vec<ParetoSolution> =
+            archive.solutions.iter().map(sanitize_solution).collect();
+        solutions.sort_by(compare_solution);
+
+        let hypervolume_history = hypervolume_history
+            .into_iter()
+            .map(|(iteration, hv)| (iteration, finite_or_zero(hv).max(0.0)))
+            .collect();
+        let elapsed_secs = finite_or_zero(elapsed_secs).max(0.0);
 
         let best_survival = solutions
             .iter()
             .filter(|solution| solution.objectives[0].is_finite())
-            .max_by(|a, b| a.objectives[0].total_cmp(&b.objectives[0]))
+            .max_by(|a, b| compare_by_objective(0, a, b))
             .cloned();
         let best_stability = solutions
             .iter()
             .filter(|solution| solution.objectives[1].is_finite())
-            .max_by(|a, b| a.objectives[1].total_cmp(&b.objectives[1]))
+            .max_by(|a, b| compare_by_objective(1, a, b))
             .cloned();
         let best_efficiency = solutions
             .iter()
             .filter(|solution| solution.objectives[2].is_finite())
-            .max_by(|a, b| a.objectives[2].total_cmp(&b.objectives[2]))
+            .max_by(|a, b| compare_by_objective(2, a, b))
             .cloned();
 
         Self {
@@ -151,5 +240,39 @@ impl OptimizationReport {
 
         println!();
         println!("=== END ===");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pareto::{ParetoArchive, ParetoSolution};
+
+    #[test]
+    fn from_archive_sanitizes_non_finite_export_fields() {
+        let mut archive = ParetoArchive::new(2);
+        archive.insert(ParetoSolution::new(vec![0.0], [0.2, 0.1, 0.3], vec![], 1));
+        archive.insert(ParetoSolution::new(vec![1.0], [0.4, 0.5, 0.6], vec![], 2));
+        archive.insert(ParetoSolution::new(vec![2.0], [0.7, 0.8, 0.9], vec![], 3));
+        archive.solutions[0].crowding_distance = f64::INFINITY;
+
+        let report = OptimizationReport::from_archive(
+            &archive,
+            DoctrineProfile::Balanced,
+            ["f0", "f1", "f2"],
+            vec![(1, f64::NAN), (2, 0.5)],
+            7,
+            f64::INFINITY,
+        );
+
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("Infinity"));
+        assert!(!json.contains("NaN"));
+        assert!(report
+            .pareto_front
+            .iter()
+            .all(|solution| solution.crowding_distance.is_finite()));
+        assert_eq!(report.hypervolume_history[0], (1, 0.0));
+        assert_eq!(report.elapsed_secs, 0.0);
     }
 }

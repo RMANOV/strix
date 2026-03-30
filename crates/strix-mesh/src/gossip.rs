@@ -15,7 +15,7 @@
 use rand::prelude::IteratorRandom;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{NodeId, Position3D};
 
@@ -59,6 +59,23 @@ fn sanitize_threat(record: &ThreatRecord) -> Option<ThreatRecord> {
         timestamp: finite_timestamp(record.timestamp),
         resolved: record.resolved,
     })
+}
+
+fn sort_drone_states(drone_states: &mut [DroneState]) {
+    drone_states.sort_by(|a, b| {
+        a.node_id
+            .cmp(&b.node_id)
+            .then_with(|| a.version.cmp(&b.version))
+            .then_with(|| a.timestamp.total_cmp(&b.timestamp))
+    });
+}
+
+fn sort_threats(threats: &mut [ThreatRecord]) {
+    threats.sort_by(|a, b| {
+        a.threat_id
+            .cmp(&b.threat_id)
+            .then_with(|| a.timestamp.total_cmp(&b.timestamp))
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +145,7 @@ pub enum GossipMessage {
     Digest {
         sender: NodeId,
         /// version per known drone.
-        versions: HashMap<NodeId, u64>,
+        versions: BTreeMap<NodeId, u64>,
         /// number of threat records we hold.
         threat_count: usize,
     },
@@ -261,12 +278,16 @@ impl GossipEngine {
 
     /// Select `fanout` random peers for this gossip round.
     pub fn select_peers<R: Rng>(&self, rng: &mut R) -> Vec<NodeId> {
-        self.peers.iter().copied().choose_multiple(rng, self.fanout)
+        let mut peers: Vec<NodeId> = self.peers.iter().copied().collect();
+        peers.sort_unstable();
+        let mut selected = peers.into_iter().choose_multiple(rng, self.fanout);
+        selected.sort_unstable();
+        selected
     }
 
     /// Build a digest message for sending to a peer.
     pub fn build_digest(&self) -> GossipMessage {
-        let versions: HashMap<NodeId, u64> = self
+        let versions: BTreeMap<NodeId, u64> = self
             .known_states
             .values()
             .filter_map(sanitize_drone_state)
@@ -321,6 +342,11 @@ impl GossipEngine {
         } else {
             Vec::new()
         };
+
+        let mut drone_states = drone_states;
+        let mut threats = threats;
+        sort_drone_states(&mut drone_states);
+        sort_threats(&mut threats);
 
         if drone_states.is_empty() && threats.is_empty() {
             return None; // nothing to send
@@ -410,18 +436,23 @@ impl GossipEngine {
     /// This sends *everything* — used periodically to guarantee convergence
     /// even if some gossip rounds were lost.
     pub fn build_anti_entropy(&self) -> GossipMessage {
+        let mut drone_states: Vec<DroneState> = self
+            .known_states
+            .values()
+            .filter_map(sanitize_drone_state)
+            .collect();
+        let mut threats: Vec<ThreatRecord> = self
+            .known_threats
+            .values()
+            .filter_map(sanitize_threat)
+            .collect();
+        sort_drone_states(&mut drone_states);
+        sort_threats(&mut threats);
+
         GossipMessage::StateExchange {
             sender: self.self_id,
-            drone_states: self
-                .known_states
-                .values()
-                .filter_map(sanitize_drone_state)
-                .collect(),
-            threats: self
-                .known_threats
-                .values()
-                .filter_map(sanitize_threat)
-                .collect(),
+            drone_states,
+            threats,
         }
     }
 }
@@ -433,6 +464,8 @@ impl GossipEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
 
     fn make_engine(id: u32, peers: &[u32]) -> GossipEngine {
         let mut engine = GossipEngine::new(NodeId(id), 2);
@@ -630,6 +663,109 @@ mod tests {
         let mut rng = rand::thread_rng();
         let selected = engine.select_peers(&mut rng);
         assert!(selected.len() <= 2); // fanout = 2
+    }
+
+    #[test]
+    fn select_peers_is_deterministic_for_same_seed() {
+        let a = make_engine(0, &[5, 3, 1, 4, 2]);
+        let b = make_engine(0, &[1, 2, 3, 4, 5]);
+        let mut rng_a = StdRng::seed_from_u64(7);
+        let mut rng_b = StdRng::seed_from_u64(7);
+
+        assert_eq!(a.select_peers(&mut rng_a), b.select_peers(&mut rng_b));
+    }
+
+    #[test]
+    fn digest_and_state_exchange_are_sorted() {
+        let mut engine = make_engine(0, &[1, 2, 3]);
+        engine.known_states.insert(
+            NodeId(3),
+            DroneState {
+                node_id: NodeId(3),
+                position: Position3D([3.0, 0.0, 0.0]),
+                battery: 1.0,
+                regime: "c".into(),
+                version: 3,
+                timestamp: 3.0,
+            },
+        );
+        engine.known_states.insert(
+            NodeId(1),
+            DroneState {
+                node_id: NodeId(1),
+                position: Position3D([1.0, 0.0, 0.0]),
+                battery: 1.0,
+                regime: "a".into(),
+                version: 1,
+                timestamp: 1.0,
+            },
+        );
+        engine.known_states.insert(
+            NodeId(2),
+            DroneState {
+                node_id: NodeId(2),
+                position: Position3D([2.0, 0.0, 0.0]),
+                battery: 1.0,
+                regime: "b".into(),
+                version: 2,
+                timestamp: 2.0,
+            },
+        );
+        engine.known_threats.insert(
+            7,
+            ThreatRecord {
+                threat_id: 7,
+                reporter: NodeId(0),
+                position: Position3D([0.0, 7.0, 0.0]),
+                threat_level: 0.7,
+                timestamp: 7.0,
+                resolved: false,
+            },
+        );
+        engine.known_threats.insert(
+            5,
+            ThreatRecord {
+                threat_id: 5,
+                reporter: NodeId(0),
+                position: Position3D([0.0, 5.0, 0.0]),
+                threat_level: 0.5,
+                timestamp: 5.0,
+                resolved: false,
+            },
+        );
+
+        let digest = engine.build_digest();
+        let version_ids = match digest {
+            GossipMessage::Digest { versions, .. } => versions
+                .into_iter()
+                .map(|(node_id, _)| node_id)
+                .collect::<Vec<_>>(),
+            _ => unreachable!(),
+        };
+        assert_eq!(version_ids, vec![NodeId(1), NodeId(2), NodeId(3)]);
+
+        let response = engine
+            .respond_to_digest(&GossipMessage::Digest {
+                sender: NodeId(9),
+                versions: BTreeMap::new(),
+                threat_count: 0,
+            })
+            .unwrap();
+
+        match response {
+            GossipMessage::StateExchange {
+                drone_states,
+                threats,
+                ..
+            } => {
+                let drone_ids: Vec<NodeId> =
+                    drone_states.iter().map(|state| state.node_id).collect();
+                let threat_ids: Vec<u64> = threats.iter().map(|threat| threat.threat_id).collect();
+                assert_eq!(drone_ids, vec![NodeId(1), NodeId(2), NodeId(3)]);
+                assert_eq!(threat_ids, vec![5, 7]);
+            }
+            _ => unreachable!(),
+        }
     }
 
     #[test]

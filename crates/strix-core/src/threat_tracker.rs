@@ -25,6 +25,10 @@ use crate::particle_common::{
 };
 use crate::state::{ThreatRegime, ThreatState};
 
+fn vector_is_finite(vector: &Vector3<f64>) -> bool {
+    vector.iter().all(|value| value.is_finite())
+}
+
 // ---------------------------------------------------------------------------
 // Threat noise profiles
 // ---------------------------------------------------------------------------
@@ -162,8 +166,13 @@ impl ThreatTracker {
     /// COUNTER_ATTACK particles to steer toward us.
     pub fn predict_threat(&mut self, our_centroid: &Vector3<f64>, dt: f64) {
         let n = self.particles.nrows();
+        let dt = if dt.is_finite() && dt >= 0.0 { dt } else { 0.0 };
         let dt_sqrt = dt.max(1e-8).sqrt();
-        let centroid = *our_centroid;
+        let centroid = if vector_is_finite(our_centroid) {
+            *our_centroid
+        } else {
+            Vector3::zeros()
+        };
         let noise_cfg = self.noise_cfg.clone();
 
         // Reuse scratch buffer — resize only if particle count changed.
@@ -265,6 +274,13 @@ impl ThreatTracker {
                 self.particles[[i, j]] = *val;
             }
         }
+        for i in 0..n {
+            for j in 0..6 {
+                if !self.particles[[i, j]].is_finite() {
+                    self.particles[[i, j]] = 0.0;
+                }
+            }
+        }
         // Restore the scratch buffer.
         self.scratch_buf = buf;
     }
@@ -280,7 +296,7 @@ impl ThreatTracker {
                     sigma,
                     timestamp: _,
                 } => {
-                    if *sigma < 1e-6 {
+                    if !vector_is_finite(position) || !sigma.is_finite() || *sigma < 1e-6 {
                         continue;
                     }
                     for i in 0..n {
@@ -297,7 +313,12 @@ impl ThreatTracker {
                     sigma,
                     timestamp: _,
                 } => {
-                    if *sigma < 1e-6 {
+                    if !vector_is_finite(bearing)
+                        || !estimated_range.is_finite()
+                        || *estimated_range < 0.0
+                        || !sigma.is_finite()
+                        || *sigma < 1e-6
+                    {
                         continue;
                     }
                     let expected_pos = bearing * *estimated_range;
@@ -315,7 +336,11 @@ impl ThreatTracker {
                     sigma,
                     timestamp: _,
                 } => {
-                    if *sigma < 1e-6 {
+                    if !vector_is_finite(bearing)
+                        || !vector_is_finite(observer_position)
+                        || !sigma.is_finite()
+                        || *sigma < 1e-6
+                    {
                         continue;
                     }
                     // EMA-smooth the bearing using observer position bits as key.
@@ -498,6 +523,13 @@ mod tests {
     }
 
     #[test]
+    fn tracker_predict_sanitizes_invalid_centroid_and_dt() {
+        let mut tracker = ThreatTracker::new(1, 32, Vector3::new(10.0, 20.0, -5.0));
+        tracker.predict_threat(&Vector3::new(f64::NAN, f64::INFINITY, 0.0), f64::NAN);
+        assert!(tracker.particles.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
     fn tracker_estimate_within_range() {
         let tracker = ThreatTracker::new(1, 200, Vector3::new(50.0, 50.0, -20.0));
         let (pos, _vel, probs) = tracker.estimate_threat();
@@ -572,5 +604,38 @@ mod tests {
         assert!(pos.norm() < 200.0);
         let sum: f64 = probs.iter().sum();
         assert!((sum - 1.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn tracker_update_ignores_non_finite_observations() {
+        let mut tracker = ThreatTracker::new(1, 32, Vector3::new(50.0, 50.0, -20.0));
+        let obs = vec![
+            ThreatObservation::Radar {
+                position: Vector3::new(f64::NAN, 0.0, 0.0),
+                sigma: 5.0,
+                timestamp: 0.0,
+            },
+            ThreatObservation::Visual {
+                bearing: Vector3::new(1.0, 0.0, 0.0),
+                estimated_range: f64::INFINITY,
+                sigma: 3.0,
+                timestamp: 0.0,
+            },
+            ThreatObservation::RadioIntercept {
+                bearing: Vector3::new(0.0, f64::NAN, 0.0),
+                observer_position: Vector3::new(0.0, 0.0, 0.0),
+                sigma: 0.5,
+                timestamp: 0.0,
+            },
+        ];
+
+        tracker.update_threat(&obs);
+
+        let sum: f64 = tracker.weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10);
+        assert!(tracker
+            .weights
+            .iter()
+            .all(|weight| weight.is_finite() && *weight >= 0.0));
     }
 }
