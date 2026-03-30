@@ -19,6 +19,10 @@ features = ["pyo3/extension-module"]
 module-name = "strix._strix_core"
 manifest-path = "crates/strix-python/Cargo.toml"
 
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+pythonpath = ["python"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py312"

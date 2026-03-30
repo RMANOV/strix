@@ -23,6 +23,7 @@ pub mod cbf;
 pub mod ew_response;
 pub mod fleet_metrics;
 pub mod formation;
+pub mod gcbf;
 pub mod hysteresis;
 pub mod intent;
 pub mod particle_common;

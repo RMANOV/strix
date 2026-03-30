@@ -55,9 +55,9 @@ pub(crate) fn sanitize_telemetry(
         velocity: sanitize_vector(telem.velocity, [0.0; 3]),
         attitude: sanitize_vector(telem.attitude, [0.0; 3]),
         battery: sanitize_fraction(telem.battery),
-        gps_fix: telem.gps_fix.clone(),
+        gps_fix: telem.gps_fix,
         armed: telem.armed,
-        mode: telem.mode.clone(),
+        mode: telem.mode,
         timestamp: finite_or(telem.timestamp, fallback_timestamp),
     }
 }

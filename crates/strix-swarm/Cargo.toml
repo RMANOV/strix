@@ -9,6 +9,7 @@ description = "Integration orchestrator: chains all STRIX crates into a unified 
 default = []
 phi-sim = ["dep:phi-sim"]
 temporal = []
+gcbf = []
 
 [dependencies]
 strix-core = { path = "../strix-core" }

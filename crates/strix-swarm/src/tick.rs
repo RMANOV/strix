@@ -255,6 +255,9 @@ pub struct SwarmOrchestrator {
     pub ew_engine: EwEngine,
     /// CBF config (None = disabled).
     pub cbf_config: Option<CbfConfig>,
+    /// GCBF+ neural safety filter (None = use classical CBF).
+    #[cfg(feature = "gcbf")]
+    pub gcbf_barrier: Option<strix_core::gcbf::NeuralBarrier>,
     /// Active no-fly zones.
     pub no_fly_zones: Vec<NoFlyZone>,
     /// Per-drone multi-horizon temporal managers (replaces nav_filter step when active).
@@ -326,6 +329,8 @@ impl SwarmOrchestrator {
             roe_engine: config.roe_engine.clone(),
             ew_engine: EwEngine::new(),
             cbf_config: config.cbf_config.clone(),
+            #[cfg(feature = "gcbf")]
+            gcbf_barrier: None,
             no_fly_zones: config.no_fly_zones.clone(),
             #[cfg(feature = "temporal")]
             temporal_managers: {
@@ -1387,13 +1392,15 @@ impl SwarmOrchestrator {
 
         // ── 6.5 CBF safety clamp ─────────────────────────────────────────
         // Apply control barrier functions to clamp velocities for safety.
+        // With `gcbf` feature: O(n·k) neural barrier via GCBF+ GNN.
+        // Without: O(n²) classical pairwise CBF (existing behavior).
         let mut cbf_active_constraints = 0u32;
         let mut deadlock_escape_count = 0usize;
 
         if let Some(ref base_cbf) = self.cbf_config {
             let cbf_cfg = base_cbf.with_fear(fear.f);
 
-            // Collect all drone positions for neighbor-aware safety.
+            // Common: collect all drone positions and velocities.
             let all_positions: Vec<(u32, Vector3<f64>)> = telemetry
                 .iter()
                 .map(|(id, t)| {
@@ -1404,7 +1411,6 @@ impl SwarmOrchestrator {
                 })
                 .collect();
 
-            // Build velocity map once — avoids O(N) telemetry.iter().find() per drone.
             let vel_map: HashMap<u32, Vector3<f64>> = telemetry
                 .iter()
                 .map(|(id, t)| {
@@ -1415,98 +1421,163 @@ impl SwarmOrchestrator {
                 })
                 .collect();
 
-            let positions_only: Vec<Vector3<f64>> =
-                all_positions.iter().map(|(_, pos)| *pos).collect();
-            let velocities_only: Vec<Vector3<f64>> = all_positions
-                .iter()
-                .map(|(id, _)| vel_map.get(id).copied().unwrap_or_else(Vector3::zeros))
-                .collect();
-
-            let deadlock = cbf::detect_deadlock(
-                &positions_only,
-                &velocities_only,
-                &self.no_fly_zones,
-                &cbf_cfg,
-            );
-
-            if deadlock.is_deadlocked {
-                let cluster_positions: Vec<Vector3<f64>> = deadlock
-                    .involved_indices
+            // ── GCBF+ path: O(n·k) neural barrier ──────────────────────
+            #[cfg(feature = "gcbf")]
+            if let Some(ref gcbf) = self.gcbf_barrier {
+                // Build desired velocity map (base + formation correction).
+                let desired_map: HashMap<u32, Vector3<f64>> = all_positions
                     .iter()
-                    .map(|&idx| positions_only[idx])
+                    .map(|(id, _)| {
+                        let base = vel_map.get(id).copied().unwrap_or_else(Vector3::zeros);
+                        let adj = formation_corrections
+                            .get(id)
+                            .copied()
+                            .unwrap_or_else(Vector3::zeros);
+                        (*id, base + adj)
+                    })
                     .collect();
-                let escape_maneuvers = cbf::generate_escape_maneuvers(&cluster_positions, &cbf_cfg);
 
-                for (cluster_idx, escape) in escape_maneuvers.into_iter().enumerate() {
-                    if let Some(&global_idx) = deadlock.involved_indices.get(cluster_idx) {
-                        if let Some((drone_id, _)) = all_positions.get(global_idx) {
-                            let entry = formation_corrections
-                                .entry(*drone_id)
-                                .or_insert_with(Vector3::zeros);
-                            let mut combined = *entry + escape;
-                            let combined_norm = combined.norm();
-                            if combined_norm > cbf_cfg.max_correction {
-                                combined *= cbf_cfg.max_correction / combined_norm;
-                            }
-                            *entry = combined;
-                        }
+                let (results, active) = gcbf.filter_all(
+                    &all_positions,
+                    &vel_map,
+                    &desired_map,
+                    &self.no_fly_zones,
+                    fear.f,
+                );
+                cbf_active_constraints += active;
+
+                // Apply GCBF+ corrections to formation_corrections.
+                for (drone_id, result) in &results {
+                    if result.any_active {
+                        let base_vel = vel_map
+                            .get(drone_id)
+                            .copied()
+                            .unwrap_or_else(Vector3::zeros);
+                        let total_correction = result.safe_velocity - base_vel;
+                        formation_corrections.insert(*drone_id, total_correction);
                     }
                 }
-
-                cbf_active_constraints += deadlock.involved_count as u32;
-                deadlock_escape_count += deadlock.involved_count;
-            }
-
-            // Pre-build a flat neighbor list for all drones: avoids N allocations.
-            // For each drone we'll pass a slice-like view by collecting once and skipping self.
-            let all_neighbors: Vec<NeighborState> = all_positions
-                .iter()
-                .map(|(id, pos)| NeighborState {
-                    position: *pos,
-                    velocity: vel_map.get(id).copied().unwrap_or_else(Vector3::zeros),
-                })
-                .collect();
-
-            for (local_idx, (drone_id, drone_pos)) in all_positions.iter().enumerate() {
-                // Build neighbor iterator inline — skip self index, no allocation.
-                let neighbors: Vec<NeighborState> = all_neighbors
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| *i != local_idx)
-                    .map(|(_, n)| n.clone())
-                    .collect();
-
-                // Desired velocity = telemetry velocity + formation correction.
-                let base_vel = vel_map
-                    .get(drone_id)
-                    .copied()
-                    .unwrap_or_else(Vector3::zeros);
-
-                let formation_adj = formation_corrections
-                    .get(drone_id)
-                    .copied()
-                    .unwrap_or_else(Vector3::zeros);
-
-                let desired_vel = base_vel + formation_adj;
-
-                let result = cbf::cbf_filter_with_neighbor_states(
-                    drone_pos,
-                    &desired_vel,
-                    &neighbors,
+            } else {
+                // Fallback: classical CBF when gcbf_barrier is None.
+                Self::classical_cbf_pass(
+                    &all_positions,
+                    &vel_map,
                     &self.no_fly_zones,
                     &cbf_cfg,
+                    formation_corrections,
+                    &mut cbf_active_constraints,
+                    &mut deadlock_escape_count,
                 );
+            }
 
-                if result.any_active {
-                    cbf_active_constraints += result.active_count;
-                    // Update formation corrections with CBF-adjusted values.
-                    let total_correction = result.safe_velocity - base_vel;
-                    formation_corrections.insert(*drone_id, total_correction);
-                }
+            // ── Classical CBF path (when gcbf feature not compiled) ─────
+            #[cfg(not(feature = "gcbf"))]
+            {
+                Self::classical_cbf_pass(
+                    &all_positions,
+                    &vel_map,
+                    &self.no_fly_zones,
+                    &cbf_cfg,
+                    formation_corrections,
+                    &mut cbf_active_constraints,
+                    &mut deadlock_escape_count,
+                );
             }
         }
 
         (cbf_active_constraints, deadlock_escape_count)
+    }
+
+    /// Classical O(n²) pairwise CBF pass — extracted so both the
+    /// `#[cfg(feature = "gcbf")]` fallback and the default path share one impl.
+    fn classical_cbf_pass(
+        all_positions: &[(u32, Vector3<f64>)],
+        vel_map: &HashMap<u32, Vector3<f64>>,
+        no_fly_zones: &[NoFlyZone],
+        cbf_cfg: &CbfConfig,
+        formation_corrections: &mut HashMap<u32, Vector3<f64>>,
+        cbf_active_constraints: &mut u32,
+        deadlock_escape_count: &mut usize,
+    ) {
+        let positions_only: Vec<Vector3<f64>> = all_positions.iter().map(|(_, pos)| *pos).collect();
+        let velocities_only: Vec<Vector3<f64>> = all_positions
+            .iter()
+            .map(|(id, _)| vel_map.get(id).copied().unwrap_or_else(Vector3::zeros))
+            .collect();
+
+        let deadlock =
+            cbf::detect_deadlock(&positions_only, &velocities_only, no_fly_zones, cbf_cfg);
+
+        if deadlock.is_deadlocked {
+            let cluster_positions: Vec<Vector3<f64>> = deadlock
+                .involved_indices
+                .iter()
+                .map(|&idx| positions_only[idx])
+                .collect();
+            let escape_maneuvers = cbf::generate_escape_maneuvers(&cluster_positions, cbf_cfg);
+
+            for (cluster_idx, escape) in escape_maneuvers.into_iter().enumerate() {
+                if let Some(&global_idx) = deadlock.involved_indices.get(cluster_idx) {
+                    if let Some((drone_id, _)) = all_positions.get(global_idx) {
+                        let entry = formation_corrections
+                            .entry(*drone_id)
+                            .or_insert_with(Vector3::zeros);
+                        let mut combined = *entry + escape;
+                        let combined_norm = combined.norm();
+                        if combined_norm > cbf_cfg.max_correction {
+                            combined *= cbf_cfg.max_correction / combined_norm;
+                        }
+                        *entry = combined;
+                    }
+                }
+            }
+
+            *cbf_active_constraints += deadlock.involved_count as u32;
+            *deadlock_escape_count += deadlock.involved_count;
+        }
+
+        let all_neighbors: Vec<NeighborState> = all_positions
+            .iter()
+            .map(|(id, pos)| NeighborState {
+                position: *pos,
+                velocity: vel_map.get(id).copied().unwrap_or_else(Vector3::zeros),
+            })
+            .collect();
+
+        for (local_idx, (drone_id, drone_pos)) in all_positions.iter().enumerate() {
+            let neighbors: Vec<NeighborState> = all_neighbors
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != local_idx)
+                .map(|(_, n)| n.clone())
+                .collect();
+
+            let base_vel = vel_map
+                .get(drone_id)
+                .copied()
+                .unwrap_or_else(Vector3::zeros);
+
+            let formation_adj = formation_corrections
+                .get(drone_id)
+                .copied()
+                .unwrap_or_else(Vector3::zeros);
+
+            let desired_vel = base_vel + formation_adj;
+
+            let result = cbf::cbf_filter_with_neighbor_states(
+                drone_pos,
+                &desired_vel,
+                &neighbors,
+                no_fly_zones,
+                cbf_cfg,
+            );
+
+            if result.any_active {
+                *cbf_active_constraints += result.active_count;
+                let total_correction = result.safe_velocity - base_vel;
+                formation_corrections.insert(*drone_id, total_correction);
+            }
+        }
     }
 
     /// One orchestration cycle: sense → think → act.
@@ -1892,7 +1963,7 @@ impl SwarmOrchestrator {
             .no_fly_zones
             .iter()
             .map(|zone| {
-                let dist = (&zone.center - point).norm();
+                let dist = (zone.center - point).norm();
                 if dist <= zone.radius {
                     1.0
                 } else {
