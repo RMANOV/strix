@@ -1421,10 +1421,9 @@ impl SwarmOrchestrator {
                 })
                 .collect();
 
-            // ── GCBF+ path: O(n·k) neural barrier ──────────────────────
+            // GCBF+ path: O(n·k) neural barrier (when feature enabled and weights loaded).
             #[cfg(feature = "gcbf")]
-            if let Some(ref gcbf) = self.gcbf_barrier {
-                // Build desired velocity map (base + formation correction).
+            let gcbf_used = if let Some(ref gcbf) = self.gcbf_barrier {
                 let desired_map: HashMap<u32, Vector3<f64>> = all_positions
                     .iter()
                     .map(|(id, _)| {
@@ -1446,33 +1445,23 @@ impl SwarmOrchestrator {
                 );
                 cbf_active_constraints += active;
 
-                // Apply GCBF+ corrections to formation_corrections.
                 for (drone_id, result) in &results {
                     if result.any_active {
                         let base_vel = vel_map
                             .get(drone_id)
                             .copied()
                             .unwrap_or_else(Vector3::zeros);
-                        let total_correction = result.safe_velocity - base_vel;
-                        formation_corrections.insert(*drone_id, total_correction);
+                        formation_corrections.insert(*drone_id, result.safe_velocity - base_vel);
                     }
                 }
+                true
             } else {
-                // Fallback: classical CBF when gcbf_barrier is None.
-                Self::classical_cbf_pass(
-                    &all_positions,
-                    &vel_map,
-                    &self.no_fly_zones,
-                    &cbf_cfg,
-                    formation_corrections,
-                    &mut cbf_active_constraints,
-                    &mut deadlock_escape_count,
-                );
-            }
-
-            // ── Classical CBF path (when gcbf feature not compiled) ─────
+                false
+            };
             #[cfg(not(feature = "gcbf"))]
-            {
+            let gcbf_used = false;
+
+            if !gcbf_used {
                 Self::classical_cbf_pass(
                     &all_positions,
                     &vel_map,

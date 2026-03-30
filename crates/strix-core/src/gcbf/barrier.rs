@@ -63,7 +63,7 @@ impl NeuralBarrier {
             .iter()
             .map(|(id, _)| velocities.get(id).copied().unwrap_or_else(Vector3::zeros))
             .collect();
-        // Goals: use desired velocity direction as proxy goal (position + desired_vel * 10s).
+        const GOAL_LOOKAHEAD_S: f64 = 10.0;
         let goal_vec: Vec<Vector3<f64>> = positions
             .iter()
             .map(|(id, pos)| {
@@ -71,7 +71,7 @@ impl NeuralBarrier {
                     .get(id)
                     .copied()
                     .unwrap_or_else(Vector3::zeros);
-                pos + dv * 10.0
+                pos + dv * GOAL_LOOKAHEAD_S
             })
             .collect();
 
@@ -123,19 +123,24 @@ impl NeuralBarrier {
             correction += nfz_correction;
 
             // Clamp total.
-            let mag = correction.norm();
+            let mut mag = correction.norm();
             if mag > config.max_correction {
                 correction *= config.max_correction / mag;
+                mag = config.max_correction;
             }
 
-            let any_active = correction.norm() > 1e-6;
+            let any_active = mag > 1e-6;
             let active_count = if any_active { 1 } else { 0 }
-                + if altitude_correction.norm() > 1e-6 {
+                + if altitude_correction.norm_squared() > 1e-12 {
                     1
                 } else {
                     0
                 }
-                + if nfz_correction.norm() > 1e-6 { 1 } else { 0 };
+                + if nfz_correction.norm_squared() > 1e-12 {
+                    1
+                } else {
+                    0
+                };
 
             if any_active {
                 total_active += active_count;

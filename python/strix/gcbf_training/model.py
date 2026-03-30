@@ -174,8 +174,10 @@ def export_weights(params: GnnParams, path: str | Path) -> None:
 def load_weights(path: str | Path) -> GnnParams:
     """Load weights from JSON format."""
     data = json.loads(Path(path).read_text())
-    assert data["magic"] == WEIGHT_MAGIC, f"Invalid magic: {data['magic']}"
-    assert data["version"] == WEIGHT_VERSION, f"Unsupported version: {data['version']}"
+    if data["magic"] != WEIGHT_MAGIC:
+        raise ValueError(f"Invalid magic: {data['magic']:#x}, expected {WEIGHT_MAGIC:#x}")
+    if data["version"] != WEIGHT_VERSION:
+        raise ValueError(f"Unsupported version: {data['version']}, expected {WEIGHT_VERSION}")
     h = data["hidden_dim"]
     ed = data["edge_dim_l1"]
     nd = data["node_dim_l1"]

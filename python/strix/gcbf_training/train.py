@@ -18,7 +18,7 @@ from .model import (
     export_weights,
     gnn_forward,
     init_params,
-)
+)  # noqa: F401 (GcnLayerParams used in _perturb_params)
 
 
 def build_graph(
@@ -107,70 +107,6 @@ def compute_loss(
 
     total = l_barrier + l_action
     return total, {"barrier": l_barrier, "action": l_action, "safe": l_safe, "unsafe": l_unsafe}
-
-
-def numerical_gradient(
-    params: GnnParams,
-    frame: TrainingFrame,
-    eps: float = 1e-4,
-) -> GnnParams:
-    """Compute numerical gradient via finite differences.
-
-    Slow but correct — used for v1 training. JAX/autograd can replace this.
-    """
-    def flat_params(p: GnnParams) -> np.ndarray:
-        arrays = [
-            p.layer1.w_edge.flatten(), p.layer1.b_edge,
-            p.layer1.w_node.flatten(), p.layer1.b_node,
-            p.layer2.w_edge.flatten(), p.layer2.b_edge,
-            p.layer2.w_node.flatten(), p.layer2.b_node,
-            p.barrier_w.flatten(), p.barrier_b,
-            p.action_w.flatten(), p.action_b,
-        ]
-        return np.concatenate(arrays)
-
-    def unflatten(flat: np.ndarray, ref: GnnParams) -> GnnParams:
-        idx = 0
-        def take(shape):
-            nonlocal idx
-            n = int(np.prod(shape))
-            arr = flat[idx:idx + n].reshape(shape)
-            idx += n
-            return arr
-
-        h = ref.hidden_dim
-        l1 = GcnLayerParams(
-            w_edge=take(ref.layer1.w_edge.shape),
-            b_edge=take(ref.layer1.b_edge.shape),
-            w_node=take(ref.layer1.w_node.shape),
-            b_node=take(ref.layer1.b_node.shape),
-        )
-        l2 = GcnLayerParams(
-            w_edge=take(ref.layer2.w_edge.shape),
-            b_edge=take(ref.layer2.b_edge.shape),
-            w_node=take(ref.layer2.w_node.shape),
-            b_node=take(ref.layer2.b_node.shape),
-        )
-        return GnnParams(
-            layer1=l1, layer2=l2,
-            barrier_w=take(ref.barrier_w.shape),
-            barrier_b=take(ref.barrier_b.shape),
-            action_w=take(ref.action_w.shape),
-            action_b=take(ref.action_b.shape),
-        )
-
-    flat = flat_params(params)
-    grad = np.zeros_like(flat)
-    for i in range(len(flat)):
-        flat_plus = flat.copy()
-        flat_plus[i] += eps
-        flat_minus = flat.copy()
-        flat_minus[i] -= eps
-        l_plus, _ = compute_loss(unflatten(flat_plus, params), frame)
-        l_minus, _ = compute_loss(unflatten(flat_minus, params), frame)
-        grad[i] = (l_plus - l_minus) / (2 * eps)
-
-    return unflatten(grad, params)
 
 
 def train(

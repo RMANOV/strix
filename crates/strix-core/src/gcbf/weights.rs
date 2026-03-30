@@ -190,15 +190,14 @@ fn build_gcn_layer(
         )));
     }
 
-    let w_edge = unflatten(w_edge_flat, hidden, edge_in);
-    let w_node = unflatten(w_node_flat, hidden, node_in);
-
     Ok(GcnLayer {
-        w_edge,
+        w_edge: w_edge_flat.to_vec(),
         b_edge: b_edge.to_vec(),
-        w_node,
+        w_node: w_node_flat.to_vec(),
         b_node: b_node.to_vec(),
         hidden_dim: hidden,
+        edge_in,
+        node_in,
     })
 }
 
@@ -218,17 +217,11 @@ fn build_mlp_head(
         )));
     }
     Ok(MlpHead {
-        w: unflatten(w_flat, out_dim, in_dim),
+        w: w_flat.to_vec(),
         b: b.to_vec(),
         output_dim: out_dim,
+        input_dim: in_dim,
     })
-}
-
-/// Unflatten a 1D weight vector into a 2D matrix (rows x cols).
-fn unflatten(flat: &[f64], rows: usize, cols: usize) -> Vec<Vec<f64>> {
-    (0..rows)
-        .map(|r| flat[r * cols..(r + 1) * cols].to_vec())
-        .collect()
 }
 
 #[cfg(test)]
