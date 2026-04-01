@@ -92,7 +92,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install pytest numpy
+      - run: pip install pytest numpy pyyaml
       - run: python -m compileall -q python demo
       - run: pytest -q
 
