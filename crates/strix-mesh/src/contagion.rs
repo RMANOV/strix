@@ -94,15 +94,19 @@ impl ContagionEngine {
                     || entry.energy >= self.policy.complex_reinforcement_threshold
             }
             ContagionMode::Damped => {
-                let dt = (now - entry.last_timestamp).max(0.0);
+                let previous_timestamp = entry.last_timestamp;
+                let dt = (now - previous_timestamp).max(0.0);
                 let decay = if self.policy.damped_half_life_s <= 1e-6 {
                     0.0
                 } else {
                     f64::exp(-std::f64::consts::LN_2 * dt / self.policy.damped_half_life_s)
                 };
-                entry.energy = entry.energy * decay + intensity;
+                let novel_signal = entry.sources.insert(sender) || timestamp > previous_timestamp;
+                entry.energy *= decay;
+                if (novel_signal) {
+                    entry.energy += intensity;
+                }
                 entry.last_timestamp = now.max(timestamp);
-                entry.sources.insert(sender);
                 entry.energy >= self.policy.damped_floor
             }
         }

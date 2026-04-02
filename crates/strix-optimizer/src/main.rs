@@ -54,6 +54,8 @@ struct Cli {
     graph_surrogate_weight: f64,
 }
 
+type ContextualEvaluation = ([f64; 3], OptimizationContext);
+type CandidateEvaluation = (ParamVec, [f64; 3], Vec<ContextualEvaluation>);
 fn main() {
     let cli = Cli::parse();
 
@@ -102,7 +104,7 @@ fn main() {
         let eval_iteration = optimizer.iteration();
         let candidates = optimizer.generate_candidates();
 
-        let results: Vec<(ParamVec, [f64; 3], Vec<([f64; 3], OptimizationContext)>)> = candidates
+        let results: Vec<CandidateEvaluation> = candidates
             .into_par_iter()
             .map(|params| {
                 let detailed = evaluator.evaluate_detailed(&eval_space, &params);
