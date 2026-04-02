@@ -102,6 +102,7 @@ pub struct ContextualFrontSummary {
     pub best_objectives: [f64; 3],
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizationReport {
     /// Doctrine profile used when producing this report.
     pub doctrine_profile: String,
