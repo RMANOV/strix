@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::contextual_archive::ContextualArchiveConfig;
 use crate::evaluator::DoctrineProfile;
 use crate::smco::SmcoConfig;
 
@@ -16,6 +17,12 @@ pub struct OptimizerConfig {
     pub scenarios: Vec<String>,
     /// Doctrine profile used to shape scenario weighting and objectives.
     pub doctrine_profile: DoctrineProfile,
+    /// Optional per-context archive-of-archives configuration.
+    pub contextual_archive: Option<ContextualArchiveConfig>,
+    /// Enable role/echelon heterogeneity in the parameter space.
+    pub heterogeneous_roles: bool,
+    /// Weight for the offline graph surrogate objective blend.
+    pub graph_surrogate_weight: f64,
     /// Output JSON path.
     pub output_path: PathBuf,
     /// Number of rayon threads (0 = auto).
@@ -28,6 +35,9 @@ impl Default for OptimizerConfig {
             smco: SmcoConfig::default(),
             scenarios: Vec::new(),
             doctrine_profile: DoctrineProfile::Balanced,
+            contextual_archive: None,
+            heterogeneous_roles: false,
+            graph_surrogate_weight: 0.0,
             output_path: PathBuf::from("optimization_results.json"),
             threads: 0,
         }
