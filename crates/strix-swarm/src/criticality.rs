@@ -92,7 +92,7 @@ impl CriticalityScheduler {
         let pheromone_decay_multiplier = interpolate(
             self.config.min_pheromone_decay_multiplier,
             self.config.max_pheromone_decay_multiplier,
-            clamp01(0.5 + control),
+            clamp01(0.5 - control),
         );
         let bid_aggression = interpolate(
             self.config.min_bid_aggression,
