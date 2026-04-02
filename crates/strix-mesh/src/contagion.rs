@@ -103,7 +103,7 @@ impl ContagionEngine {
                 };
                 let novel_signal = entry.sources.insert(sender) || timestamp > previous_timestamp;
                 entry.energy *= decay;
-                if (novel_signal) {
+                if novel_signal {
                     entry.energy += intensity;
                 }
                 entry.last_timestamp = now.max(timestamp);
