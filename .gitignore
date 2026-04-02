@@ -33,3 +33,6 @@ press-releases/
 
 # Docs (internal, never in git)
 docs/
+
+# Private internal notes (never in git)
+private-notes/
