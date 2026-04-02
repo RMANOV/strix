@@ -255,6 +255,7 @@ impl ParamSpace {
             roe_engine: default.roe_engine,
             cbf_config,
             no_fly_zones: Vec::new(),
+            criticality_config: default.criticality_config,
             ew_stale_age: default.ew_stale_age,
             // NOTE: ProcessNoiseConfig is embedded inside ParticleNavFilter,
             // not directly in SwarmConfig. We store noise params in the space
