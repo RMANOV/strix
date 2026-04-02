@@ -15,6 +15,8 @@ use std::collections::{HashMap, HashSet};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use strix_mesh::hypergraph::{GroupEffect, GroupVote, HyperEdge, HypergraphCoordinator};
+use strix_mesh::NodeId;
 
 use crate::bidder::{Bid, Bidder, ScenarioContext};
 use crate::{Assignment, DroneState, Task, ThreatState};
@@ -50,6 +52,8 @@ pub struct Auctioneer {
     pub max_bids_per_drone: Option<usize>,
     /// Bid volume above which the auction falls back to a greedy anytime clear.
     pub greedy_bid_volume_threshold: usize,
+    /// Quorum required before bundled tasks are treated as a true group effect.
+    pub bundle_quorum_ratio: f64,
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -65,6 +69,7 @@ impl Default for Auctioneer {
             scenario_contexts: HashMap::new(),
             max_bids_per_drone: Some(8),
             greedy_bid_volume_threshold: 256,
+            bundle_quorum_ratio: 0.5,
         }
     }
 }
@@ -119,8 +124,10 @@ impl Auctioneer {
         let all_bids =
             self.collect_bids(drones, tasks, threats, sub_swarm_map, kill_zone_penalties);
 
-        // 2. Group tasks by bundle.
+        // 2. Group tasks by bundle and only keep higher-order groups that
+        // actually show quorum effects in the bidding graph.
         let bundles = group_bundles(tasks);
+        let bundles = self.validate_bundles(tasks, &all_bids, &bundles);
 
         // 3. Build cost matrix & solve assignment.
         let result = if self.needs_reauction || all_bids.len() > self.greedy_bid_volume_threshold {
@@ -228,6 +235,88 @@ impl Auctioneer {
         selected
     }
 
+    fn validate_bundles(
+        &self,
+        tasks: &[Task],
+        bids: &[Bid],
+        bundles: &HashMap<u32, Vec<u32>>,
+    ) -> HashMap<u32, Vec<u32>> {
+        let mut validated = HashMap::new();
+        let mut coordinator = HypergraphCoordinator::default();
+        let task_lookup: HashMap<u32, &Task> = tasks.iter().map(|task| (task.id, task)).collect();
+        let max_score = bids
+            .iter()
+            .map(|bid| bid.score)
+            .filter(|score| score.is_finite())
+            .fold(0.0_f64, f64::max)
+            .max(1e-6);
+
+        for (bundle_id, members) in bundles {
+            if members.len() <= 1 {
+                validated.insert(*bundle_id, members.clone());
+                continue;
+            }
+
+            let mut supporters: HashMap<u32, Vec<f64>> = HashMap::new();
+            for bid in bids.iter().filter(|bid| {
+                members.binary_search(&bid.task_id).is_ok()
+                    && bid.score.is_finite()
+                    && bid.score >= self.min_bid_threshold
+            }) {
+                supporters.entry(bid.drone_id).or_default().push(bid.score);
+            }
+
+            let mut participant_ids: Vec<NodeId> = supporters.keys().copied().map(NodeId).collect();
+            participant_ids.sort_unstable();
+            participant_ids.dedup();
+            if participant_ids.len() < 2 {
+                continue;
+            }
+
+            let mean_priority = members
+                .iter()
+                .filter_map(|task_id| task_lookup.get(task_id).copied())
+                .map(|task| ((task.priority + task.urgency) * 0.5).clamp(0.0, 1.0))
+                .sum::<f64>()
+                / members.len().max(1) as f64;
+            let effect = if mean_priority >= 0.75 {
+                GroupEffect::AntiDeception
+            } else {
+                GroupEffect::BundleBid
+            };
+
+            coordinator.add_edge(HyperEdge {
+                edge_id: *bundle_id as u64,
+                members: participant_ids,
+                effect,
+                quorum_ratio: self.bundle_quorum_ratio,
+            });
+
+            for (drone_id, scores) in supporters {
+                let coverage = scores.len() as f64 / members.len().max(1) as f64;
+                let mean_score = scores.iter().copied().sum::<f64>() / scores.len().max(1) as f64;
+                let confidence =
+                    (0.55 * coverage + 0.45 * (mean_score / max_score).clamp(0.0, 1.0))
+                        .clamp(0.0, 1.0);
+                coordinator.record_vote(GroupVote {
+                    edge_id: *bundle_id as u64,
+                    voter: NodeId(drone_id),
+                    confidence,
+                    timestamp: 0.0,
+                });
+            }
+
+            if coordinator
+                .resolve(*bundle_id as u64)
+                .map(|resolution| resolution.confirmed)
+                .unwrap_or(false)
+            {
+                validated.insert(*bundle_id, members.clone());
+            }
+        }
+
+        validated
+    }
     fn solve_assignment_greedy(
         &self,
         tasks: &[Task],
@@ -695,6 +784,35 @@ mod tests {
             .iter()
             .map(|assignment| (assignment.drone_id, assignment.task_id))
             .collect()
+    }
+
+    #[test]
+    fn test_validate_bundles_requires_multi_bidder_support() {
+        let tasks = vec![
+            Task {
+                id: 10,
+                location: Position::new(5.0, 5.0, 50.0),
+                required_capabilities: Capabilities::default(),
+                priority: 0.8,
+                urgency: 0.8,
+                bundle_id: Some(1),
+                dark_pool: None,
+            },
+            Task {
+                id: 11,
+                location: Position::new(8.0, 8.0, 50.0),
+                required_capabilities: Capabilities::default(),
+                priority: 0.8,
+                urgency: 0.8,
+                bundle_id: Some(1),
+                dark_pool: None,
+            },
+        ];
+        let bids = vec![make_bid(1, 10, 5.0), make_bid(1, 11, 4.5)];
+        let auctioneer = Auctioneer::new();
+        let bundles = group_bundles(&tasks);
+
+        assert!(auctioneer.validate_bundles(&tasks, &bids, &bundles).is_empty());
     }
 
     // ── Hungarian algorithm ─────────────────────────────────────────────────
