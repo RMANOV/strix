@@ -33,10 +33,13 @@ use strix_core::threat_tracker::ThreatTracker;
 use strix_core::Regime;
 use strix_mesh::gossip::GossipEngine;
 use strix_mesh::stigmergy::{Pheromone, PheromoneField, PheromoneType};
-use strix_mesh::{NodeId, Position3D};
+use strix_mesh::{CoordinationDirectiveKind, MeshMessage, NodeId, Position3D};
 use strix_xai::trace::{DecisionTrace, DecisionType, TraceInputs, TraceRecorder};
 
 use crate::convert;
+use crate::criticality::{
+    CriticalityAdjustment, CriticalityConfig, CriticalityScheduler, CriticalitySignals,
+};
 
 #[cfg(feature = "temporal")]
 use strix_core::temporal::{HorizonConstraint, TemporalManager};
@@ -78,6 +81,8 @@ pub struct SwarmConfig {
     pub cbf_config: Option<CbfConfig>,
     /// Static no-fly zones for CBF.
     pub no_fly_zones: Vec<NoFlyZone>,
+    /// Criticality controller config for edge-of-disorder modulation.
+    pub criticality_config: CriticalityConfig,
     /// Maximum age (seconds) before stale EW events are cleared.
     pub ew_stale_age: f64,
 }
@@ -107,6 +112,7 @@ impl Default for SwarmConfig {
             roe_engine: RoeEngine::default(),
             cbf_config: Some(CbfConfig::default()),
             no_fly_zones: Vec::new(),
+            criticality_config: CriticalityConfig::default(),
             ew_stale_age: 120.0,
         }
     }
@@ -137,6 +143,14 @@ pub struct SwarmDecision {
     pub max_intent_score: f64,
     /// Current fear level F ∈ [0,1] (0 = aggressive, 1 = maximum caution).
     pub fear_level: f64,
+    /// Edge-of-disorder criticality score [0, 1].
+    pub criticality: f64,
+    /// Runtime multiplier applied to process-noise exploration.
+    pub exploration_noise: f64,
+    /// Runtime multiplier applied to pheromone decay.
+    pub pheromone_decay_multiplier: f64,
+    /// Runtime multiplier applied to bid aggression.
+    pub bid_aggression: f64,
     /// Formation quality score ∈ [0, 1] (1.0 = perfect formation, 0.0 = scattered).
     /// None if formation is disabled.
     pub formation_quality: Option<f64>,
@@ -243,6 +257,8 @@ pub struct SwarmOrchestrator {
     sim_time: f64,
     /// Config.
     pub config: SwarmConfig,
+    /// Edge-of-disorder criticality controller.
+    criticality_scheduler: CriticalityScheduler,
 
     // ── Island modules ───────────────────────────────────────────────────
     /// Current formation type (None = formation disabled).
@@ -323,6 +339,7 @@ impl SwarmOrchestrator {
             gossip_version: 0,
             tick_count: 0,
             sim_time: 0.0,
+            criticality_scheduler: CriticalityScheduler::new(config.criticality_config),
             // Capture island module configs before moving config
             formation_type: config.formation_type,
             formation_config: config.formation_config.clone(),
@@ -1569,6 +1586,155 @@ impl SwarmOrchestrator {
         }
     }
 
+    fn compute_criticality_adjustment(
+        &mut self,
+        telemetry: &[(u32, Telemetry)],
+        fear_level: f64,
+    ) -> CriticalityAdjustment {
+        let positions: Vec<Vector3<f64>> = telemetry
+            .iter()
+            .map(|(_, telem)| Vector3::new(telem.position[0], telem.position[1], telem.position[2]))
+            .collect();
+        let gossip_convergence = self.gossip.convergence_estimate();
+        let threat_pressure = self.mean_threat_pressure();
+        let dispersion = Self::fleet_dispersion(&positions);
+        let uncertainty = ((1.0 - gossip_convergence) * 0.35
+            + fear_level.clamp(0.0, 1.0) * 0.25
+            + self.last_intent_score.abs().clamp(0.0, 1.0) * 0.20
+            + threat_pressure * 0.20)
+            .clamp(0.0, 1.0);
+
+        self.criticality_scheduler.evaluate(CriticalitySignals {
+            gossip_convergence,
+            uncertainty,
+            dispersion,
+            consensus_collapse: (1.0 - gossip_convergence).clamp(0.0, 1.0),
+            fear: fear_level.clamp(0.0, 1.0),
+            threat_pressure,
+        })
+    }
+
+    fn fleet_dispersion(positions: &[Vector3<f64>]) -> f64 {
+        if positions.len() <= 1 {
+            return 0.0;
+        }
+        let mut total = 0.0;
+        let mut pairs = 0usize;
+        for i in 0..positions.len() {
+            for j in i + 1..positions.len() {
+                total += (positions[i] - positions[j]).norm();
+                pairs += 1;
+            }
+        }
+        (total / pairs.max(1) as f64 / 250.0).clamp(0.0, 1.0)
+    }
+
+    fn mean_threat_pressure(&self) -> f64 {
+        if self.threat_trackers.is_empty() {
+            return 0.0;
+        }
+        let total = self
+            .threat_trackers
+            .values()
+            .map(|tracker| {
+                let (_pos, _vel, probs) = tracker.estimate_threat();
+                probs.iter().copied().fold(0.0_f64, f64::max)
+            })
+            .sum::<f64>();
+        (total / self.threat_trackers.len() as f64).clamp(0.0, 1.0)
+    }
+
+    fn propagate_emergent_mesh_signals(
+        &mut self,
+        centroid: &Vector3<f64>,
+        fear: &TickFearState,
+        max_intent_score: f64,
+        formation_quality: Option<f64>,
+        criticality: CriticalityAdjustment,
+    ) {
+        let focus = Position3D([centroid.x, centroid.y, centroid.z]);
+        let sender = self.gossip.self_id;
+
+        let directive = if max_intent_score >= self.config.intent_config.attack_threshold {
+            Some((
+                MeshMessage::CoordinationDirective {
+                    sender,
+                    directive: CoordinationDirectiveKind::StrikeCommit,
+                    focus: Some(focus),
+                    intensity: max_intent_score.abs().clamp(0.0, 1.0),
+                    timestamp: self.sim_time,
+                },
+                PheromoneType::Target,
+            ))
+        } else if fear.f >= 0.72 || fear.ew_force_evade {
+            Some((
+                MeshMessage::CoordinationDirective {
+                    sender,
+                    directive: CoordinationDirectiveKind::Retreat,
+                    focus: Some(focus),
+                    intensity: fear.f.clamp(0.0, 1.0),
+                    timestamp: self.sim_time,
+                },
+                PheromoneType::Threat,
+            ))
+        } else if formation_quality.map(|quality| quality < 0.55).unwrap_or(false)
+            || criticality.criticality < 0.45
+        {
+            Some((
+                MeshMessage::CoordinationDirective {
+                    sender,
+                    directive: CoordinationDirectiveKind::Reconfigure,
+                    focus: Some(focus),
+                    intensity: ((1.0 - formation_quality.unwrap_or(1.0))
+                        .max(1.0 - criticality.criticality))
+                    .clamp(0.0, 1.0),
+                    timestamp: self.sim_time,
+                },
+                PheromoneType::Rally,
+            ))
+        } else {
+            None
+        };
+
+        if let Some((message, pheromone_type)) = directive {
+            if self.gossip.should_forward_mesh_message(&message, self.sim_time) {
+                let intensity = match &message {
+                    MeshMessage::CoordinationDirective { intensity, .. } => *intensity,
+                    _ => 0.0,
+                };
+                self.pheromones.deposit(&Pheromone {
+                    position: focus,
+                    ptype: pheromone_type,
+                    intensity: (0.35 + intensity * 0.65).clamp(0.0, 1.0),
+                    timestamp: self.sim_time,
+                    depositor: sender,
+                });
+                if matches!(pheromone_type, PheromoneType::Threat | PheromoneType::Rally) {
+                    self.auctioneer.trigger_reauction();
+                }
+            }
+        }
+
+        let affect = MeshMessage::AffectSignal {
+            sender,
+            label: if fear.f > 0.70 {
+                "panic".to_string()
+            } else {
+                "caution".to_string()
+            },
+            intensity: fear.f.clamp(0.0, 1.0),
+            timestamp: self.sim_time,
+        };
+        if self.gossip.should_forward_mesh_message(&affect, self.sim_time) {
+            self.pheromones.deposit(&Pheromone {
+                position: focus,
+                ptype: PheromoneType::Threat,
+                intensity: (fear.f * 0.4).clamp(0.0, 0.6),
+                timestamp: self.sim_time,
+                depositor: sender,
+            });
+        }
+    }
     /// One orchestration cycle: sense → think → act.
     pub fn tick(
         &mut self,
@@ -1601,7 +1767,19 @@ impl SwarmOrchestrator {
             })
             .collect();
 
-        let fear = self.compute_fear_state(&telemetry);
+        let mut fear = self.compute_fear_state(&telemetry);
+        let criticality = self.compute_criticality_adjustment(&telemetry, fear.f);
+        fear.tick_noise = fear.tick_noise.scaled_by_ew(criticality.exploration_noise);
+        self.auctioneer.fear =
+            (fear.f + (1.0 - criticality.bid_aggression) * 0.35).clamp(0.0, 1.0);
+        self.gossip.set_fanout(
+            ((self.config.gossip_fanout as f64) * (0.85 + criticality.criticality * 0.30))
+                .round()
+                .max(1.0) as usize,
+        );
+        self.pheromones.set_decay_rate(
+            self.config.pheromone_decay_rate * criticality.pheromone_decay_multiplier,
+        );
         let fleet = self.update_navigation(&telemetry, &fear, dt);
         let regimes = self.detect_regimes_and_intent(&telemetry, &fear, &fleet, dt);
 
@@ -1721,7 +1899,18 @@ impl SwarmOrchestrator {
             }
         }
 
-        // ── 3. Update threat trackers ────────────────────────────────────
+        self.propagate_emergent_mesh_signals(
+            &fleet.centroid,
+            &fear,
+            regimes.max_intent_score,
+            formation_quality,
+            criticality,
+        );
+
+        // ── 3. Update threat trackers'@ 'tick contagion hook'
+$tickContent = Replace-Exact $tickContent @'
+            fear_level: fear.f,
+            formation_quality, ────────────────────────────────────
         for tracker in self.threat_trackers.values_mut() {
             tracker.step(&fleet.centroid, &[], dt);
         }
