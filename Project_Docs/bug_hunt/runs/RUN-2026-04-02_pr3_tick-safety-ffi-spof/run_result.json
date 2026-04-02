@@ -6,9 +6,9 @@
     "crates/strix-mesh/src/contagion.rs",
     "crates/strix-python"
   ],
-  "findings_fixed": 4,
+  "findings_fixed": 5,
   "commit_sha": "2d398d12afd552012796a123e44a07fe36cd0a68",
-  "summary": "Retro-seeded post-PR regression baseline for PR #3. Resolved tick orchestration corruption, SwarmDecision criticality propagation drift, MissionBrain orientation keyword mismatch, damped contagion cooldown semantics, and criticality decay-control inconsistency; final CI green.",
+  "summary": "Retro-seeded post-PR regression baseline for PR #3. Fixed five concrete regressions across tick orchestration, decision payload integrity, FFI keyword parity, damped contagion cooling, and criticality decay-control; reviewed five STRIX SPOFs (SPOF-01, SPOF-02, SPOF-03, SPOF-04, SPOF-08); final CI green.",
   "linked_prs": [
     "#3"
   ],
@@ -31,11 +31,11 @@
   ],
   "status": "COMPLETED",
   "ended_at": "2026-04-02T15:36:16.8817572+03:00",
-  "checkpoints_passed": 7,
-  "checkpoints_total": 7,
+  "checkpoints_passed": 10,
+  "checkpoints_total": 10,
   "next_actions": [
     "Use this run as the baseline for future POST_PR_REGRESSION reviews touching tick, brain or mesh coordination boundaries.",
-    "Repeat DOC-005 on any PR that simultaneously edits tick.rs, brain.py and contagion/gossip paths before merge or release hardening."
+    "Repeat DOC-005 on any PR that simultaneously edits tick.rs, brain.py and contagion or gossip paths before merge or release hardening."
   ],
   "branch": "feature/deep-orientation-contextual-swarm",
   "spofs_reviewed": [
