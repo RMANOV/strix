@@ -104,9 +104,9 @@ impl ContextualArchive {
             let retain_window = (self.config.forgetting_window / 2).max(1);
             let became_empty = if let Some(archive) = self.contexts.get_mut(&context) {
                 let before = archive.solutions.len();
-                archive
-                    .solutions
-                    .retain(|solution| current_iteration.saturating_sub(solution.iteration) <= retain_window);
+                archive.solutions.retain(|solution| {
+                    current_iteration.saturating_sub(solution.iteration) <= retain_window
+                });
                 removed += before.saturating_sub(archive.solutions.len());
                 archive.solutions.is_empty()
             } else {
@@ -173,7 +173,12 @@ mod tests {
     use super::*;
 
     fn solution(iteration: usize, objectives: [f64; 3]) -> ParetoSolution {
-        ParetoSolution::new(vec![iteration as f64], objectives, vec![objectives], iteration)
+        ParetoSolution::new(
+            vec![iteration as f64],
+            objectives,
+            vec![objectives],
+            iteration,
+        )
     }
 
     #[test]

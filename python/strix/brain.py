@@ -449,7 +449,7 @@ class MissionBrain:
             ),
         )
 
-        orientation = self._refresh_orientation(plan_confidence=plan.confidence)
+        orientation = self._refresh_orientation(planner_confidence=plan.confidence)
         plan = self._apply_orientation_to_plan(plan, orientation)
         self._active_plan = plan
         return plan

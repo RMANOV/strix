@@ -116,9 +116,7 @@ fn signature(message: &MeshMessage) -> String {
             format!("state:{}:{}", sender.0, regime)
         }
         MeshMessage::TaskAssignment {
-            task_id,
-            assignee,
-            ..
+            task_id, assignee, ..
         } => format!("task:{}:{}", task_id, assignee.0),
         MeshMessage::ThreatAlert {
             description,
@@ -138,9 +136,7 @@ fn signature(message: &MeshMessage) -> String {
             depositor.0, ptype, position.0[0], position.0[1], position.0[2]
         ),
         MeshMessage::CoordinationDirective {
-            directive,
-            focus,
-            ..
+            directive, focus, ..
         } => match focus {
             Some(position) => format!(
                 "directive:{:?}:{:.0}:{:.0}:{:.0}",
@@ -175,8 +171,8 @@ fn sanitize_time(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CoordinationDirectiveKind, Position3D};
     use crate::stigmergy::PheromoneType;
+    use crate::{CoordinationDirectiveKind, Position3D};
 
     #[test]
     fn simple_contagion_forwards_fresh_threats() {

@@ -1677,7 +1677,9 @@ impl SwarmOrchestrator {
                 },
                 PheromoneType::Threat,
             ))
-        } else if formation_quality.map(|quality| quality < 0.55).unwrap_or(false)
+        } else if formation_quality
+            .map(|quality| quality < 0.55)
+            .unwrap_or(false)
             || criticality.criticality < 0.45
         {
             Some((
@@ -1697,7 +1699,10 @@ impl SwarmOrchestrator {
         };
 
         if let Some((message, pheromone_type)) = directive {
-            if self.gossip.should_forward_mesh_message(&message, self.sim_time) {
+            if self
+                .gossip
+                .should_forward_mesh_message(&message, self.sim_time)
+            {
                 let intensity = match &message {
                     MeshMessage::CoordinationDirective { intensity, .. } => *intensity,
                     _ => 0.0,
@@ -1725,7 +1730,10 @@ impl SwarmOrchestrator {
             intensity: fear.f.clamp(0.0, 1.0),
             timestamp: self.sim_time,
         };
-        if self.gossip.should_forward_mesh_message(&affect, self.sim_time) {
+        if self
+            .gossip
+            .should_forward_mesh_message(&affect, self.sim_time)
+        {
             self.pheromones.deposit(&Pheromone {
                 position: focus,
                 ptype: PheromoneType::Threat,
@@ -1770,8 +1778,7 @@ impl SwarmOrchestrator {
         let mut fear = self.compute_fear_state(&telemetry);
         let criticality = self.compute_criticality_adjustment(&telemetry, fear.f);
         fear.tick_noise = fear.tick_noise.scaled_by_ew(criticality.exploration_noise);
-        self.auctioneer.fear =
-            (fear.f + (1.0 - criticality.bid_aggression) * 0.35).clamp(0.0, 1.0);
+        self.auctioneer.fear = (fear.f + (1.0 - criticality.bid_aggression) * 0.35).clamp(0.0, 1.0);
         self.gossip.set_fanout(
             ((self.config.gossip_fanout as f64) * (0.85 + criticality.criticality * 0.30))
                 .round()
@@ -1907,10 +1914,7 @@ impl SwarmOrchestrator {
             criticality,
         );
 
-        // ── 3. Update threat trackers'@ 'tick contagion hook'
-$tickContent = Replace-Exact $tickContent @'
-            fear_level: fear.f,
-            formation_quality, ────────────────────────────────────
+        // ── 3. Update threat trackers ────────────────────────────────────
         for tracker in self.threat_trackers.values_mut() {
             tracker.step(&fleet.centroid, &[], dt);
         }
@@ -2000,6 +2004,10 @@ $tickContent = Replace-Exact $tickContent @'
             pheromone_cells: self.pheromones.active_cells(),
             max_intent_score: regimes.max_intent_score,
             fear_level: fear.f,
+            criticality: criticality.criticality,
+            exploration_noise: criticality.exploration_noise,
+            pheromone_decay_multiplier: criticality.pheromone_decay_multiplier,
+            bid_aggression: criticality.bid_aggression,
             formation_quality,
             formation_corrections,
             roe_denials,

@@ -102,31 +102,33 @@ fn main() {
         let eval_iteration = optimizer.iteration();
         let candidates = optimizer.generate_candidates();
 
-        let results: Vec<(ParamVec, [f64; 3], Vec<([f64; 3], OptimizationContext)>)> =
-            candidates
-                .into_par_iter()
-                .map(|params| {
-                    let detailed = evaluator.evaluate_detailed(&eval_space, &params);
-                    let aggregate = aggregate_scores(&evaluator.scenarios, &detailed);
-                    let policy = decode_heterogeneous_policy(&params);
-                    let surrogate_scores = surrogate.score(&build_graph_snapshot(&policy));
-                    let objectives = blend_scores(
-                        aggregate,
-                        surrogate_scores,
-                        heterogeneity_bonus(&policy),
-                        graph_weight,
-                    );
-                    let contextual = evaluator
-                        .scenarios
-                        .iter()
-                        .zip(detailed.iter())
-                        .map(|(scenario, scores)| {
-                            (*scores, context_for_scenario(doctrine, scenario.name.as_str()))
-                        })
-                        .collect();
-                    (params, objectives, contextual)
-                })
-                .collect();
+        let results: Vec<(ParamVec, [f64; 3], Vec<([f64; 3], OptimizationContext)>)> = candidates
+            .into_par_iter()
+            .map(|params| {
+                let detailed = evaluator.evaluate_detailed(&eval_space, &params);
+                let aggregate = aggregate_scores(&evaluator.scenarios, &detailed);
+                let policy = decode_heterogeneous_policy(&params);
+                let surrogate_scores = surrogate.score(&build_graph_snapshot(&policy));
+                let objectives = blend_scores(
+                    aggregate,
+                    surrogate_scores,
+                    heterogeneity_bonus(&policy),
+                    graph_weight,
+                );
+                let contextual = evaluator
+                    .scenarios
+                    .iter()
+                    .zip(detailed.iter())
+                    .map(|(scenario, scores)| {
+                        (
+                            *scores,
+                            context_for_scenario(doctrine, scenario.name.as_str()),
+                        )
+                    })
+                    .collect();
+                (params, objectives, contextual)
+            })
+            .collect();
 
         for (params, _objectives, contextual_entries) in &results {
             for (scenario_scores, context) in contextual_entries {
@@ -237,8 +239,7 @@ fn heterogeneity_bonus(policy: &HeterogeneousPolicy) -> [f64; 3] {
         clamp_bonus((relay_platoon.relay_weight - 1.0) * 0.05 + coordination_span * 0.03),
         clamp_bonus(exploration_span * 0.05 + coordination_span * 0.03),
         clamp_bonus(
-            (strike_squad.strike_weight - 1.0) * 0.05
-                + (decoy_pair.deception_weight - 1.0) * 0.02,
+            (strike_squad.strike_weight - 1.0) * 0.05 + (decoy_pair.deception_weight - 1.0) * 0.02,
         ),
     ]
 }

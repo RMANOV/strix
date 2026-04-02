@@ -295,9 +295,9 @@ impl Auctioneer {
             for (drone_id, scores) in supporters {
                 let coverage = scores.len() as f64 / members.len().max(1) as f64;
                 let mean_score = scores.iter().copied().sum::<f64>() / scores.len().max(1) as f64;
-                let confidence =
-                    (0.55 * coverage + 0.45 * (mean_score / max_score).clamp(0.0, 1.0))
-                        .clamp(0.0, 1.0);
+                let confidence = (0.55 * coverage
+                    + 0.45 * (mean_score / max_score).clamp(0.0, 1.0))
+                .clamp(0.0, 1.0);
                 coordinator.record_vote(GroupVote {
                     edge_id: *bundle_id as u64,
                     voter: NodeId(drone_id),
@@ -812,7 +812,9 @@ mod tests {
         let auctioneer = Auctioneer::new();
         let bundles = group_bundles(&tasks);
 
-        assert!(auctioneer.validate_bundles(&tasks, &bids, &bundles).is_empty());
+        assert!(auctioneer
+            .validate_bundles(&tasks, &bids, &bundles)
+            .is_empty());
     }
 
     // ── Hungarian algorithm ─────────────────────────────────────────────────

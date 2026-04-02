@@ -119,20 +119,17 @@ impl GraphSurrogate {
     pub fn score(&self, snapshot: &GraphSnapshot) -> [f64; 3] {
         let encoding = snapshot.global_encoding();
         let survival = clamp01(
-            1.0
-                - self.bottleneck_penalty * encoding.bottleneck_ratio
+            1.0 - self.bottleneck_penalty * encoding.bottleneck_ratio
                 - self.coupling_penalty * encoding.coupling_pressure * 0.6
                 + self.global_gain * encoding.master_signal,
         );
         let continuity = clamp01(
-            1.0
-                - self.bottleneck_penalty * encoding.oversquashing_risk
+            1.0 - self.bottleneck_penalty * encoding.oversquashing_risk
                 - self.coupling_penalty * encoding.coupling_pressure * 0.4
                 + self.global_gain * encoding.mean_degree / 6.0,
         );
         let efficiency = clamp01(
-            1.0
-                - sanitize(encoding.mean_latency) * 0.25
+            1.0 - sanitize(encoding.mean_latency) * 0.25
                 - self.bottleneck_penalty * encoding.bottleneck_ratio * 0.5
                 + self.global_gain * encoding.master_signal * 0.5,
         );

@@ -97,7 +97,10 @@ impl CriticalityScheduler {
         let bid_aggression = interpolate(
             self.config.min_bid_aggression,
             self.config.max_bid_aggression,
-            clamp01(0.5 + 0.35 * signals.threat_pressure - 0.25 * signals.consensus_collapse + 0.15 * edge),
+            clamp01(
+                0.5 + 0.35 * signals.threat_pressure - 0.25 * signals.consensus_collapse
+                    + 0.15 * edge,
+            ),
         );
 
         self.last = CriticalityAdjustment {
