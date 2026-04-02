@@ -1,4 +1,4 @@
-//! # strix-mesh — Decentralized Mesh Coordination
+//! # strix-mesh - Decentralized Mesh Coordination
 //!
 //! Handles drone swarm coordination without central authority:
 //! - **Fractal hierarchy**: self-similar command structure at every scale
@@ -9,8 +9,10 @@
 
 pub mod comms;
 pub mod consensus;
+pub mod contagion;
 pub mod fractal;
 pub mod gossip;
+pub mod hypergraph;
 pub mod stigmergy;
 
 use serde::{Deserialize, Serialize};
@@ -71,8 +73,16 @@ impl From<Position3D> for nalgebra::Vector3<f64> {
 }
 
 // ---------------------------------------------------------------------------
-// Mesh message — the lingua franca of mesh communication
+// Mesh message - the lingua franca of mesh communication
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CoordinationDirectiveKind {
+    StrikeCommit,
+    Retreat,
+    Reconfigure,
+    Rally,
+}
 
 /// All message types that flow through the mesh.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,12 +105,27 @@ pub enum MeshMessage {
         description: String,
         timestamp: f64,
     },
-    /// Threat detected — highest priority, never discarded.
+    /// Threat detected - highest priority, never discarded.
     ThreatAlert {
         reporter: NodeId,
         position: Position3D,
         threat_level: f64,
         description: String,
+        timestamp: f64,
+    },
+    /// Explicit non-pairwise coordination signals.
+    CoordinationDirective {
+        sender: NodeId,
+        directive: CoordinationDirectiveKind,
+        focus: Option<Position3D>,
+        intensity: f64,
+        timestamp: f64,
+    },
+    /// Fast affective signal used for panic/fear damping.
+    AffectSignal {
+        sender: NodeId,
+        label: String,
+        intensity: f64,
         timestamp: f64,
     },
     /// Digital pheromone broadcast (~20 bytes payload).
@@ -119,8 +144,8 @@ impl MeshMessage {
     pub fn priority(&self) -> u8 {
         match self {
             MeshMessage::ThreatAlert { .. } => 0,
-            MeshMessage::TaskAssignment { .. } => 1,
-            MeshMessage::StateUpdate { .. } => 2,
+            MeshMessage::CoordinationDirective { .. } | MeshMessage::TaskAssignment { .. } => 1,
+            MeshMessage::StateUpdate { .. } | MeshMessage::AffectSignal { .. } => 2,
             MeshMessage::PheromoneDeposit { .. } => 3,
             MeshMessage::Heartbeat { .. } => 4,
         }
@@ -133,6 +158,8 @@ impl MeshMessage {
             MeshMessage::StateUpdate { sender, .. } => *sender,
             MeshMessage::TaskAssignment { assigner, .. } => *assigner,
             MeshMessage::ThreatAlert { reporter, .. } => *reporter,
+            MeshMessage::CoordinationDirective { sender, .. } => *sender,
+            MeshMessage::AffectSignal { sender, .. } => *sender,
             MeshMessage::PheromoneDeposit { depositor, .. } => *depositor,
         }
     }
@@ -144,6 +171,8 @@ impl MeshMessage {
             | MeshMessage::StateUpdate { timestamp, .. }
             | MeshMessage::TaskAssignment { timestamp, .. }
             | MeshMessage::ThreatAlert { timestamp, .. }
+            | MeshMessage::CoordinationDirective { timestamp, .. }
+            | MeshMessage::AffectSignal { timestamp, .. }
             | MeshMessage::PheromoneDeposit { timestamp, .. } => *timestamp,
         }
     }
@@ -218,6 +247,25 @@ mod tests {
             timestamp: 0.0,
         };
         assert!(threat.priority() < hb.priority());
+    }
+
+    #[test]
+    fn coordination_directive_priority_matches_task_assignment() {
+        let directive = MeshMessage::CoordinationDirective {
+            sender: NodeId(0),
+            directive: CoordinationDirectiveKind::StrikeCommit,
+            focus: None,
+            intensity: 0.8,
+            timestamp: 0.0,
+        };
+        let task = MeshMessage::TaskAssignment {
+            task_id: 1,
+            assignee: NodeId(1),
+            assigner: NodeId(0),
+            description: String::new(),
+            timestamp: 0.0,
+        };
+        assert_eq!(directive.priority(), task.priority());
     }
 
     #[test]

@@ -245,6 +245,16 @@ impl PheromoneField {
         self.cells.len()
     }
 
+    /// Current decay rate used by the field.
+    pub fn decay_rate(&self) -> f64 {
+        self.decay_rate
+    }
+
+    /// Update decay rate without resetting the field state.
+    pub fn set_decay_rate(&mut self, decay_rate: f64) {
+        self.decay_rate = finite_decay_rate(decay_rate);
+    }
+
     // --- Core operations (all O(1) per cell) ---
 
     /// Deposit pheromone at a position.
@@ -537,6 +547,12 @@ mod tests {
         assert!((val).abs() < 1e-10);
     }
 
+    #[test]
+    fn set_decay_rate_updates_runtime_value() {
+        let mut field = PheromoneField::default_field();
+        field.set_decay_rate(0.2);
+        assert!((field.decay_rate() - 0.2).abs() < 1e-10);
+    }
     #[test]
     fn default_field_params() {
         let field = PheromoneField::default_field();

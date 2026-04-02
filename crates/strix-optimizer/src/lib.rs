@@ -1,5 +1,8 @@
 pub mod config;
+pub mod contextual_archive;
 pub mod evaluator;
+pub mod graph_surrogate;
+pub mod heterogeneity;
 pub mod param_space;
 pub mod pareto;
 pub mod report;

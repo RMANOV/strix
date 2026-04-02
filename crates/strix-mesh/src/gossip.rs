@@ -17,6 +17,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::contagion::{ContagionEngine, ContagionPolicy};
 use crate::{NodeId, Position3D};
 
 fn position_is_finite(position: &Position3D) -> bool {
@@ -176,6 +177,8 @@ pub struct GossipEngine {
     pub peers: HashSet<NodeId>,
     /// Number of peers to contact per round.
     pub fanout: usize,
+    /// Pace-aware contagion gate for non-state mesh messages.
+    pub contagion: ContagionEngine,
 }
 
 impl GossipEngine {
@@ -187,12 +190,18 @@ impl GossipEngine {
             known_threats: HashMap::new(),
             peers: HashSet::new(),
             fanout,
+            contagion: ContagionEngine::new(ContagionPolicy::default()),
         }
     }
 
     /// Dynamically adjust the gossip fanout (e.g., for EW degradation).
     pub fn set_fanout(&mut self, fanout: usize) {
         self.fanout = fanout.max(1);
+    }
+
+    /// Gate a mesh message through the pace-aware contagion rules.
+    pub fn should_forward_mesh_message(&mut self, message: &crate::MeshMessage, now: f64) -> bool {
+        self.contagion.should_forward(message, now)
     }
 
     /// Register a peer.
@@ -475,6 +484,26 @@ mod tests {
         engine
     }
 
+    #[test]
+    fn contagion_gate_requires_reinforcement_for_directives() {
+        let mut engine = make_engine(0, &[1, 2]);
+        let msg = crate::MeshMessage::CoordinationDirective {
+            sender: NodeId(1),
+            directive: crate::CoordinationDirectiveKind::StrikeCommit,
+            focus: Some(Position3D([0.0, 0.0, 0.0])),
+            intensity: 0.4,
+            timestamp: 1.0,
+        };
+        let second = crate::MeshMessage::CoordinationDirective {
+            sender: NodeId(2),
+            directive: crate::CoordinationDirectiveKind::StrikeCommit,
+            focus: Some(Position3D([0.0, 0.0, 0.0])),
+            intensity: 0.4,
+            timestamp: 1.1,
+        };
+        assert!(!engine.should_forward_mesh_message(&msg, 1.0));
+        assert!(engine.should_forward_mesh_message(&second, 1.1));
+    }
     #[test]
     fn basic_gossip_round() {
         let mut a = make_engine(0, &[1, 2]);

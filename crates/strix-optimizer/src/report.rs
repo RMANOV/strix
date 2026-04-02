@@ -5,6 +5,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::contextual_archive::ContextualArchive;
 use crate::evaluator::DoctrineProfile;
 use crate::pareto::{ParetoArchive, ParetoSolution};
 
@@ -94,6 +95,14 @@ fn compare_by_objective(
 
 /// Full optimization result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextualFrontSummary {
+    pub context: String,
+    pub size: usize,
+    pub hypervolume: f64,
+    pub best_objectives: [f64; 3],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizationReport {
     /// Doctrine profile used when producing this report.
     pub doctrine_profile: String,
@@ -101,6 +110,8 @@ pub struct OptimizationReport {
     pub objective_labels: [String; 3],
     /// Final Pareto front as a flat list of solutions.
     pub pareto_front: Vec<ParetoSolution>,
+    /// Optional per-context front summaries.
+    pub contextual_fronts: Vec<ContextualFrontSummary>,
     /// Best solution maximising F0.
     pub best_survival: Option<ParetoSolution>,
     /// Best solution maximising F1.
@@ -155,6 +166,7 @@ impl OptimizationReport {
             doctrine_profile: doctrine.as_str().to_string(),
             objective_labels: objective_labels.map(str::to_string),
             pareto_front: solutions,
+            contextual_fronts: Vec::new(),
             best_survival,
             best_stability,
             best_efficiency,
@@ -164,6 +176,31 @@ impl OptimizationReport {
         }
     }
 
+    /// Attach archive-of-archives summaries to this report.
+    pub fn attach_contextual_fronts(mut self, archive: &ContextualArchive) -> Self {
+        self.contextual_fronts = archive
+            .contexts()
+            .map(|(context, front)| {
+                let best_objectives = front
+                    .solutions
+                    .iter()
+                    .max_by(|left, right| {
+                        let left_sum = left.objectives.iter().sum::<f64>();
+                        let right_sum = right.objectives.iter().sum::<f64>();
+                        left_sum.total_cmp(&right_sum)
+                    })
+                    .map(|solution| solution.objectives)
+                    .unwrap_or([0.0, 0.0, 0.0]);
+                ContextualFrontSummary {
+                    context: context.key(),
+                    size: front.len(),
+                    hypervolume: front.hypervolume(HV_REFERENCE),
+                    best_objectives,
+                }
+            })
+            .collect();
+        self
+    }
     /// Serialize to a pretty-printed JSON file at `path`.
     pub fn to_json(&self, path: &Path) -> io::Result<()> {
         let json = serde_json::to_string_pretty(self)
