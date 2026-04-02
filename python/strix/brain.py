@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
 
+from strix.orientation import OrientationEngine, OrientationSnapshot
+
 logger = logging.getLogger("strix.brain")
 
 # ---------------------------------------------------------------------------
@@ -318,6 +320,7 @@ class MissionBrain:
             except ImportError:
                 pass
         self._link_tracker = self._LinkQualityTracker(max(int(self.config.tick_hz * 2), 8))
+        self._orientation = OrientationEngine()
 
         logger.info("MissionBrain initialised (particles=%d)", self.config.n_particles)
 
@@ -446,6 +449,8 @@ class MissionBrain:
             ),
         )
 
+        orientation = self._refresh_orientation(plan_confidence=plan.confidence)
+        plan = self._apply_orientation_to_plan(plan, orientation)
         self._active_plan = plan
         return plan
 
@@ -476,9 +481,16 @@ class MissionBrain:
 
         # 2. UPDATE -- incorporate new sensor observations
         self._update_step()
+        orientation = self._refresh_orientation(
+            planner_confidence=self._active_plan.confidence if self._active_plan else None
+        )
+        if self._active_plan is not None:
+            self._active_plan = self._apply_orientation_to_plan(self._active_plan, orientation)
 
         # 3. REGIME CHECK -- evaluate Markov transitions
-        new_regime = self._check_regime()
+        proposed_regime = self._check_regime()
+        regime_name = self._orientation.recommend_regime(self._regime.name, proposed_regime.name)
+        new_regime = RegimeLabel[regime_name]
         if new_regime != self._regime:
             logger.info("Regime transition: %s -> %s", self._regime.name, new_regime.name)
             self._regime = new_regime
@@ -487,6 +499,8 @@ class MissionBrain:
         ticks_since_auction = self._tick_count - self._last_auction_tick
         if self._should_run_auction(ticks_since_auction):
             self._run_auction()
+            if self._active_plan is not None:
+                self._active_plan = self._apply_orientation_to_plan(self._active_plan, orientation)
             self._last_auction_tick = self._tick_count
 
         # 5. ASSIGN -- generate per-drone decisions from active plan
@@ -526,6 +540,12 @@ class MissionBrain:
         )
 
         self._fleet[drone_id] = dataclasses.replace(drone, alive=False)
+        self._orientation.register_broken_assumption(
+            "friendly_loss",
+            0.75,
+            time.monotonic(),
+            details=f"drone={drone_id} cause={cause}",
+        )
 
         # Check attrition level
         total = len(self._fleet)
@@ -553,6 +573,8 @@ class MissionBrain:
             observation.threat_type,
             observation.confidence,
         )
+        source_label = (observation.threat_type or "unknown").split(":", 1)[0]
+        self._orientation.observe_source(source_label, observation.confidence, time.monotonic())
 
         # High-confidence threat near the fleet -> consider regime shift
         if observation.confidence > 0.7:
@@ -1081,6 +1103,71 @@ class MissionBrain:
             f"coordination={operational_plan.coordination_confidence:.2f}"
         )
         return assignments, overall_confidence, summary
+
+    def _refresh_orientation(self, planner_confidence: float | None = None) -> OrientationSnapshot:
+        source_confidences: dict[str, float] = {}
+        doctrine_scores: dict[str, float] = {}
+        threat_confidences: list[float] = []
+
+        for threat in self._threats.values():
+            confidence = max(0.0, min(threat.confidence, 1.0))
+            threat_confidences.append(confidence)
+            label = (threat.threat_type or "unknown").split(":", 1)[0].lower()
+            source_confidences[label] = max(source_confidences.get(label, 0.0), confidence)
+            doctrine_scores[label] = doctrine_scores.get(label, 0.0) + confidence
+
+        alive_fraction = self.fleet_size / max(len(self._fleet), 1)
+        return self._orientation.update(
+            now_s=time.monotonic(),
+            regime=self._regime.name,
+            planner_confidence=planner_confidence,
+            comms_quality=self._planner_packet_success_rate(),
+            stale_age_s=self._network_state_age(),
+            fleet_size=max(len(self._fleet), 1),
+            alive_fraction=alive_fraction,
+            threat_confidences=threat_confidences,
+            source_confidences=source_confidences,
+            doctrine_scores=doctrine_scores,
+        )
+
+    def _apply_orientation_to_plan(
+        self,
+        plan: MissionPlan,
+        orientation: OrientationSnapshot,
+    ) -> MissionPlan:
+        assignments = [
+            Decision(
+                drone_id=assignment.drone_id,
+                task_id=assignment.task_id,
+                kind=assignment.kind,
+                target_position=assignment.target_position,
+                speed_ms=assignment.speed_ms,
+                reason=(
+                    f"{assignment.reason.split('; orientation integrity=', 1)[0]}; "
+                    f"{orientation.reason_fragment()}"
+                ),
+                confidence=self._orientation.reweight_confidence(assignment.confidence),
+            )
+            for assignment in plan.assignments
+        ]
+        base_explanation = (plan.explanation or "Orientation-adjusted plan.").split(
+            " orientation integrity=",
+            1,
+        )[0].rstrip()
+        broken_fragment = ""
+        if orientation.broken_assumptions:
+            broken_fragment = (
+                f" Broken assumptions: {', '.join(orientation.broken_assumptions)}."
+            )
+        explanation = f"{base_explanation}{broken_fragment} {orientation.reason_fragment()}."
+        return MissionPlan(
+            intent=plan.intent,
+            assignments=assignments,
+            estimated_duration_s=plan.estimated_duration_s,
+            confidence=self._orientation.reweight_confidence(plan.confidence),
+            regime=plan.regime,
+            explanation=explanation,
+        )
 
     def _planner_packet_success_rate(self, drones: list[DroneSnapshot] | None = None) -> float:
         self._refresh_runtime_comms()
