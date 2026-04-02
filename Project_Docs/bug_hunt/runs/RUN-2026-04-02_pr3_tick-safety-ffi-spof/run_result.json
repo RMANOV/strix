@@ -1,0 +1,48 @@
+{
+  "focus_surfaces": [
+    "crates/strix-swarm/src/tick.rs",
+    "crates/strix-swarm/src/criticality.rs",
+    "python/strix/brain.py",
+    "crates/strix-mesh/src/contagion.rs",
+    "crates/strix-python"
+  ],
+  "findings_fixed": 4,
+  "commit_sha": "2d398d12afd552012796a123e44a07fe36cd0a68",
+  "summary": "Retro-seeded post-PR regression baseline for PR #3. Resolved tick orchestration corruption, SwarmDecision criticality propagation drift, MissionBrain orientation keyword mismatch, damped contagion cooldown semantics, and criticality decay-control inconsistency; final CI green.",
+  "linked_prs": [
+    "#3"
+  ],
+  "started_at": "2026-04-02T15:36:16.8817572+03:00",
+  "pack_id": "2026-04-02",
+  "run_id": "RUN-2026-04-02_pr3_tick-safety-ffi-spof",
+  "findings_open": 0,
+  "linked_commits": [
+    "2d398d12afd552012796a123e44a07fe36cd0a68"
+  ],
+  "repo": "RMANOV/strix",
+  "run_type": "POST_PR_REGRESSION",
+  "highest_severity": "T1",
+  "findings_deferred": 0,
+  "docs_touched": [
+    "DOC-001",
+    "DOC-002",
+    "DOC-003",
+    "DOC-005"
+  ],
+  "status": "COMPLETED",
+  "ended_at": "2026-04-02T15:36:16.8817572+03:00",
+  "checkpoints_passed": 7,
+  "checkpoints_total": 7,
+  "next_actions": [
+    "Use this run as the baseline for future POST_PR_REGRESSION reviews touching tick, brain or mesh coordination boundaries.",
+    "Repeat DOC-005 on any PR that simultaneously edits tick.rs, brain.py and contagion/gossip paths before merge or release hardening."
+  ],
+  "branch": "feature/deep-orientation-contextual-swarm",
+  "spofs_reviewed": [
+    "SPOF-01",
+    "SPOF-02",
+    "SPOF-03",
+    "SPOF-04",
+    "SPOF-08"
+  ]
+}
