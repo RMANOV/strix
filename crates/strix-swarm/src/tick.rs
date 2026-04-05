@@ -1777,7 +1777,10 @@ impl SwarmOrchestrator {
 
         let mut fear = self.compute_fear_state(&telemetry);
         let criticality = self.compute_criticality_adjustment(&telemetry, fear.f);
-        fear.tick_noise = fear.tick_noise.scaled_by_ew(criticality.exploration_noise);
+        fear.tick_noise = fear
+            .tick_noise
+            .scaled_by_ew(criticality.exploration_noise)
+            .clamped(5.0, 10.0);
         self.auctioneer.fear = (fear.f + (1.0 - criticality.bid_aggression) * 0.35).clamp(0.0, 1.0);
         self.gossip.set_fanout(
             ((self.config.gossip_fanout as f64) * (0.85 + criticality.criticality * 0.30))

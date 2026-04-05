@@ -123,6 +123,24 @@ impl ProcessNoiseConfig {
             },
         }
     }
+
+    /// Cap all noise components to prevent formation geometry breakage.
+    pub fn clamped(&self, max_pos: f64, max_vel: f64) -> Self {
+        Self {
+            patrol: RegimeNoise {
+                pos_noise: self.patrol.pos_noise.map(|n| n.min(max_pos)),
+                vel_noise: self.patrol.vel_noise.map(|n| n.min(max_vel)),
+            },
+            engage: RegimeNoise {
+                pos_noise: self.engage.pos_noise.map(|n| n.min(max_pos)),
+                vel_noise: self.engage.vel_noise.map(|n| n.min(max_vel)),
+            },
+            evade: RegimeNoise {
+                pos_noise: self.evade.pos_noise.map(|n| n.min(max_pos)),
+                vel_noise: self.evade.vel_noise.map(|n| n.min(max_vel)),
+            },
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

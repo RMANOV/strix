@@ -92,11 +92,9 @@ pub fn strix_heterogeneous() -> ParamSpace {
 }
 
 pub fn decode_heterogeneous_policy(params: &ParamVec) -> HeterogeneousPolicy {
-    assert!(
-        params.len() >= HETEROGENEOUS_PARAM_DIM,
-        "expected at least {HETEROGENEOUS_PARAM_DIM} params, got {}",
-        params.len()
-    );
+    if params.len() < HETEROGENEOUS_PARAM_DIM {
+        return HeterogeneousPolicy::default();
+    }
 
     let role_gains = [params[54], params[55], params[56], params[57]];
     let echelon_gains = [params[58], params[59], params[60]];
