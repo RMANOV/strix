@@ -91,7 +91,7 @@ impl HypergraphCoordinator {
         let confirmed = support >= required
             && mean_confidence >= 0.55
             && (edge.effect != GroupEffect::AntiDeception
-                || confidence_spread <= self.anti_deception_delta);
+                || (support > 1 && confidence_spread <= self.anti_deception_delta));
 
         Some(GroupResolution {
             edge_id,
@@ -160,5 +160,28 @@ mod tests {
             timestamp: 1.1,
         });
         assert!(!coordinator.resolve(9).unwrap().confirmed);
+    }
+
+    #[test]
+    fn anti_deception_rejects_single_vote() {
+        let mut coordinator = HypergraphCoordinator::default();
+        coordinator.add_edge(HyperEdge {
+            edge_id: 42,
+            members: vec![NodeId(1), NodeId(2), NodeId(3)],
+            effect: GroupEffect::AntiDeception,
+            quorum_ratio: 0.34, // rounds to required=1
+        });
+        coordinator.record_vote(GroupVote {
+            edge_id: 42,
+            voter: NodeId(1),
+            confidence: 0.99,
+            timestamp: 1.0,
+        });
+        let res = coordinator.resolve(42).unwrap();
+        assert!(
+            !res.confirmed,
+            "AntiDeception must not confirm with single vote (support={})",
+            res.support
+        );
     }
 }

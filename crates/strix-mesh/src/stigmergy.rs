@@ -28,7 +28,7 @@ fn finite_time(value: f64) -> Option<f64> {
 
 fn finite_decay_rate(value: f64) -> f64 {
     if value.is_finite() {
-        value.max(0.0)
+        value.clamp(0.0, 10.0)
     } else {
         0.0
     }

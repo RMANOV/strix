@@ -4,9 +4,21 @@
 //! using simple lists and tuples. Each wrapper holds the inner Rust type
 //! and exposes `#[pymethods]` for Python consumption.
 
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use nalgebra::Vector3;
+
+fn validate_finite(arr: &[f64; 3], name: &str) -> PyResult<()> {
+    for (i, &v) in arr.iter().enumerate() {
+        if !v.is_finite() {
+            return Err(PyValueError::new_err(format!(
+                "{name}[{i}] is not finite: {v}"
+            )));
+        }
+    }
+    Ok(())
+}
 
 use strix_core::anomaly::{self, CusumConfig};
 use strix_core::particle_nav::ParticleNavFilter;
@@ -151,13 +163,14 @@ pub struct PyDroneState {
 #[pymethods]
 impl PyDroneState {
     #[new]
-    fn new(drone_id: u32, position: [f64; 3]) -> Self {
-        Self {
+    fn new(drone_id: u32, position: [f64; 3]) -> PyResult<Self> {
+        validate_finite(&position, "position")?;
+        Ok(Self {
             position,
             velocity: [0.0; 3],
             regime: PyRegime::from(Regime::Patrol),
             drone_id,
-        }
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -191,12 +204,13 @@ impl PyParticleNavFilter {
     ///     drone_id: Drone identifier.
     #[new]
     #[pyo3(signature = (n_particles=200, position=[0.0, 0.0, 0.0], drone_id=0))]
-    fn new(n_particles: usize, position: [f64; 3], drone_id: u32) -> Self {
+    fn new(n_particles: usize, position: [f64; 3], drone_id: u32) -> PyResult<Self> {
+        validate_finite(&position, "position")?;
         let pos = Vector3::new(position[0], position[1], position[2]);
-        Self {
+        Ok(Self {
             inner: ParticleNavFilter::new(n_particles, pos),
             drone_id,
-        }
+        })
     }
 
     /// Run one predict-update-resample cycle.
@@ -217,7 +231,8 @@ impl PyParticleNavFilter {
         threat_bearing: [f64; 3],
         vel_gain: f64,
         dt: f64,
-    ) -> ([f64; 3], [f64; 3], [f64; 3]) {
+    ) -> PyResult<([f64; 3], [f64; 3], [f64; 3])> {
+        validate_finite(&threat_bearing, "threat_bearing")?;
         // Convert observations
         let obs: Vec<Observation> = observations
             .iter()
@@ -233,7 +248,7 @@ impl PyParticleNavFilter {
         let tb = Vector3::new(threat_bearing[0], threat_bearing[1], threat_bearing[2]);
         let (pos, vel, probs) = self.inner.step(&obs, &tb, vel_gain, dt);
 
-        ([pos.x, pos.y, pos.z], [vel.x, vel.y, vel.z], probs)
+        Ok(([pos.x, pos.y, pos.z], [vel.x, vel.y, vel.z], probs))
     }
 
     /// Get current best-estimate drone state.
