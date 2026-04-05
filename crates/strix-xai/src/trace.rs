@@ -94,6 +94,10 @@ pub enum DecisionType {
     ReAuction,
     /// A new leader was elected in a sub-swarm.
     LeaderElection,
+    /// CBF/GCBF+ safety constraint applied to velocities.
+    SafetyClamp,
+    /// Criticality scheduler modulated adaptive parameters.
+    CriticalityAdjustment,
 }
 
 /// A single step in the reasoning chain.

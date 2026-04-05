@@ -166,6 +166,10 @@ pub struct SwarmDecision {
     pub cbf_active_constraints: u32,
     /// Number of drones pushed into deadlock escape maneuvers this tick.
     pub deadlock_escape_count: usize,
+    /// Agents processed by neural GCBF+ this tick.
+    pub gcbf_neural_agents: u32,
+    /// Agents processed by classical CBF this tick.
+    pub cbf_classical_agents: u32,
     // ── Phi-sim intelligence fields ─────────────────────────────────────
     /// Collective courage level [0, 1].
     pub courage_level: f64,
@@ -1338,7 +1342,7 @@ impl SwarmOrchestrator {
         telemetry: &[(u32, Telemetry)],
         fear: &TickFearState,
         formation_corrections: &mut HashMap<u32, Vector3<f64>>,
-    ) -> (u32, usize) {
+    ) -> (u32, usize, u32, u32) {
         // ── 5. Propagate via gossip ──────────────────────────────────────
         self.gossip_version += 1;
 
@@ -1478,7 +1482,8 @@ impl SwarmOrchestrator {
             #[cfg(not(feature = "gcbf"))]
             let gcbf_used = false;
 
-            if !gcbf_used {
+            let n_agents = all_positions.len() as u32;
+            let (neural_count, classical_count) = if !gcbf_used {
                 Self::classical_cbf_pass(
                     &all_positions,
                     &vel_map,
@@ -1488,10 +1493,20 @@ impl SwarmOrchestrator {
                     &mut cbf_active_constraints,
                     &mut deadlock_escape_count,
                 );
-            }
+                (0, n_agents)
+            } else {
+                (n_agents, 0)
+            };
+
+            return (
+                cbf_active_constraints,
+                deadlock_escape_count,
+                neural_count,
+                classical_count,
+            );
         }
 
-        (cbf_active_constraints, deadlock_escape_count)
+        (cbf_active_constraints, deadlock_escape_count, 0, 0)
     }
 
     /// Classical O(n²) pairwise CBF pass — extracted so both the
@@ -1790,11 +1805,38 @@ impl SwarmOrchestrator {
         self.pheromones.set_decay_rate(
             self.config.pheromone_decay_rate * criticality.pheromone_decay_multiplier,
         );
+
+        // ── F8: Criticality trace ───────────────────────────────────────
+        {
+            let trace = DecisionTrace::new(self.sim_time, DecisionType::CriticalityAdjustment)
+                .with_inputs(TraceInputs {
+                    drone_ids: vec![],
+                    regime: "CRITICALITY".to_string(),
+                    metrics: serde_json::json!({
+                        "criticality": criticality.criticality,
+                        "exploration_noise": criticality.exploration_noise,
+                        "pheromone_decay": criticality.pheromone_decay_multiplier,
+                        "bid_aggression": criticality.bid_aggression,
+                    }),
+                    context: serde_json::Value::Null,
+                    fear_level: Some(fear.f),
+                    courage_level: None,
+                    tension: None,
+                    calibration_quality: None,
+                })
+                .with_output(
+                    "adaptive_modulation",
+                    serde_json::json!({"score": criticality.criticality}),
+                )
+                .with_confidence(criticality.criticality);
+            self.tracer.record(trace);
+        }
+
         let fleet = self.update_navigation(&telemetry, &fear, dt);
         let regimes = self.detect_regimes_and_intent(&telemetry, &fear, &fleet, dt);
 
-        // Accumulate traces from detect phase
-        let mut traces_recorded = regimes.traces_recorded;
+        // Accumulate traces from detect phase (+ 1 for criticality trace above)
+        let mut traces_recorded = regimes.traces_recorded + 1;
 
         // ── 2.5 Formation correction ──────────────────────────────────────
         // Compute desired formation positions and per-drone correction vectors.
@@ -1926,8 +1968,42 @@ impl SwarmOrchestrator {
             self.run_roe_and_auction(&telemetry, tasks, &fear, &fleet, &regimes);
         traces_recorded += auction_traces;
 
-        let (cbf_active_constraints, deadlock_escape_count) =
-            self.propagate_and_safety(&telemetry, &fear, &mut formation_corrections);
+        let (
+            cbf_active_constraints,
+            deadlock_escape_count,
+            gcbf_neural_agents,
+            cbf_classical_agents,
+        ) = self.propagate_and_safety(&telemetry, &fear, &mut formation_corrections);
+
+        // ── F8: CBF safety trace (only when constraints fire) ───────────
+        if cbf_active_constraints > 0 || deadlock_escape_count > 0 {
+            let trace = DecisionTrace::new(self.sim_time, DecisionType::SafetyClamp)
+                .with_inputs(TraceInputs {
+                    drone_ids: telemetry.iter().map(|(id, _)| *id).collect(),
+                    regime: "CBF".to_string(),
+                    metrics: serde_json::json!({
+                        "active_constraints": cbf_active_constraints,
+                        "deadlock_escapes": deadlock_escape_count,
+                        "neural_agents": gcbf_neural_agents,
+                        "classical_agents": cbf_classical_agents,
+                    }),
+                    context: serde_json::Value::Null,
+                    fear_level: Some(fear.f),
+                    courage_level: None,
+                    tension: None,
+                    calibration_quality: None,
+                })
+                .with_output(
+                    "safety_clamp",
+                    serde_json::json!({
+                        "constraints": cbf_active_constraints,
+                        "escapes": deadlock_escape_count,
+                    }),
+                )
+                .with_confidence(0.95);
+            self.tracer.record(trace);
+            traces_recorded += 1;
+        }
 
         // ── 7. Track fear signals + record outcome ──────────────────────
         self.last_intent_score = regimes.max_intent_score;
@@ -2018,6 +2094,8 @@ impl SwarmOrchestrator {
             ew_active_threats: fear.ew_active_threats,
             cbf_active_constraints,
             deadlock_escape_count,
+            gcbf_neural_agents,
+            cbf_classical_agents,
             courage_level: fear.collective_c,
             tension: fear.collective_t,
             per_drone_fear,

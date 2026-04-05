@@ -86,6 +86,8 @@ impl From<DecisionType> for EventCategory {
             DecisionType::ThreatResponse => EventCategory::Threat,
             DecisionType::ReAuction => EventCategory::Attrition,
             DecisionType::LeaderElection => EventCategory::Leadership,
+            DecisionType::SafetyClamp => EventCategory::Threat,
+            DecisionType::CriticalityAdjustment => EventCategory::Regime,
         }
     }
 }
