@@ -143,3 +143,5 @@ jobs:
       - run: |
           cargo bench -p strix-core --no-run
           cargo bench -p strix-auction --no-run
+          cargo bench -p strix-swarm --no-run
+          cargo bench -p strix-mesh --no-run

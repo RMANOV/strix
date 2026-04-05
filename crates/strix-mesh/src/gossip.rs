@@ -200,7 +200,14 @@ impl GossipEngine {
     }
 
     /// Gate a mesh message through the pace-aware contagion rules.
+    /// Simple-mode messages (StateUpdate, Heartbeat, ThreatAlert, PheromoneDeposit)
+    /// bypass throttling to prevent gossip convergence stalls.
     pub fn should_forward_mesh_message(&mut self, message: &crate::MeshMessage, now: f64) -> bool {
+        if crate::contagion::ContagionEngine::mode_for(message)
+            == crate::contagion::ContagionMode::Simple
+        {
+            return true;
+        }
         self.contagion.should_forward(message, now)
     }
 

@@ -43,6 +43,8 @@ struct SignalAccumulator {
 pub struct ContagionEngine {
     pub policy: ContagionPolicy,
     signals: HashMap<String, SignalAccumulator>,
+    forwarded: u64,
+    blocked: u64,
 }
 
 impl ContagionEngine {
@@ -50,7 +52,25 @@ impl ContagionEngine {
         Self {
             policy,
             signals: HashMap::new(),
+            forwarded: 0,
+            blocked: 0,
         }
+    }
+
+    /// Number of messages forwarded since last reset.
+    pub fn forwarded_count(&self) -> u64 {
+        self.forwarded
+    }
+
+    /// Number of messages blocked since last reset.
+    pub fn blocked_count(&self) -> u64 {
+        self.blocked
+    }
+
+    /// Reset forwarding metrics (call at tick boundary).
+    pub fn reset_counters(&mut self) {
+        self.forwarded = 0;
+        self.blocked = 0;
     }
 
     pub fn mode_for(message: &MeshMessage) -> ContagionMode {
@@ -74,7 +94,7 @@ impl ContagionEngine {
         let intensity = message_intensity(message);
         let entry = self.signals.entry(signature).or_default();
 
-        match mode {
+        let result = match mode {
             ContagionMode::Simple => {
                 let stale = now - entry.last_timestamp > self.policy.simple_ttl_s;
                 let first_source = entry.sources.insert(sender);
@@ -109,7 +129,13 @@ impl ContagionEngine {
                 entry.last_timestamp = now.max(timestamp);
                 entry.energy >= self.policy.damped_floor
             }
+        };
+        if result {
+            self.forwarded += 1;
+        } else {
+            self.blocked += 1;
         }
+        result
     }
 }
 

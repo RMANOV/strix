@@ -54,6 +54,8 @@ pub struct Auctioneer {
     pub greedy_bid_volume_threshold: usize,
     /// Quorum required before bundled tasks are treated as a true group effect.
     pub bundle_quorum_ratio: f64,
+    /// Tasks already assigned — prevents duplicate assignment across re-auction rounds.
+    pub assigned_task_ids: HashSet<u32>,
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -70,6 +72,7 @@ impl Default for Auctioneer {
             max_bids_per_drone: Some(8),
             greedy_bid_volume_threshold: 256,
             bundle_quorum_ratio: 0.5,
+            assigned_task_ids: HashSet::new(),
         }
     }
 }
@@ -137,6 +140,10 @@ impl Auctioneer {
         };
 
         self.needs_reauction = false;
+        // Track assigned tasks to prevent duplicates across re-auction rounds.
+        for a in &result.assignments {
+            self.assigned_task_ids.insert(a.task_id);
+        }
         result
     }
 
@@ -153,6 +160,8 @@ impl Auctioneer {
     /// Signal that conditions have changed and a re-auction is warranted.
     pub fn trigger_reauction(&mut self) {
         self.needs_reauction = true;
+        // Lost drone's tasks must become eligible for re-assignment.
+        self.assigned_task_ids.clear();
     }
 
     /// Finalize assignments and return the result. In a real system this would
@@ -188,8 +197,10 @@ impl Auctioneer {
                 self.compress_bids(tasks, bidder.bid_on_tasks(tasks, threats))
             })
             .collect();
-        // Filter bids below threshold.
-        all_bids.retain(|b| b.score >= self.min_bid_threshold);
+        // Filter bids below threshold and already-assigned tasks.
+        all_bids.retain(|b| {
+            b.score >= self.min_bid_threshold && !self.assigned_task_ids.contains(&b.task_id)
+        });
         all_bids
     }
 
