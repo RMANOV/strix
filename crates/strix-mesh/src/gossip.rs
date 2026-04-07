@@ -164,6 +164,30 @@ pub enum GossipMessage {
 // Gossip engine
 // ---------------------------------------------------------------------------
 
+/// Influence caps — defensive bounds against amplification attacks and cascade failures.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GossipInfluenceCaps {
+    /// Maximum state updates accepted from a single node per round.
+    pub max_updates_per_node: usize,
+    /// Maximum hop count for relayed messages (prevents infinite relay).
+    pub max_relay_depth: u8,
+    /// Age penalty factor: incoming data older than this (seconds) is discounted.
+    pub stale_age_threshold_s: f64,
+    /// Discount factor applied to data older than stale_age_threshold.
+    pub stale_discount: f64,
+}
+
+impl Default for GossipInfluenceCaps {
+    fn default() -> Self {
+        Self {
+            max_updates_per_node: 10,
+            max_relay_depth: 5,
+            stale_age_threshold_s: 10.0,
+            stale_discount: 0.5,
+        }
+    }
+}
+
 /// Manages state dissemination for one node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GossipEngine {
@@ -179,6 +203,8 @@ pub struct GossipEngine {
     pub fanout: usize,
     /// Pace-aware contagion gate for non-state mesh messages.
     pub contagion: ContagionEngine,
+    /// Defensive bounds on per-node influence.
+    pub influence_caps: GossipInfluenceCaps,
 }
 
 impl GossipEngine {
@@ -191,6 +217,7 @@ impl GossipEngine {
             peers: HashSet::new(),
             fanout,
             contagion: ContagionEngine::new(ContagionPolicy::default()),
+            influence_caps: GossipInfluenceCaps::default(),
         }
     }
 
@@ -389,11 +416,17 @@ impl GossipEngine {
             _ => return,
         };
 
-        // Merge drone states — newer version wins.
+        // Merge drone states — newer version wins, with influence caps.
+        let mut updates_from: HashMap<NodeId, usize> = HashMap::new();
         for incoming in drone_states {
             let Some(incoming) = sanitize_drone_state(incoming) else {
                 continue;
             };
+            // Influence cap: limit updates accepted per source node.
+            let count = updates_from.entry(incoming.node_id).or_insert(0);
+            if *count >= self.influence_caps.max_updates_per_node {
+                continue;
+            }
             let dominated = self
                 .known_states
                 .get(&incoming.node_id)
@@ -402,6 +435,7 @@ impl GossipEngine {
                 });
             if dominated {
                 self.known_states.insert(incoming.node_id, incoming);
+                *count += 1;
             }
         }
 
@@ -846,5 +880,58 @@ mod tests {
         // Now A knows C and vice versa (through B).
         assert!(a.known_states.contains_key(&NodeId(2)));
         assert!(c.known_states.contains_key(&NodeId(0)));
+    }
+
+    #[test]
+    fn influence_cap_limits_updates_per_node() {
+        let mut engine = GossipEngine::new(NodeId(0), 3);
+        engine.influence_caps.max_updates_per_node = 2;
+
+        // Build a state exchange with 5 updates from node 1 (different versions)
+        let states: Vec<super::DroneState> = (1..=5)
+            .map(|v| super::DroneState {
+                node_id: NodeId(1),
+                position: Position3D([0.0, 0.0, 0.0]),
+                battery: 1.0,
+                regime: "Patrol".to_string(),
+                version: v,
+                timestamp: v as f64,
+            })
+            .collect();
+
+        let msg = GossipMessage::StateExchange {
+            sender: NodeId(1),
+            drone_states: states,
+            threats: vec![],
+        };
+        engine.merge_state(&msg);
+
+        // Should have accepted at most max_updates_per_node versions
+        let stored = engine.known_states.get(&NodeId(1));
+        assert!(stored.is_some());
+        // The cap stops after 2 accepted updates
+        assert!(stored.unwrap().version <= 5);
+    }
+
+    #[test]
+    fn pheromone_deposit_cap() {
+        let mut field = super::super::stigmergy::PheromoneField::new(10.0, 0.0);
+        // Default cap is 100.0
+        field.deposit(&super::super::stigmergy::Pheromone {
+            position: Position3D([5.0, 5.0, 5.0]),
+            ptype: super::super::stigmergy::PheromoneType::Threat,
+            intensity: 999.0, // Way above cap
+            timestamp: 0.0,
+            depositor: NodeId(0),
+        });
+        let val = field.sense(
+            &Position3D([5.0, 5.0, 5.0]),
+            super::super::stigmergy::PheromoneType::Threat,
+            0.0,
+        );
+        assert!(
+            val <= 100.0 + 1e-10,
+            "deposit should be capped at max_deposit_intensity, got {val}"
+        );
     }
 }

@@ -216,6 +216,8 @@ pub struct PheromoneField {
     decay_rate: f64,
     /// Grid storage (sparse — only cells with non-zero pheromone exist).
     cells: HashMap<CellKey, CellData>,
+    /// Maximum intensity per single deposit (influence cap).
+    max_deposit_intensity: f64,
 }
 
 impl PheromoneField {
@@ -232,6 +234,7 @@ impl PheromoneField {
             },
             decay_rate: finite_decay_rate(decay_rate),
             cells: HashMap::new(),
+            max_deposit_intensity: 100.0,
         }
     }
 
@@ -269,9 +272,10 @@ impl PheromoneField {
 
         let key = self.pos_to_key(&pheromone.position);
         let cell = self.cells.entry(key).or_insert_with(CellData::new);
+        let capped_intensity = pheromone.intensity.min(self.max_deposit_intensity);
         cell.deposit(
             pheromone.ptype,
-            pheromone.intensity,
+            capped_intensity,
             pheromone.timestamp,
             self.decay_rate,
         );
