@@ -12,6 +12,7 @@
 pub mod convert;
 pub mod criticality;
 pub mod fear_adapter;
+pub mod order_params;
 pub mod tick;
 
 pub use criticality::{
@@ -19,4 +20,5 @@ pub use criticality::{
 };
 #[cfg(feature = "phi-sim")]
 pub use fear_adapter::{DroneFearInputs, SwarmFearAdapter};
+pub use order_params::OrderParameters;
 pub use tick::{SwarmConfig, SwarmDecision, SwarmOrchestrator};

@@ -181,6 +181,9 @@ pub struct SwarmDecision {
     pub calibration_quality: f64,
     /// Multi-horizon temporal anomalies: (horizon_name, direction, cusum_value).
     pub temporal_anomalies: Vec<(String, i32, f64)>,
+    // ── Global order parameters ────────────────────────────────────────
+    /// Macroscopic swarm health metrics (alignment, fragmentation, entropy, coverage, progress).
+    pub order_parameters: crate::order_params::OrderParameters,
 }
 
 // ── Phase 3 intermediate structs ─────────────────────────────────────────
@@ -2071,6 +2074,32 @@ impl SwarmOrchestrator {
         #[cfg(not(feature = "phi-sim"))]
         let (per_drone_fear, calibration_quality) = (HashMap::new(), 0.0);
 
+        // Compute global order parameters from telemetry snapshot.
+        let op_positions: Vec<(u32, Vector3<f64>)> = telemetry
+            .iter()
+            .map(|(id, t)| {
+                (
+                    *id,
+                    Vector3::new(t.position[0], t.position[1], t.position[2]),
+                )
+            })
+            .collect();
+        let op_velocities: HashMap<u32, Vector3<f64>> = telemetry
+            .iter()
+            .map(|(id, t)| {
+                (
+                    *id,
+                    Vector3::new(t.velocity[0], t.velocity[1], t.velocity[2]),
+                )
+            })
+            .collect();
+        let order_parameters = crate::order_params::OrderParameters::compute(
+            &op_positions,
+            &op_velocities,
+            &self.regimes,
+            &per_drone_fear,
+        );
+
         SwarmDecision {
             assignments: self.assignments.clone(),
             regimes: self.regimes.clone(),
@@ -2101,6 +2130,7 @@ impl SwarmOrchestrator {
             per_drone_fear,
             calibration_quality,
             temporal_anomalies,
+            order_parameters,
         }
     }
 

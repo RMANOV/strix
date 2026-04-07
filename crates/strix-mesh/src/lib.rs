@@ -14,6 +14,7 @@ pub mod fractal;
 pub mod gossip;
 pub mod hypergraph;
 pub mod stigmergy;
+pub mod trust;
 
 use serde::{Deserialize, Serialize};
 
