@@ -17,6 +17,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::byzantine::{self, ByzantineConfig, ValidationResult};
 use crate::contagion::{ContagionEngine, ContagionPolicy};
 use crate::{NodeId, Position3D};
 
@@ -205,6 +206,12 @@ pub struct GossipEngine {
     pub contagion: ContagionEngine,
     /// Defensive bounds on per-node influence.
     pub influence_caps: GossipInfluenceCaps,
+    /// Byzantine-resilient validation config.
+    pub byzantine: ByzantineConfig,
+    /// Count of rejected updates this round (observability).
+    pub byzantine_rejections: u32,
+    /// Count of suspicious updates this round.
+    pub byzantine_suspicions: u32,
 }
 
 impl GossipEngine {
@@ -218,7 +225,16 @@ impl GossipEngine {
             fanout,
             contagion: ContagionEngine::new(ContagionPolicy::default()),
             influence_caps: GossipInfluenceCaps::default(),
+            byzantine: ByzantineConfig::default(),
+            byzantine_rejections: 0,
+            byzantine_suspicions: 0,
         }
+    }
+
+    /// Reset per-round Byzantine counters (call at tick start).
+    pub fn reset_byzantine_counters(&mut self) {
+        self.byzantine_rejections = 0;
+        self.byzantine_suspicions = 0;
     }
 
     /// Dynamically adjust the gossip fanout (e.g., for EW degradation).
@@ -416,7 +432,7 @@ impl GossipEngine {
             _ => return,
         };
 
-        // Merge drone states — newer version wins, with influence caps.
+        // Merge drone states — newer version wins, with influence caps + Byzantine validation.
         let mut updates_from: HashMap<NodeId, usize> = HashMap::new();
         for incoming in drone_states {
             let Some(incoming) = sanitize_drone_state(incoming) else {
@@ -427,12 +443,24 @@ impl GossipEngine {
             if *count >= self.influence_caps.max_updates_per_node {
                 continue;
             }
-            let dominated = self
-                .known_states
-                .get(&incoming.node_id)
-                .is_none_or(|existing| {
-                    sanitize_drone_state(existing).is_none() || incoming.version > existing.version
-                });
+
+            // Byzantine validation: kinematic plausibility, version monotonicity, battery sanity.
+            let known = self.known_states.get(&incoming.node_id);
+            match byzantine::validate_drone_update(&incoming, known, &self.byzantine) {
+                ValidationResult::Reject => {
+                    self.byzantine_rejections += 1;
+                    continue;
+                }
+                ValidationResult::Suspicious => {
+                    self.byzantine_suspicions += 1;
+                    // Accept suspicious updates (could be GPS correction) but track.
+                }
+                ValidationResult::Accept => {}
+            }
+
+            let dominated = known.is_none_or(|existing| {
+                sanitize_drone_state(existing).is_none() || incoming.version > existing.version
+            });
             if dominated {
                 self.known_states.insert(incoming.node_id, incoming);
                 *count += 1;
