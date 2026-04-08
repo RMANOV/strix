@@ -288,6 +288,8 @@ pub struct SwarmOrchestrator {
     last_criticality: CriticalityAdjustment,
     /// Cached order parameters for multi-timescale (Phase 14f).
     last_order_params: crate::order_params::OrderParameters,
+    /// Runtime micro-adapter for config nudges based on order parameters.
+    micro_adapter: crate::micro_adapt::MicroAdapter,
 
     // ── Island modules ───────────────────────────────────────────────────
     /// Current formation type (None = formation disabled).
@@ -373,6 +375,9 @@ impl SwarmOrchestrator {
             criticality_scheduler: CriticalityScheduler::new(config.criticality_config),
             last_criticality: CriticalityAdjustment::default(),
             last_order_params: crate::order_params::OrderParameters::default(),
+            micro_adapter: crate::micro_adapt::MicroAdapter::new(
+                crate::micro_adapt::MicroAdaptConfig::default(),
+            ),
             // Capture island module configs before moving config
             formation_type: config.formation_type,
             formation_config: config.formation_config.clone(),
@@ -1844,6 +1849,12 @@ impl SwarmOrchestrator {
             .collect();
 
         let mut fear = self.compute_fear_state(&telemetry);
+
+        // Runtime micro-adaptation: nudge intervals based on previous tick's order params.
+        let nudge = self
+            .micro_adapter
+            .adapt(&self.last_order_params, &self.last_criticality);
+
         let criticality = if self.tick_count % self.config.criticality_interval.max(1) == 0 {
             let c = self.compute_criticality_adjustment(&telemetry, fear.f);
             self.last_criticality = c;
@@ -1857,7 +1868,9 @@ impl SwarmOrchestrator {
             .clamped(5.0, 10.0);
         self.auctioneer.fear = (fear.f + (1.0 - criticality.bid_aggression) * 0.35).clamp(0.0, 1.0);
         self.gossip.set_fanout(
-            ((self.config.gossip_fanout as f64) * (0.85 + criticality.criticality * 0.30))
+            ((self.config.gossip_fanout as f64)
+                * (0.85 + criticality.criticality * 0.30)
+                * nudge.gossip_fanout_multiplier)
                 .round()
                 .max(1.0) as usize,
         );

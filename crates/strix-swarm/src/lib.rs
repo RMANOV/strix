@@ -12,6 +12,7 @@
 pub mod convert;
 pub mod criticality;
 pub mod fear_adapter;
+pub mod micro_adapt;
 pub mod order_params;
 pub mod tick;
 
