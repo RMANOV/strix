@@ -661,6 +661,8 @@ impl SwarmOrchestrator {
                             intensity: *penalty_weight,
                             timestamp: self.sim_time,
                             depositor: NodeId(0),
+                            confidence: 1.0,
+                            relay_depth: 0,
                         });
                     }
                     _ => {} // Monitor, InertialFallback, TerrainMask — handled passively
@@ -1399,6 +1401,8 @@ impl SwarmOrchestrator {
                 intensity: explored_intensity,
                 timestamp: self.sim_time,
                 depositor: NodeId(*id),
+                confidence: 1.0,
+                relay_depth: 0,
             });
         }
 
@@ -1411,6 +1415,8 @@ impl SwarmOrchestrator {
                 intensity: kz.penalty * 5.0 * threat_intensity_scale,
                 timestamp: self.sim_time,
                 depositor: NodeId(0),
+                confidence: 1.0,
+                relay_depth: 0,
             });
         }
 
@@ -1731,6 +1737,8 @@ impl SwarmOrchestrator {
                     intensity: (0.35 + intensity * 0.65).clamp(0.0, 1.0),
                     timestamp: self.sim_time,
                     depositor: sender,
+                    confidence: 1.0,
+                    relay_depth: 0,
                 });
                 if matches!(pheromone_type, PheromoneType::Threat | PheromoneType::Rally) {
                     self.auctioneer.trigger_reauction();
@@ -1758,6 +1766,8 @@ impl SwarmOrchestrator {
                 intensity: (fear.f * 0.4).clamp(0.0, 0.6),
                 timestamp: self.sim_time,
                 depositor: sender,
+                confidence: 1.0,
+                relay_depth: 0,
             });
         }
     }

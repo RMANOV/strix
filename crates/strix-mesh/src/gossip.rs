@@ -966,6 +966,8 @@ mod tests {
             intensity: 999.0, // Way above cap
             timestamp: 0.0,
             depositor: NodeId(0),
+            confidence: 1.0,
+            relay_depth: 0,
         });
         let val = field.sense(
             &Position3D([5.0, 5.0, 5.0]),

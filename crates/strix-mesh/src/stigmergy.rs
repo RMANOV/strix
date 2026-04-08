@@ -68,6 +68,13 @@ pub enum PheromoneType {
     Rally,
     /// "Safe path" — attracts transit along established corridors.
     Corridor,
+    // ── Anti-pheromones (negative/uncertainty signals) ──────────────────
+    /// "Don't trust this area" — conflicting observations, suspected spoofing.
+    Doubt,
+    /// "Stale data" — information here may be outdated, re-survey needed.
+    Stale,
+    /// "Help needed" — drone in distress or resource shortage.
+    HelpNeeded,
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +94,11 @@ pub struct Pheromone {
     pub timestamp: f64,
     /// Which drone deposited it.
     pub depositor: NodeId,
+    // ── Rich metadata (Phase 14e) ──────────────────────────────────────
+    /// Confidence in this observation ∈ [0, 1]. Default 1.0.
+    pub confidence: f64,
+    /// How many relay hops this pheromone has traversed. 0 = original depositor.
+    pub relay_depth: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +284,9 @@ impl PheromoneField {
 
         let key = self.pos_to_key(&pheromone.position);
         let cell = self.cells.entry(key).or_insert_with(CellData::new);
-        let capped_intensity = pheromone.intensity.min(self.max_deposit_intensity);
+        // Scale intensity by confidence and cap.
+        let confidence = pheromone.confidence.clamp(0.0, 1.0);
+        let capped_intensity = (pheromone.intensity * confidence).min(self.max_deposit_intensity);
         cell.deposit(
             pheromone.ptype,
             capped_intensity,
@@ -399,6 +413,8 @@ mod tests {
             intensity,
             timestamp: t,
             depositor: NodeId(0),
+            confidence: 1.0,
+            relay_depth: 0,
         });
     }
 
@@ -430,6 +446,8 @@ mod tests {
             intensity: f64::NAN,
             timestamp: 0.0,
             depositor: NodeId(0),
+            confidence: 1.0,
+            relay_depth: 0,
         });
 
         assert_eq!(field.active_cells(), 0);
@@ -448,6 +466,8 @@ mod tests {
             intensity: f64::INFINITY,
             timestamp: 1.0,
             depositor: NodeId(0),
+            confidence: 1.0,
+            relay_depth: 0,
         });
 
         let val = field.sense(&Position3D([5.0, 5.0, 5.0]), PheromoneType::Threat, 1.0);
