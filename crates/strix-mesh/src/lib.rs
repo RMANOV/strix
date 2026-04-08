@@ -14,6 +14,7 @@ pub mod contagion;
 pub mod fractal;
 pub mod gossip;
 pub mod hypergraph;
+pub mod quarantine;
 pub mod stigmergy;
 pub mod trust;
 

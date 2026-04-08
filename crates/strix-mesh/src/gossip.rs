@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::byzantine::{self, ByzantineConfig, ValidationResult};
 use crate::contagion::{ContagionEngine, ContagionPolicy};
+use crate::quarantine::{QuarantineConfig, QuarantineManager};
 use crate::{NodeId, Position3D};
 
 fn position_is_finite(position: &Position3D) -> bool {
@@ -208,6 +209,8 @@ pub struct GossipEngine {
     pub influence_caps: GossipInfluenceCaps,
     /// Byzantine-resilient validation config.
     pub byzantine: ByzantineConfig,
+    /// Graduated quarantine protocol.
+    pub quarantine: QuarantineManager,
     /// Count of rejected updates this round (observability).
     pub byzantine_rejections: u32,
     /// Count of suspicious updates this round.
@@ -226,6 +229,7 @@ impl GossipEngine {
             contagion: ContagionEngine::new(ContagionPolicy::default()),
             influence_caps: GossipInfluenceCaps::default(),
             byzantine: ByzantineConfig::default(),
+            quarantine: QuarantineManager::new(QuarantineConfig::default()),
             byzantine_rejections: 0,
             byzantine_suspicions: 0,
         }
@@ -423,14 +427,20 @@ impl GossipEngine {
     /// - Drone states: newer version wins.
     /// - Threats: union (insert if missing, update if newer timestamp).
     pub fn merge_state(&mut self, msg: &GossipMessage) {
-        let (drone_states, threats) = match msg {
+        let (sender, drone_states, threats) = match msg {
             GossipMessage::StateExchange {
+                sender,
                 drone_states,
                 threats,
-                ..
-            } => (drone_states, threats),
+            } => (*sender, drone_states, threats),
             _ => return,
         };
+
+        // Quarantine gate: reject messages from quarantined nodes.
+        if !self.quarantine.level(sender).accepts_messages() {
+            self.byzantine_rejections += 1;
+            return;
+        }
 
         // Merge drone states — newer version wins, with influence caps + Byzantine validation.
         let mut updates_from: HashMap<NodeId, usize> = HashMap::new();
@@ -446,16 +456,21 @@ impl GossipEngine {
 
             // Byzantine validation: kinematic plausibility, version monotonicity, battery sanity.
             let known = self.known_states.get(&incoming.node_id);
+            let now = incoming.timestamp;
             match byzantine::validate_drone_update(&incoming, known, &self.byzantine) {
                 ValidationResult::Reject => {
                     self.byzantine_rejections += 1;
+                    self.quarantine.record_strike(sender, now);
                     continue;
                 }
                 ValidationResult::Suspicious => {
                     self.byzantine_suspicions += 1;
-                    // Accept suspicious updates (could be GPS correction) but track.
+                    self.quarantine.record_strike(sender, now);
+                    // Accept suspicious updates but record strike.
                 }
-                ValidationResult::Accept => {}
+                ValidationResult::Accept => {
+                    self.quarantine.record_good(sender, now);
+                }
             }
 
             let dominated = known.is_none_or(|existing| {
