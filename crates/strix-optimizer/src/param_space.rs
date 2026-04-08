@@ -261,6 +261,7 @@ impl ParamSpace {
             formation_interval: default.formation_interval,
             criticality_interval: default.criticality_interval,
             order_params_interval: default.order_params_interval,
+            adaptive_gossip: default.adaptive_gossip,
         }
     }
 

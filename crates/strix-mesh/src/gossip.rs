@@ -217,6 +217,10 @@ pub struct GossipEngine {
     pub byzantine_suspicions: u32,
     /// Per-drone battery reports from multiple peers for trimmed aggregation.
     peer_battery_reports: HashMap<NodeId, Vec<f64>>,
+    /// Per-peer quality scores for weighted selection (set externally each round).
+    peer_quality: HashMap<NodeId, f64>,
+    /// Whether to use quality-weighted peer selection (vs uniform random).
+    pub adaptive_selection: bool,
 }
 
 impl GossipEngine {
@@ -235,7 +239,15 @@ impl GossipEngine {
             byzantine_rejections: 0,
             byzantine_suspicions: 0,
             peer_battery_reports: HashMap::new(),
+            peer_quality: HashMap::new(),
+            adaptive_selection: false,
         }
+    }
+
+    /// Set per-peer quality scores for weighted gossip selection.
+    /// Call before each gossip round. Peers not in the map default to 1.0.
+    pub fn set_peer_quality(&mut self, quality: HashMap<NodeId, f64>) {
+        self.peer_quality = quality;
     }
 
     /// Reset per-round Byzantine counters and aggregation buffers (call at tick start).
@@ -343,11 +355,54 @@ impl GossipEngine {
     // Gossip round
     // -----------------------------------------------------------------------
 
-    /// Select `fanout` random peers for this gossip round.
+    /// Select `fanout` peers for this gossip round.
+    /// If `adaptive_selection` is true, uses quality-weighted sampling;
+    /// otherwise uniform random (backward-compatible default).
     pub fn select_peers<R: Rng>(&self, rng: &mut R) -> Vec<NodeId> {
         let mut peers: Vec<NodeId> = self.peers.iter().copied().collect();
         peers.sort_unstable();
-        let mut selected = peers.into_iter().choose_multiple(rng, self.fanout);
+
+        if !self.adaptive_selection || self.peer_quality.is_empty() {
+            // Uniform random — original behavior.
+            let mut selected = peers.into_iter().choose_multiple(rng, self.fanout);
+            selected.sort_unstable();
+            return selected;
+        }
+
+        // Quality-weighted sampling.
+        if peers.len() <= self.fanout {
+            return peers;
+        }
+        let mut weighted: Vec<(NodeId, f64)> = peers
+            .into_iter()
+            .map(|p| {
+                (
+                    p,
+                    self.peer_quality.get(&p).copied().unwrap_or(1.0).max(0.01),
+                )
+            })
+            .collect();
+        let mut selected = Vec::with_capacity(self.fanout);
+        for _ in 0..self.fanout {
+            if weighted.is_empty() {
+                break;
+            }
+            let total: f64 = weighted.iter().map(|(_, w)| w).sum();
+            if total <= 0.0 {
+                break;
+            }
+            let mut r = rng.gen::<f64>() * total;
+            let mut idx = weighted.len() - 1;
+            for (i, (_, w)) in weighted.iter().enumerate() {
+                r -= w;
+                if r <= 0.0 {
+                    idx = i;
+                    break;
+                }
+            }
+            let (node, _) = weighted.remove(idx);
+            selected.push(node);
+        }
         selected.sort_unstable();
         selected
     }
@@ -412,6 +467,13 @@ impl GossipEngine {
 
         let mut drone_states = drone_states;
         let mut threats = threats;
+
+        // Content prioritization: sort by freshness, then cap to prevent bloat.
+        drone_states.sort_by(|a, b| b.timestamp.total_cmp(&a.timestamp));
+        let max_per_exchange = self.influence_caps.max_updates_per_node * 3;
+        drone_states.truncate(max_per_exchange);
+
+        // Re-sort by canonical order for determinism.
         sort_drone_states(&mut drone_states);
         sort_threats(&mut threats);
 

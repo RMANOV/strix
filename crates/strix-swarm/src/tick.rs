@@ -94,6 +94,8 @@ pub struct SwarmConfig {
     pub criticality_interval: u32,
     /// Order parameters computation interval (ticks). Default 10.
     pub order_params_interval: u32,
+    /// Use link-quality-weighted gossip peer selection. Default false.
+    pub adaptive_gossip: bool,
 }
 
 impl Default for SwarmConfig {
@@ -127,6 +129,7 @@ impl Default for SwarmConfig {
             formation_interval: 1,
             criticality_interval: 1,
             order_params_interval: 1,
+            adaptive_gossip: false,
         }
     }
 }
@@ -242,6 +245,8 @@ pub struct SwarmOrchestrator {
     pub loss_analyzer: LossAnalyzer,
     /// Gossip network for state sync.
     pub gossip: GossipEngine,
+    /// Per-peer link quality tracker for adaptive gossip.
+    pub link_quality: strix_mesh::comms::LinkQualityTracker,
     /// Digital pheromone field.
     pub pheromones: PheromoneField,
     /// Decision trace recorder.
@@ -317,6 +322,7 @@ impl SwarmOrchestrator {
         // Initialize gossip network — exclude self_id from peers (no self-loop).
         let self_id = drone_ids.first().copied().unwrap_or(0);
         let mut gossip = GossipEngine::new(NodeId(self_id), config.gossip_fanout);
+        gossip.adaptive_selection = config.adaptive_gossip;
         for &id in drone_ids {
             if id != self_id {
                 gossip.add_peer(NodeId(id));
@@ -343,6 +349,7 @@ impl SwarmOrchestrator {
             auctioneer: Auctioneer::new(),
             loss_analyzer: LossAnalyzer::new(),
             gossip,
+            link_quality: strix_mesh::comms::LinkQualityTracker::new(20),
             pheromones: PheromoneField::new(
                 config.pheromone_resolution,
                 config.pheromone_decay_rate,
@@ -1379,6 +1386,17 @@ impl SwarmOrchestrator {
                 self.gossip.set_fanout(reduced_fanout.min(fear_fanout));
             } else {
                 self.gossip.set_fanout(fear_fanout);
+            }
+
+            // Wire link quality into gossip peer selection.
+            if self.gossip.adaptive_selection {
+                let quality: HashMap<strix_mesh::NodeId, f64> = self
+                    .gossip
+                    .peers
+                    .iter()
+                    .map(|&p| (p, self.link_quality.quality(p)))
+                    .collect();
+                self.gossip.set_peer_quality(quality);
             }
 
             for (id, telem) in telemetry {
