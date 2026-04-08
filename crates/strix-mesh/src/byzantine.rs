@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::gossip::DroneState;
-use crate::{NodeId, Position3D};
+use crate::Position3D;
 
 /// Configuration for Byzantine-resilient gossip validation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,10 +157,7 @@ pub fn validate_threat_report(
     if !incoming_position.0.iter().all(|v| v.is_finite()) {
         return ValidationResult::Reject;
     }
-    if !incoming_threat_level.is_finite()
-        || incoming_threat_level < 0.0
-        || incoming_threat_level > 1.0
-    {
+    if !incoming_threat_level.is_finite() || !(0.0..=1.0).contains(&incoming_threat_level) {
         return ValidationResult::Reject;
     }
 
@@ -180,6 +177,7 @@ pub fn validate_threat_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeId;
 
     fn make_state(node_id: u32, x: f64, battery: f64, version: u64, timestamp: f64) -> DroneState {
         DroneState {
