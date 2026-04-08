@@ -85,6 +85,15 @@ pub struct SwarmConfig {
     pub criticality_config: CriticalityConfig,
     /// Maximum age (seconds) before stale EW events are cleared.
     pub ew_stale_age: f64,
+    // ── Multi-timescale intervals (Phase 14f) ──────────────────────────
+    /// Gossip sync interval (ticks). Default 1 = every tick.
+    pub gossip_interval: u32,
+    /// Formation correction interval (ticks). Default 3.
+    pub formation_interval: u32,
+    /// Criticality evaluation interval (ticks). Default 3.
+    pub criticality_interval: u32,
+    /// Order parameters computation interval (ticks). Default 10.
+    pub order_params_interval: u32,
 }
 
 impl Default for SwarmConfig {
@@ -114,6 +123,10 @@ impl Default for SwarmConfig {
             no_fly_zones: Vec::new(),
             criticality_config: CriticalityConfig::default(),
             ew_stale_age: 120.0,
+            gossip_interval: 1,
+            formation_interval: 1,
+            criticality_interval: 1,
+            order_params_interval: 1,
         }
     }
 }
@@ -266,6 +279,10 @@ pub struct SwarmOrchestrator {
     pub config: SwarmConfig,
     /// Edge-of-disorder criticality controller.
     criticality_scheduler: CriticalityScheduler,
+    /// Cached criticality adjustment for multi-timescale (Phase 14f).
+    last_criticality: CriticalityAdjustment,
+    /// Cached order parameters for multi-timescale (Phase 14f).
+    last_order_params: crate::order_params::OrderParameters,
 
     // ── Island modules ───────────────────────────────────────────────────
     /// Current formation type (None = formation disabled).
@@ -347,6 +364,8 @@ impl SwarmOrchestrator {
             tick_count: 0,
             sim_time: 0.0,
             criticality_scheduler: CriticalityScheduler::new(config.criticality_config),
+            last_criticality: CriticalityAdjustment::default(),
+            last_order_params: crate::order_params::OrderParameters::default(),
             // Capture island module configs before moving config
             formation_type: config.formation_type,
             formation_config: config.formation_config.clone(),
@@ -1348,46 +1367,49 @@ impl SwarmOrchestrator {
         fear: &TickFearState,
         formation_corrections: &mut HashMap<u32, Vector3<f64>>,
     ) -> (u32, usize, u32, u32) {
-        // ── 5. Propagate via gossip ──────────────────────────────────────
-        self.gossip_version += 1;
+        // ── 5. Propagate via gossip (multi-timescale: every N ticks) ─────
+        let should_gossip = self.tick_count % self.config.gossip_interval.max(1) == 0;
+        if should_gossip {
+            self.gossip_version += 1;
 
-        // Apply fear-modulated gossip fanout, then EW override (whichever is lower).
-        let fear_fanout =
-            crate::fear_adapter::modulate_gossip_fanout(self.config.gossip_fanout, fear.f);
-        if let Some((reduced_fanout, _priority_only)) = fear.ew_gossip_override {
-            self.gossip.set_fanout(reduced_fanout.min(fear_fanout));
-        } else {
-            self.gossip.set_fanout(fear_fanout);
-        }
+            // Apply fear-modulated gossip fanout, then EW override (whichever is lower).
+            let fear_fanout =
+                crate::fear_adapter::modulate_gossip_fanout(self.config.gossip_fanout, fear.f);
+            if let Some((reduced_fanout, _priority_only)) = fear.ew_gossip_override {
+                self.gossip.set_fanout(reduced_fanout.min(fear_fanout));
+            } else {
+                self.gossip.set_fanout(fear_fanout);
+            }
 
-        for (id, telem) in telemetry {
-            let regime = self.regimes.get(id).copied().unwrap_or(Regime::Patrol);
-            let regime_str = match regime {
-                Regime::Patrol => "Patrol",
-                Regime::Engage => "Engage",
-                Regime::Evade => "Evade",
-            };
-            self.gossip.update_self_state(
-                Position3D(telem.position),
-                telem.battery,
-                regime_str.to_string(),
-                telem.timestamp,
-            );
-        }
+            for (id, telem) in telemetry {
+                let regime = self.regimes.get(id).copied().unwrap_or(Regime::Patrol);
+                let regime_str = match regime {
+                    Regime::Patrol => "Patrol",
+                    Regime::Engage => "Engage",
+                    Regime::Evade => "Evade",
+                };
+                self.gossip.update_self_state(
+                    Position3D(telem.position),
+                    telem.battery,
+                    regime_str.to_string(),
+                    telem.timestamp,
+                );
+            }
 
-        // Report threats to gossip
-        for (threat_id, tracker) in &self.threat_trackers {
-            let (pos, _vel, _probs) = tracker.estimate_threat();
-            self.gossip.report_threat(
-                *threat_id as u64,
-                Position3D([pos.x, pos.y, pos.z]),
-                0.8,
-                self.sim_time,
-            );
-        }
+            // Report threats to gossip
+            for (threat_id, tracker) in &self.threat_trackers {
+                let (pos, _vel, _probs) = tracker.estimate_threat();
+                self.gossip.report_threat(
+                    *threat_id as u64,
+                    Position3D([pos.x, pos.y, pos.z]),
+                    0.8,
+                    self.sim_time,
+                );
+            }
 
-        // Prune stale threats to prevent unbounded gossip memory growth.
-        self.gossip.prune_threats(self.sim_time, 300.0);
+            // Prune stale threats to prevent unbounded gossip memory growth.
+            self.gossip.prune_threats(self.sim_time, 300.0);
+        } // end should_gossip guard
 
         // ── 6. Update pheromone field ────────────────────────────────────
         self.pheromones.evaporate(self.sim_time);
@@ -1804,7 +1826,13 @@ impl SwarmOrchestrator {
             .collect();
 
         let mut fear = self.compute_fear_state(&telemetry);
-        let criticality = self.compute_criticality_adjustment(&telemetry, fear.f);
+        let criticality = if self.tick_count % self.config.criticality_interval.max(1) == 0 {
+            let c = self.compute_criticality_adjustment(&telemetry, fear.f);
+            self.last_criticality = c;
+            c
+        } else {
+            self.last_criticality
+        };
         fear.tick_noise = fear
             .tick_noise
             .scaled_by_ew(criticality.exploration_noise)
@@ -1854,10 +1882,13 @@ impl SwarmOrchestrator {
         // ── 2.5 Formation correction ──────────────────────────────────────
         // Compute desired formation positions and per-drone correction vectors.
         // Active only in PATROL/ENGAGE regimes — EVADE overrides formation hold.
+        // Multi-timescale: skip expensive geometry optimization on non-formation ticks.
         let mut formation_corrections: HashMap<u32, Vector3<f64>> = HashMap::new();
         let formation_quality;
+        let should_update_formation = self.tick_count % self.config.formation_interval.max(1) == 0;
 
-        if let Some(formation) = self.formation_type {
+        if should_update_formation && self.formation_type.is_some() {
+            let formation = self.formation_type.unwrap();
             let n_formation_drones: Vec<(u32, Vector3<f64>)> = telemetry
                 .iter()
                 .filter(|(id, _)| {
@@ -1908,6 +1939,9 @@ impl SwarmOrchestrator {
             } else {
                 formation_quality = Some(1.0); // trivial formation with 0-1 drones
             }
+        } else if self.formation_type.is_some() {
+            // Formation exists but skipped this tick — use previous quality.
+            formation_quality = Some(1.0);
         } else {
             formation_quality = None;
         }
@@ -2084,31 +2118,37 @@ impl SwarmOrchestrator {
         #[cfg(not(feature = "phi-sim"))]
         let (per_drone_fear, calibration_quality) = (HashMap::new(), 0.0);
 
-        // Compute global order parameters from telemetry snapshot.
-        let op_positions: Vec<(u32, Vector3<f64>)> = telemetry
-            .iter()
-            .map(|(id, t)| {
-                (
-                    *id,
-                    Vector3::new(t.position[0], t.position[1], t.position[2]),
-                )
-            })
-            .collect();
-        let op_velocities: HashMap<u32, Vector3<f64>> = telemetry
-            .iter()
-            .map(|(id, t)| {
-                (
-                    *id,
-                    Vector3::new(t.velocity[0], t.velocity[1], t.velocity[2]),
-                )
-            })
-            .collect();
-        let order_parameters = crate::order_params::OrderParameters::compute(
-            &op_positions,
-            &op_velocities,
-            &self.regimes,
-            &per_drone_fear,
-        );
+        // Compute global order parameters (multi-timescale: every N ticks).
+        let order_parameters = if self.tick_count % self.config.order_params_interval.max(1) == 0 {
+            let op_positions: Vec<(u32, Vector3<f64>)> = telemetry
+                .iter()
+                .map(|(id, t)| {
+                    (
+                        *id,
+                        Vector3::new(t.position[0], t.position[1], t.position[2]),
+                    )
+                })
+                .collect();
+            let op_velocities: HashMap<u32, Vector3<f64>> = telemetry
+                .iter()
+                .map(|(id, t)| {
+                    (
+                        *id,
+                        Vector3::new(t.velocity[0], t.velocity[1], t.velocity[2]),
+                    )
+                })
+                .collect();
+            let op = crate::order_params::OrderParameters::compute(
+                &op_positions,
+                &op_velocities,
+                &self.regimes,
+                &per_drone_fear,
+            );
+            self.last_order_params = op;
+            op
+        } else {
+            self.last_order_params
+        };
 
         SwarmDecision {
             assignments: self.assignments.clone(),

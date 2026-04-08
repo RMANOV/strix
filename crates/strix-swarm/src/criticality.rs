@@ -45,6 +45,17 @@ pub struct CriticalityAdjustment {
     pub bid_aggression: f64,
 }
 
+impl Default for CriticalityAdjustment {
+    fn default() -> Self {
+        Self {
+            criticality: 0.55,      // target edge-of-disorder
+            exploration_noise: 1.0, // neutral multiplier
+            pheromone_decay_multiplier: 1.0,
+            bid_aggression: 1.0,
+        }
+    }
+}
+
 pub struct CriticalityScheduler {
     config: CriticalityConfig,
     last: CriticalityAdjustment,

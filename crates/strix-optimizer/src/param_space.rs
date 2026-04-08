@@ -257,9 +257,10 @@ impl ParamSpace {
             no_fly_zones: Vec::new(),
             criticality_config: default.criticality_config,
             ew_stale_age: default.ew_stale_age,
-            // NOTE: ProcessNoiseConfig is embedded inside ParticleNavFilter,
-            // not directly in SwarmConfig. We store noise params in the space
-            // so the evaluator can extract them separately via noise_config().
+            gossip_interval: default.gossip_interval,
+            formation_interval: default.formation_interval,
+            criticality_interval: default.criticality_interval,
+            order_params_interval: default.order_params_interval,
         }
     }
 
