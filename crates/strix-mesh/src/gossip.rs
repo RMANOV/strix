@@ -215,6 +215,8 @@ pub struct GossipEngine {
     pub byzantine_rejections: u32,
     /// Count of suspicious updates this round.
     pub byzantine_suspicions: u32,
+    /// Per-drone battery reports from multiple peers for trimmed aggregation.
+    peer_battery_reports: HashMap<NodeId, Vec<f64>>,
 }
 
 impl GossipEngine {
@@ -232,13 +234,15 @@ impl GossipEngine {
             quarantine: QuarantineManager::new(QuarantineConfig::default()),
             byzantine_rejections: 0,
             byzantine_suspicions: 0,
+            peer_battery_reports: HashMap::new(),
         }
     }
 
-    /// Reset per-round Byzantine counters (call at tick start).
+    /// Reset per-round Byzantine counters and aggregation buffers (call at tick start).
     pub fn reset_byzantine_counters(&mut self) {
         self.byzantine_rejections = 0;
         self.byzantine_suspicions = 0;
+        self.peer_battery_reports.clear();
     }
 
     /// Dynamically adjust the gossip fanout (e.g., for EW degradation).
@@ -477,6 +481,11 @@ impl GossipEngine {
                 sanitize_drone_state(existing).is_none() || incoming.version > existing.version
             });
             if dominated {
+                // Collect battery for trimmed aggregation across peers.
+                self.peer_battery_reports
+                    .entry(incoming.node_id)
+                    .or_default()
+                    .push(incoming.battery);
                 self.known_states.insert(incoming.node_id, incoming);
                 *count += 1;
             }
@@ -496,6 +505,27 @@ impl GossipEngine {
                     });
             if should_insert {
                 self.known_threats.insert(incoming.threat_id, incoming);
+            }
+        }
+
+        // Apply W-MSR trimmed aggregation on battery values.
+        self.apply_trimmed_battery();
+    }
+
+    /// Apply trimmed-mean to battery values when 3+ peers report about the same drone.
+    /// Overrides stored battery if it deviates >0.15 from the trimmed consensus.
+    fn apply_trimmed_battery(&mut self) {
+        let trim = self.byzantine.max_byzantine_nodes;
+        for (node_id, reports) in &self.peer_battery_reports {
+            if reports.len() < 3 {
+                continue;
+            }
+            if let Some(mean) = byzantine::trimmed_mean(&mut reports.clone(), trim) {
+                if let Some(state) = self.known_states.get_mut(node_id) {
+                    if (state.battery - mean).abs() > 0.15 {
+                        state.battery = mean;
+                    }
+                }
             }
         }
     }
@@ -977,6 +1007,98 @@ mod tests {
         assert!(
             val <= 100.0 + 1e-10,
             "deposit should be capped at max_deposit_intensity, got {val}"
+        );
+    }
+
+    #[test]
+    fn trimmed_battery_filters_outlier() {
+        let mut engine = GossipEngine::new(NodeId(0), 3);
+        engine.add_peer(NodeId(1));
+        engine.add_peer(NodeId(2));
+        engine.add_peer(NodeId(3));
+
+        // Three peers report drone 5's battery: two say 0.8, one says 0.1 (outlier)
+        let states = |battery: f64, sender: u32, version: u64| GossipMessage::StateExchange {
+            sender: NodeId(sender),
+            drone_states: vec![DroneState {
+                node_id: NodeId(5),
+                position: Position3D([0.0, 0.0, 0.0]),
+                battery,
+                regime: "Patrol".to_string(),
+                version,
+                timestamp: 1.0,
+            }],
+            threats: vec![],
+        };
+
+        engine.merge_state(&states(0.8, 1, 3));
+        engine.merge_state(&states(0.8, 2, 4));
+        engine.merge_state(&states(0.1, 3, 5)); // outlier
+
+        let stored = engine.known_states.get(&NodeId(5)).unwrap();
+        // trimmed_mean of [0.1, 0.8, 0.8] with trim=1 = mean of [0.8] = 0.8
+        // stored should be close to 0.8 (outlier 0.1 was trimmed)
+        assert!(
+            (stored.battery - 0.8).abs() < 0.2,
+            "outlier battery should be trimmed, got {}",
+            stored.battery
+        );
+    }
+
+    #[test]
+    fn trimmed_battery_no_change_on_consensus() {
+        let mut engine = GossipEngine::new(NodeId(0), 3);
+
+        let states = |battery: f64, version: u64| GossipMessage::StateExchange {
+            sender: NodeId(1),
+            drone_states: vec![DroneState {
+                node_id: NodeId(5),
+                position: Position3D([0.0, 0.0, 0.0]),
+                battery,
+                regime: "Patrol".to_string(),
+                version,
+                timestamp: 1.0,
+            }],
+            threats: vec![],
+        };
+
+        // Three reports all agree on 0.7
+        engine.merge_state(&states(0.7, 1));
+        engine.merge_state(&states(0.7, 2));
+        engine.merge_state(&states(0.7, 3));
+
+        let stored = engine.known_states.get(&NodeId(5)).unwrap();
+        assert!(
+            (stored.battery - 0.7).abs() < 0.16,
+            "consensus battery should not be overridden, got {}",
+            stored.battery
+        );
+    }
+
+    #[test]
+    fn trimmed_battery_needs_minimum_peers() {
+        let mut engine = GossipEngine::new(NodeId(0), 3);
+
+        let msg = GossipMessage::StateExchange {
+            sender: NodeId(1),
+            drone_states: vec![DroneState {
+                node_id: NodeId(5),
+                position: Position3D([0.0, 0.0, 0.0]),
+                battery: 0.1, // suspicious but only 1 report
+                regime: "Patrol".to_string(),
+                version: 1,
+                timestamp: 1.0,
+            }],
+            threats: vec![],
+        };
+        engine.merge_state(&msg);
+
+        // Only 1 report — trimmed_mean should return None, no override
+        let stored = engine.known_states.get(&NodeId(5)).unwrap();
+        assert!(
+            (stored.battery - 0.1).abs() < 1e-6,
+            "single report should not be trimmed, got {}",
+            stored.battery
         );
     }
 }
