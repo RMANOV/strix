@@ -15,6 +15,7 @@ pub mod fractal;
 pub mod gossip;
 pub mod hypergraph;
 pub mod quarantine;
+pub mod spatial_belief;
 pub mod stigmergy;
 pub mod trust;
 
