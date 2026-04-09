@@ -262,6 +262,7 @@ impl ParamSpace {
             criticality_interval: default.criticality_interval,
             order_params_interval: default.order_params_interval,
             adaptive_gossip: default.adaptive_gossip,
+            gbp_config: default.gbp_config,
         }
     }
 

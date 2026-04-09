@@ -96,6 +96,7 @@ pub fn telemetry_to_gossip_drone(
         regime: format!("{:?}", regime),
         version,
         timestamp: telem.timestamp,
+        position_covariance: None,
     }
 }
 

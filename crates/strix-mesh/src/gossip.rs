@@ -50,6 +50,9 @@ fn sanitize_drone_state(state: &DroneState) -> Option<DroneState> {
         regime: state.regime.clone(),
         version: state.version,
         timestamp: finite_timestamp(state.timestamp),
+        position_covariance: state
+            .position_covariance
+            .and_then(|c| c.iter().all(|v| v.is_finite() && *v > 0.0).then_some(c)),
     })
 }
 
@@ -100,6 +103,10 @@ pub struct DroneState {
     pub version: u64,
     /// Wall-clock timestamp of last update.
     pub timestamp: f64,
+    /// Diagonal position covariance [var_x, var_y, var_z] in m².
+    /// None if sender does not support GBP.
+    #[serde(default)]
+    pub position_covariance: Option<[f64; 3]>,
 }
 
 /// Convert a strix-core DroneState into the gossip DroneState.
@@ -115,6 +122,7 @@ impl From<&strix_core::DroneState> for DroneState {
             regime: format!("{:?}", core.regime),
             version: 0,
             timestamp: 0.0,
+            position_covariance: None,
         }
     }
 }
@@ -311,8 +319,18 @@ impl GossipEngine {
                 regime,
                 version,
                 timestamp: finite_timestamp(timestamp),
+                position_covariance: None,
             },
         );
+    }
+
+    /// Set diagonal position covariance on own state (for GBP exchange).
+    pub fn set_self_covariance(&mut self, cov: [f64; 3]) {
+        if let Some(state) = self.known_states.get_mut(&self.self_id) {
+            if cov.iter().all(|v| v.is_finite() && *v > 0.0) {
+                state.position_covariance = Some(cov);
+            }
+        }
     }
 
     /// Report a threat (local event).
@@ -709,6 +727,7 @@ mod tests {
             regime: "old".into(),
             version: 1,
             timestamp: 1.0,
+            position_covariance: None,
         };
         let new = DroneState {
             node_id: NodeId(1),
@@ -717,6 +736,7 @@ mod tests {
             regime: "new".into(),
             version: 5,
             timestamp: 5.0,
+            position_covariance: None,
         };
 
         // Insert old first.
@@ -820,6 +840,7 @@ mod tests {
                 regime: "bad".into(),
                 version: 5,
                 timestamp: 0.0,
+                position_covariance: None,
             },
         );
 
@@ -832,6 +853,7 @@ mod tests {
                 regime: "good".into(),
                 version: 5,
                 timestamp: 1.0,
+                position_covariance: None,
             }],
             threats: vec![],
         });
@@ -856,6 +878,7 @@ mod tests {
                 regime: "idle".into(),
                 version: 1,
                 timestamp: 0.0,
+                position_covariance: None,
             },
         );
         // 1 of 3 peers heard.
@@ -892,6 +915,7 @@ mod tests {
                 regime: "c".into(),
                 version: 3,
                 timestamp: 3.0,
+                position_covariance: None,
             },
         );
         engine.known_states.insert(
@@ -903,6 +927,7 @@ mod tests {
                 regime: "a".into(),
                 version: 1,
                 timestamp: 1.0,
+                position_covariance: None,
             },
         );
         engine.known_states.insert(
@@ -914,6 +939,7 @@ mod tests {
                 regime: "b".into(),
                 version: 2,
                 timestamp: 2.0,
+                position_covariance: None,
             },
         );
         engine.known_threats.insert(
@@ -1031,6 +1057,7 @@ mod tests {
                 regime: "Patrol".to_string(),
                 version: v,
                 timestamp: v as f64,
+                position_covariance: None,
             })
             .collect();
 
@@ -1089,6 +1116,7 @@ mod tests {
                 regime: "Patrol".to_string(),
                 version,
                 timestamp: 1.0,
+                position_covariance: None,
             }],
             threats: vec![],
         };
@@ -1120,6 +1148,7 @@ mod tests {
                 regime: "Patrol".to_string(),
                 version,
                 timestamp: 1.0,
+                position_covariance: None,
             }],
             threats: vec![],
         };
@@ -1150,6 +1179,7 @@ mod tests {
                 regime: "Patrol".to_string(),
                 version: 1,
                 timestamp: 1.0,
+                position_covariance: None,
             }],
             threats: vec![],
         };

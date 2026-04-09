@@ -687,6 +687,31 @@ pub fn position_variance(particles: &Array2<f64>, weights: &[f64], mean_pos: &Ve
     var
 }
 
+/// Weighted per-axis position variance from a particle cloud.
+///
+/// Returns `[var_x, var_y, var_z]` — diagonal of the 3×3 position covariance.
+/// Each axis is clamped to minimum 1e-10 to avoid infinite precision in GBP.
+pub fn position_covariance_diagonal(
+    particles: &Array2<f64>,
+    weights: &[f64],
+    mean_pos: &Vector3<f64>,
+) -> [f64; 3] {
+    let n = particles.nrows();
+    let mut vx = 0.0_f64;
+    let mut vy = 0.0_f64;
+    let mut vz = 0.0_f64;
+    for i in 0..n {
+        let dx = particles[[i, 0]] - mean_pos.x;
+        let dy = particles[[i, 1]] - mean_pos.y;
+        let dz = particles[[i, 2]] - mean_pos.z;
+        let w = weights[i];
+        vx += w * dx * dx;
+        vy += w * dy * dy;
+        vz += w * dz * dz;
+    }
+    [vx.max(1e-10), vy.max(1e-10), vz.max(1e-10)]
+}
+
 // ---------------------------------------------------------------------------
 // High-level navigation filter
 // ---------------------------------------------------------------------------

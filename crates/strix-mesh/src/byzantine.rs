@@ -187,6 +187,7 @@ mod tests {
             regime: "Patrol".to_string(),
             version,
             timestamp,
+            position_covariance: None,
         }
     }
 
@@ -243,6 +244,7 @@ mod tests {
             regime: "Patrol".to_string(),
             version: 1,
             timestamp: 0.0,
+            position_covariance: None,
         };
         let cfg = ByzantineConfig::default();
         assert_eq!(

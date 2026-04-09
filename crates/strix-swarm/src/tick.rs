@@ -96,6 +96,8 @@ pub struct SwarmConfig {
     pub order_params_interval: u32,
     /// Use link-quality-weighted gossip peer selection. Default false.
     pub adaptive_gossip: bool,
+    /// Gaussian Belief Propagation config. Default: disabled.
+    pub gbp_config: strix_mesh::gbp::GbpConfig,
 }
 
 impl Default for SwarmConfig {
@@ -130,6 +132,7 @@ impl Default for SwarmConfig {
             criticality_interval: 1,
             order_params_interval: 1,
             adaptive_gossip: false,
+            gbp_config: strix_mesh::gbp::GbpConfig::default(),
         }
     }
 }
@@ -197,6 +200,10 @@ pub struct SwarmDecision {
     pub calibration_quality: f64,
     /// Multi-horizon temporal anomalies: (horizon_name, direction, cusum_value).
     pub temporal_anomalies: Vec<(String, i32, f64)>,
+    // ── Gaussian Belief Propagation ───────────────────────────────────
+    /// Mean position uncertainty across all drones (trace of fused covariance).
+    /// None if GBP is disabled.
+    pub gbp_mean_uncertainty: Option<f64>,
     // ── Global order parameters ────────────────────────────────────────
     /// Macroscopic swarm health metrics (alignment, fragmentation, entropy, coverage, progress).
     pub order_parameters: crate::order_params::OrderParameters,
@@ -290,6 +297,8 @@ pub struct SwarmOrchestrator {
     last_order_params: crate::order_params::OrderParameters,
     /// Runtime micro-adapter for config nudges based on order parameters.
     micro_adapter: crate::micro_adapt::MicroAdapter,
+    /// Per-drone GBP nodes for distributed belief fusion.
+    gbp_nodes: HashMap<u32, strix_mesh::gbp::GbpNode>,
 
     // ── Island modules ───────────────────────────────────────────────────
     /// Current formation type (None = formation disabled).
@@ -378,6 +387,18 @@ impl SwarmOrchestrator {
             micro_adapter: crate::micro_adapt::MicroAdapter::new(
                 crate::micro_adapt::MicroAdaptConfig::default(),
             ),
+            gbp_nodes: drone_ids
+                .iter()
+                .map(|&id| {
+                    (
+                        id,
+                        strix_mesh::gbp::GbpNode::new(
+                            strix_mesh::NodeId(id),
+                            config.gbp_config.clone(),
+                        ),
+                    )
+                })
+                .collect(),
             // Capture island module configs before moving config
             formation_type: config.formation_type,
             formation_config: config.formation_config.clone(),
@@ -1434,6 +1455,48 @@ impl SwarmOrchestrator {
             self.gossip.prune_threats(self.sim_time, 300.0);
         } // end should_gossip guard
 
+        // ── 5.5 Gaussian Belief Propagation (Phase 16) ──────────────────
+        if self.config.gbp_config.enabled {
+            for (id, filter) in &self.nav_filters {
+                let (mean_pos, _, _) = strix_core::particle_nav::estimate_6d(
+                    &filter.particles,
+                    &filter.weights,
+                    &filter.regimes,
+                );
+                let cov_diag = strix_core::particle_nav::position_covariance_diagonal(
+                    &filter.particles,
+                    &filter.weights,
+                    &mean_pos,
+                );
+                self.gossip.set_self_covariance(cov_diag);
+                if let Some(gbp) = self.gbp_nodes.get_mut(id) {
+                    gbp.set_self_belief(strix_mesh::gbp::GaussianBelief::from_diagonal_covariance(
+                        mean_pos, cov_diag,
+                    ));
+                }
+            }
+            for (id, gbp) in self.gbp_nodes.iter_mut() {
+                let self_nid = strix_mesh::NodeId(*id);
+                for (nid, state) in &self.gossip.known_states {
+                    if *nid == self_nid {
+                        continue;
+                    }
+                    if let Some(cov) = state.position_covariance {
+                        let mean = Vector3::new(
+                            state.position.0[0],
+                            state.position.0[1],
+                            state.position.0[2],
+                        );
+                        gbp.set_neighbor_belief(
+                            *nid,
+                            strix_mesh::gbp::GaussianBelief::from_diagonal_covariance(mean, cov),
+                        );
+                    }
+                }
+                gbp.iterate(self.config.gbp_config.max_iterations);
+            }
+        }
+
         // ── 6. Update pheromone field ────────────────────────────────────
         self.pheromones.evaporate(self.sim_time);
 
@@ -2211,6 +2274,20 @@ impl SwarmOrchestrator {
             per_drone_fear,
             calibration_quality,
             temporal_anomalies,
+            gbp_mean_uncertainty: if self.config.gbp_config.enabled {
+                let count = self.gbp_nodes.len().max(1) as f64;
+                let total: f64 = self
+                    .gbp_nodes
+                    .values()
+                    .map(|g| {
+                        let d = g.fused_covariance_diagonal();
+                        d[0] + d[1] + d[2]
+                    })
+                    .sum();
+                Some(total / count)
+            } else {
+                None
+            },
             order_parameters,
         }
     }

@@ -12,6 +12,7 @@ pub mod comms;
 pub mod consensus;
 pub mod contagion;
 pub mod fractal;
+pub mod gbp;
 pub mod gossip;
 pub mod hypergraph;
 pub mod quarantine;

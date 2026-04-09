@@ -254,6 +254,7 @@ mod tests {
             regime: "Patrol".to_string(),
             version: 1,
             timestamp,
+            position_covariance: None,
         }
     }
 
