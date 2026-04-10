@@ -139,6 +139,26 @@ impl QuarantineManager {
             .map_or(ParticipationLevel::FullParticipant, |r| r.level)
     }
 
+    /// Apply fear-modulated strike tolerance: when fear > 0.7 (combat),
+    /// increase strike thresholds by 1 (the environment is inherently
+    /// noisy, so be more tolerant of suspicious updates).
+    pub fn apply_fear_modulation(&mut self, fear: f64) {
+        if fear > 0.7 {
+            // Only relax thresholds, never tighten beyond base config.
+            let base = QuarantineConfig::default();
+            self.config.strikes_to_limit =
+                self.config.strikes_to_limit.max(base.strikes_to_limit + 1);
+            self.config.strikes_to_readonly = self
+                .config
+                .strikes_to_readonly
+                .max(base.strikes_to_readonly + 1);
+            self.config.strikes_to_quarantine = self
+                .config
+                .strikes_to_quarantine
+                .max(base.strikes_to_quarantine + 1);
+        }
+    }
+
     /// Record a strike (suspicious or rejected event) against a node.
     pub fn record_strike(&mut self, node: NodeId, now: f64) {
         let record = self

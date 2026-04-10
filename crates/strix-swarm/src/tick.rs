@@ -98,6 +98,10 @@ pub struct SwarmConfig {
     pub adaptive_gossip: bool,
     /// Gaussian Belief Propagation config. Default: disabled.
     pub gbp_config: strix_mesh::gbp::GbpConfig,
+    /// Epistemic evidence graph config. Default: disabled.
+    pub evidence_config: strix_mesh::evidence_graph::EvidenceGraphConfig,
+    /// Evidence graph processing interval (ticks). Default 1.
+    pub evidence_interval: u32,
 }
 
 impl Default for SwarmConfig {
@@ -133,6 +137,8 @@ impl Default for SwarmConfig {
             order_params_interval: 1,
             adaptive_gossip: false,
             gbp_config: strix_mesh::gbp::GbpConfig::default(),
+            evidence_config: strix_mesh::evidence_graph::EvidenceGraphConfig::default(),
+            evidence_interval: 1,
         }
     }
 }
@@ -207,6 +213,15 @@ pub struct SwarmDecision {
     // ── Global order parameters ────────────────────────────────────────
     /// Macroscopic swarm health metrics (alignment, fragmentation, entropy, coverage, progress).
     pub order_parameters: crate::order_params::OrderParameters,
+    // ── Epistemic evidence graph ──────────────────────────────────────
+    /// XOR conflicts detected this tick.
+    pub epistemic_conflicts: u32,
+    /// XNOR corroborations detected this tick.
+    pub epistemic_corroborations: u32,
+    /// NOR information vacuums detected this tick.
+    pub epistemic_vacuums: u32,
+    /// Escalation events this tick.
+    pub epistemic_escalations: u32,
 }
 
 // ── Phase 3 intermediate structs ─────────────────────────────────────────
@@ -299,6 +314,8 @@ pub struct SwarmOrchestrator {
     micro_adapter: crate::micro_adapt::MicroAdapter,
     /// Per-drone GBP nodes for distributed belief fusion.
     gbp_nodes: HashMap<u32, strix_mesh::gbp::GbpNode>,
+    /// Epistemic evidence graph for boolean-gated inference.
+    evidence_graph: strix_mesh::evidence_graph::EvidenceGraph,
 
     // ── Island modules ───────────────────────────────────────────────────
     /// Current formation type (None = formation disabled).
@@ -399,6 +416,9 @@ impl SwarmOrchestrator {
                     )
                 })
                 .collect(),
+            evidence_graph: strix_mesh::evidence_graph::EvidenceGraph::new(
+                config.evidence_config.clone(),
+            ),
             // Capture island module configs before moving config
             formation_type: config.formation_type,
             formation_config: config.formation_config.clone(),
@@ -1497,6 +1517,70 @@ impl SwarmOrchestrator {
             }
         }
 
+        // ── 5b. Epistemic evidence processing (Phase 17) ────────────────
+        if self.config.evidence_config.enabled
+            && self.tick_count % self.config.evidence_interval.max(1) == 0
+        {
+            // 1. Forward gate signals from gossip merge into evidence graph.
+            for sig in self.gossip.drain_gate_signals() {
+                self.evidence_graph.ingest_signal(sig);
+            }
+
+            // 2. Record activity for active peers (NOR vacuum detection
+            //    happens inside evidence_graph.process via last_seen timestamps).
+            let vacuum_threshold = self.config.evidence_config.vacuum_threshold_s;
+            let silent: std::collections::HashSet<strix_mesh::NodeId> = self
+                .gossip
+                .silent_peers(self.sim_time, vacuum_threshold)
+                .into_iter()
+                .collect();
+            for peer in &self.gossip.peers {
+                if !silent.contains(peer) {
+                    self.evidence_graph.record_activity(
+                        strix_mesh::bool_gates::SignalSource::Gossip(*peer),
+                        self.sim_time,
+                    );
+                }
+            }
+
+            // 3. Process all signals → feedback actions.
+            let actions = self.evidence_graph.process(self.sim_time);
+
+            // 4. Apply feedback actions.
+            for action in &actions {
+                match action {
+                    strix_mesh::bool_gates::FeedbackAction::UpdateTrust { peer, delta, .. } => {
+                        // Translate trust delta into quarantine strikes/good.
+                        if *delta < -0.03 {
+                            self.gossip.quarantine.record_strike(*peer, self.sim_time);
+                        } else if *delta > 0.01 {
+                            self.gossip.quarantine.record_good(*peer, self.sim_time);
+                        }
+                    }
+                    strix_mesh::bool_gates::FeedbackAction::AdjustThreshold { .. } => {
+                        // Apply fear modulation to quarantine.
+                        self.gossip.quarantine.apply_fear_modulation(fear.f);
+                    }
+                    strix_mesh::bool_gates::FeedbackAction::ResetPrior { peer, .. } => {
+                        if let Some(gbp) = self.gbp_nodes.get_mut(&peer.0) {
+                            gbp.set_neighbor_belief(
+                                *peer,
+                                strix_mesh::gbp::GaussianBelief::uninformative(),
+                            );
+                        }
+                    }
+                    strix_mesh::bool_gates::FeedbackAction::MarkVacuum { .. } => {
+                        // Increase gossip fanout temporarily.
+                        let current_fanout = self.gossip.fanout;
+                        self.gossip.set_fanout(current_fanout + 1);
+                    }
+                    strix_mesh::bool_gates::FeedbackAction::Escalate { .. } => {
+                        // Epistemic escalation logged via evidence_graph counters.
+                    }
+                }
+            }
+        }
+
         // ── 6. Update pheromone field ────────────────────────────────────
         self.pheromones.evaporate(self.sim_time);
 
@@ -2239,6 +2323,12 @@ impl SwarmOrchestrator {
                 &per_drone_fear,
             );
             self.last_order_params = op;
+            // Feed macro-level signals to evidence graph.
+            if self.config.evidence_config.enabled {
+                for sig in op.gate_signals(self.sim_time) {
+                    self.evidence_graph.ingest_signal(sig);
+                }
+            }
             op
         } else {
             self.last_order_params
@@ -2289,6 +2379,10 @@ impl SwarmOrchestrator {
                 None
             },
             order_parameters,
+            epistemic_conflicts: self.evidence_graph.tick_conflicts(),
+            epistemic_corroborations: self.evidence_graph.tick_corroborations(),
+            epistemic_vacuums: self.evidence_graph.tick_vacuums(),
+            epistemic_escalations: self.evidence_graph.tick_escalations(),
         }
     }
 

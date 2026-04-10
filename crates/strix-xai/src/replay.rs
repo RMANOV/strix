@@ -88,6 +88,9 @@ impl From<DecisionType> for EventCategory {
             DecisionType::LeaderElection => EventCategory::Leadership,
             DecisionType::SafetyClamp => EventCategory::Threat,
             DecisionType::CriticalityAdjustment => EventCategory::Regime,
+            DecisionType::EpistemicEscalation
+            | DecisionType::EpistemicConflict
+            | DecisionType::EpistemicVacuum => EventCategory::Regime,
         }
     }
 }

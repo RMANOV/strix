@@ -17,6 +17,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::bool_gates::{GateSignal, SignalSource};
 use crate::byzantine::{self, ByzantineConfig, ValidationResult};
 use crate::contagion::{ContagionEngine, ContagionPolicy};
 use crate::quarantine::{QuarantineConfig, QuarantineManager};
@@ -229,6 +230,8 @@ pub struct GossipEngine {
     peer_quality: HashMap<NodeId, f64>,
     /// Whether to use quality-weighted peer selection (vs uniform random).
     pub adaptive_selection: bool,
+    /// Gate signals emitted during merge_state (drained by orchestrator).
+    pending_gate_signals: Vec<GateSignal>,
 }
 
 impl GossipEngine {
@@ -249,6 +252,7 @@ impl GossipEngine {
             peer_battery_reports: HashMap::new(),
             peer_quality: HashMap::new(),
             adaptive_selection: false,
+            pending_gate_signals: Vec::new(),
         }
     }
 
@@ -263,6 +267,28 @@ impl GossipEngine {
         self.byzantine_rejections = 0;
         self.byzantine_suspicions = 0;
         self.peer_battery_reports.clear();
+        self.pending_gate_signals.clear();
+    }
+
+    /// Drain accumulated gate signals from the last merge_state call.
+    /// The orchestrator feeds these into the evidence graph.
+    pub fn drain_gate_signals(&mut self) -> Vec<GateSignal> {
+        std::mem::take(&mut self.pending_gate_signals)
+    }
+
+    /// Detect peers that have gone silent (NOR vacuum candidates).
+    /// Returns peers whose last known state timestamp is older than `threshold_s`.
+    pub fn silent_peers(&self, now: f64, threshold_s: f64) -> Vec<NodeId> {
+        self.peers
+            .iter()
+            .filter(|peer| {
+                self.known_states
+                    .get(peer)
+                    .map(|s| now - s.timestamp > threshold_s)
+                    .unwrap_or(true) // never heard from = silent
+            })
+            .copied()
+            .collect()
     }
 
     /// Dynamically adjust the gossip fanout (e.g., for EW degradation).
@@ -545,15 +571,39 @@ impl GossipEngine {
                 ValidationResult::Reject => {
                     self.byzantine_rejections += 1;
                     self.quarantine.record_strike(sender, now);
+                    // XOR: byzantine rejects gossip claim (high severity).
+                    self.pending_gate_signals.push(GateSignal::Conflict {
+                        source_a: SignalSource::Byzantine(sender),
+                        source_b: SignalSource::Gossip(incoming.node_id),
+                        severity: 0.9,
+                        timestamp: now,
+                    });
                     continue;
                 }
                 ValidationResult::Suspicious => {
                     self.byzantine_suspicions += 1;
                     self.quarantine.record_strike(sender, now);
+                    // XOR: byzantine flags suspicious gossip (medium severity).
+                    self.pending_gate_signals.push(GateSignal::Conflict {
+                        source_a: SignalSource::Byzantine(sender),
+                        source_b: SignalSource::Gossip(incoming.node_id),
+                        severity: 0.5,
+                        timestamp: now,
+                    });
                     // Accept suspicious updates but record strike.
                 }
                 ValidationResult::Accept => {
                     self.quarantine.record_good(sender, now);
+                    // XNOR: byzantine and gossip agree (corroboration).
+                    self.pending_gate_signals.push(GateSignal::Corroboration {
+                        sources: vec![
+                            SignalSource::Byzantine(sender),
+                            SignalSource::Gossip(incoming.node_id),
+                        ],
+                        independence: 0.8,
+                        confidence_boost: 0.02,
+                        timestamp: now,
+                    });
                 }
             }
 

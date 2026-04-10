@@ -179,7 +179,7 @@ impl TrustTracker {
 }
 
 /// Which trust dimension to update.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrustDimension {
     Integrity = 0,
     Timeliness = 1,

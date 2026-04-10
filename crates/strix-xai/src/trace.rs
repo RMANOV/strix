@@ -98,6 +98,12 @@ pub enum DecisionType {
     SafetyClamp,
     /// Criticality scheduler modulated adaptive parameters.
     CriticalityAdjustment,
+    /// Epistemic evidence graph detected unresolvable conflict.
+    EpistemicEscalation,
+    /// XOR conflict between subsystems.
+    EpistemicConflict,
+    /// NOR information vacuum detected.
+    EpistemicVacuum,
 }
 
 /// A single step in the reasoning chain.

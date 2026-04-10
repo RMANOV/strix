@@ -263,6 +263,8 @@ impl ParamSpace {
             order_params_interval: default.order_params_interval,
             adaptive_gossip: default.adaptive_gossip,
             gbp_config: default.gbp_config,
+            evidence_config: default.evidence_config,
+            evidence_interval: default.evidence_interval,
         }
     }
 

@@ -52,6 +52,37 @@ impl OrderParameters {
             mission_progress,
         }
     }
+
+    /// Generate epistemic gate signals from computed order parameters.
+    ///
+    /// - High entropy + low alignment → macro XOR conflict (swarm is incoherent)
+    /// - Low entropy + high alignment → macro XNOR corroboration (swarm is coherent)
+    pub fn gate_signals(&self, now: f64) -> Vec<strix_mesh::bool_gates::GateSignal> {
+        use strix_mesh::bool_gates::{GateSignal, SignalSource};
+        let mut signals = Vec::new();
+
+        if self.trust_entropy > 0.8 && self.alignment_order < 0.3 {
+            let severity =
+                ((self.trust_entropy - 0.8) + (0.3 - self.alignment_order)).clamp(0.0, 1.0);
+            signals.push(GateSignal::Conflict {
+                source_a: SignalSource::OrderParams,
+                source_b: SignalSource::OrderParams,
+                severity,
+                timestamp: now,
+            });
+        }
+
+        if self.trust_entropy < 0.2 && self.alignment_order > 0.8 {
+            signals.push(GateSignal::Corroboration {
+                sources: vec![SignalSource::OrderParams, SignalSource::OrderParams],
+                independence: 0.7,
+                confidence_boost: 0.01,
+                timestamp: now,
+            });
+        }
+
+        signals
+    }
 }
 
 /// Vicsek alignment: |mean(v̂_i)| where v̂ = v/|v| for moving drones.

@@ -7,10 +7,12 @@
 //! - **Consensus**: lightweight leader election and rank management
 //! - **Comms**: radio abstraction layer with bandwidth-aware prioritization
 
+pub mod bool_gates;
 pub mod byzantine;
 pub mod comms;
 pub mod consensus;
 pub mod contagion;
+pub mod evidence_graph;
 pub mod fractal;
 pub mod gbp;
 pub mod gossip;

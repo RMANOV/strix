@@ -16,6 +16,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::bool_gates::{GateSignal, SignalSource};
 use crate::{NodeId, Position3D};
 
 fn position_is_finite(position: &Position3D) -> bool {
@@ -293,6 +294,60 @@ impl PheromoneField {
             pheromone.timestamp,
             self.decay_rate,
         );
+    }
+
+    /// Deposit pheromone with anti-pheromone cross-validation.
+    ///
+    /// Returns gate signals for conflicts between positive pheromones
+    /// and colocated anti-pheromones (Doubt, Stale).
+    pub fn deposit_with_signals(&mut self, pheromone: &Pheromone) -> Vec<GateSignal> {
+        let mut signals = Vec::new();
+
+        if position_is_finite(&pheromone.position)
+            && pheromone.intensity.is_finite()
+            && pheromone.intensity > 0.0
+            && pheromone.timestamp.is_finite()
+        {
+            let key = self.pos_to_key(&pheromone.position);
+            let zone_hash = key.x as u64 ^ ((key.y as u64) << 21) ^ ((key.z as u64) << 42);
+
+            // XOR: Target deposited where Doubt already exists.
+            if pheromone.ptype == PheromoneType::Target {
+                let doubt_level = self.sense(
+                    &pheromone.position,
+                    PheromoneType::Doubt,
+                    pheromone.timestamp,
+                );
+                if doubt_level > 0.3 {
+                    signals.push(GateSignal::Conflict {
+                        source_a: SignalSource::Pheromone(zone_hash),
+                        source_b: SignalSource::Pheromone(zone_hash | 0x1),
+                        severity: doubt_level.clamp(0.0, 1.0),
+                        timestamp: pheromone.timestamp,
+                    });
+                }
+            }
+
+            // XOR: Explored deposited where Stale already exists.
+            if pheromone.ptype == PheromoneType::Explored {
+                let stale_level = self.sense(
+                    &pheromone.position,
+                    PheromoneType::Stale,
+                    pheromone.timestamp,
+                );
+                if stale_level > 0.3 {
+                    signals.push(GateSignal::Conflict {
+                        source_a: SignalSource::Pheromone(zone_hash),
+                        source_b: SignalSource::Pheromone(zone_hash | 0x2),
+                        severity: stale_level.clamp(0.0, 1.0),
+                        timestamp: pheromone.timestamp,
+                    });
+                }
+            }
+        }
+
+        self.deposit(pheromone);
+        signals
     }
 
     /// Read pheromone level at a position (with lazy evaporation).

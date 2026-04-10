@@ -41,6 +41,9 @@ pub fn narrate_decision(trace: &DecisionTrace, level: DetailLevel) -> String {
         DecisionType::LeaderElection => narrate_leader_election(trace, level),
         DecisionType::SafetyClamp => narrate_threat_response(trace, level),
         DecisionType::CriticalityAdjustment => narrate_regime_change(trace, level),
+        DecisionType::EpistemicEscalation
+        | DecisionType::EpistemicConflict
+        | DecisionType::EpistemicVacuum => narrate_regime_change(trace, level),
     }
 }
 
