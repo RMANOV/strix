@@ -171,7 +171,8 @@ impl HealthMonitor {
             );
         }
 
-        // Record regime changes per drone.
+        // Record regime changes per drone; prune entries for dead drones.
+        self.regime_history.retain(|id, _| regimes.contains_key(id));
         for (&drone_id, &regime) in regimes {
             let history = self.regime_history.entry(drone_id).or_default();
             push_bounded(history, regime, w);
@@ -316,19 +317,24 @@ fn push_bounded<T>(deque: &mut VecDeque<T>, value: T, max_len: usize) {
 }
 
 /// Count sign changes in a sequence of deltas (positive/negative transitions).
+/// Zero-allocation single-pass implementation.
 fn sign_changes(history: &VecDeque<f64>) -> usize {
     if history.len() < 3 {
         return 0;
     }
-    let deltas: Vec<f64> = history
-        .iter()
-        .zip(history.iter().skip(1))
-        .map(|(a, b)| b - a)
-        .collect();
-    deltas
-        .windows(2)
-        .filter(|w| (w[0] > 0.0) != (w[1] > 0.0) && w[0].abs() > 1e-6 && w[1].abs() > 1e-6)
-        .count()
+    let mut count = 0;
+    let mut prev_delta = 0.0_f64;
+    let mut iter = history.iter();
+    let mut a = iter.next().unwrap();
+    for b in iter {
+        let delta = b - a;
+        if prev_delta.abs() > 1e-6 && delta.abs() > 1e-6 && (prev_delta > 0.0) != (delta > 0.0) {
+            count += 1;
+        }
+        prev_delta = delta;
+        a = b;
+    }
+    count
 }
 
 /// Count regime changes in a history.

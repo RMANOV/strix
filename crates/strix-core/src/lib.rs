@@ -20,7 +20,6 @@
 
 pub mod anomaly;
 pub mod cbf;
-// Phase 18: semantic newtypes for compile-time safety.
 pub mod ew_response;
 pub mod fleet_metrics;
 pub mod formation;

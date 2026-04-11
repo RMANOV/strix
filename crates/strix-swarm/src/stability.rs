@@ -101,7 +101,7 @@ pub fn verify_loop_gains(
     prev_criticality: &CriticalityAdjustment,
     prev_fear: f64,
     current_fear: f64,
-    _config: &SwarmConfig,
+    _config: &SwarmConfig, // reserved: derive bounds from config when contracts mature
 ) -> Vec<ContractViolation> {
     let mut violations = Vec::new();
 
