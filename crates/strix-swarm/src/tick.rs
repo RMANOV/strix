@@ -1539,7 +1539,9 @@ impl SwarmOrchestrator {
 
         // ── 5b. Epistemic evidence processing (Phase 17) ────────────────
         if self.config.evidence_config.enabled
-            && self.tick_count % self.config.evidence_interval.max(1) == 0
+            && self
+                .tick_count
+                .is_multiple_of(self.config.evidence_interval.max(1))
         {
             // 1. Forward gate signals from gossip merge into evidence graph.
             for sig in self.gossip.drain_gate_signals() {
@@ -2022,7 +2024,10 @@ impl SwarmOrchestrator {
             .micro_adapter
             .adapt(&self.last_order_params, &self.last_criticality);
 
-        let criticality = if self.tick_count % self.config.criticality_interval.max(1) == 0 {
+        let criticality = if self
+            .tick_count
+            .is_multiple_of(self.config.criticality_interval.max(1))
+        {
             let c = self.compute_criticality_adjustment(&telemetry, fear.f);
             self.last_criticality = c;
             c
@@ -2083,10 +2088,11 @@ impl SwarmOrchestrator {
         // Multi-timescale: skip expensive geometry optimization on non-formation ticks.
         let mut formation_corrections: HashMap<u32, Vector3<f64>> = HashMap::new();
         let formation_quality;
-        let should_update_formation = self.tick_count % self.config.formation_interval.max(1) == 0;
+        let should_update_formation = self
+            .tick_count
+            .is_multiple_of(self.config.formation_interval.max(1));
 
-        if should_update_formation && self.formation_type.is_some() {
-            let formation = self.formation_type.unwrap();
+        if let Some(formation) = self.formation_type.filter(|_| should_update_formation) {
             let n_formation_drones: Vec<(u32, Vector3<f64>)> = telemetry
                 .iter()
                 .filter(|(id, _)| {
@@ -2317,7 +2323,10 @@ impl SwarmOrchestrator {
         let (per_drone_fear, calibration_quality) = (HashMap::new(), 0.0);
 
         // Compute global order parameters (multi-timescale: every N ticks).
-        let order_parameters = if self.tick_count % self.config.order_params_interval.max(1) == 0 {
+        let order_parameters = if self
+            .tick_count
+            .is_multiple_of(self.config.order_params_interval.max(1))
+        {
             let op_positions: Vec<(u32, Vector3<f64>)> = telemetry
                 .iter()
                 .map(|(id, t)| {
