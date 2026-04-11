@@ -704,7 +704,7 @@ mod tests {
         // Record activity at t=0.
         graph.record_activity(SignalSource::Gossip(NodeId(7)), 0.0);
         // Process at t=3 — not yet stale (threshold = 5s).
-        let actions = graph.process(3.0);
+        let _actions = graph.process(3.0);
         assert_eq!(graph.tick_vacuums(), 0);
 
         // Process at t=10 — now stale.

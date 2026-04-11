@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn empty_map_centroid_equals_self() {
         let map = SpatialBeliefMap::new(NodeId(0), SpatialBeliefConfig::default());
-        let self_pos = Position3D([10.0, 20.0, 30.0]);
+        let _self_pos = Position3D([10.0, 20.0, 30.0]);
         // No gossip update — centroid is origin (default)
         assert_eq!(map.active_neighbors(), 0);
     }
