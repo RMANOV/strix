@@ -53,20 +53,15 @@ impl Default for HealthConfig {
 // ---------------------------------------------------------------------------
 
 /// System health assessment.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum HealthStatus {
     /// All invariants hold.
+    #[default]
     Nominal,
     /// One or more soft invariants violated — system is operating sub-optimally.
     Degraded { reasons: Vec<HealthIssue> },
     /// Hard invariant violated — system may be in an unsafe state.
     Critical { reasons: Vec<HealthIssue> },
-}
-
-impl Default for HealthStatus {
-    fn default() -> Self {
-        Self::Nominal
-    }
 }
 
 impl HealthStatus {

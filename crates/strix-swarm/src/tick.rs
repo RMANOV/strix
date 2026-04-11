@@ -1441,7 +1441,9 @@ impl SwarmOrchestrator {
         formation_corrections: &mut HashMap<u32, Vector3<f64>>,
     ) -> (u32, usize, u32, u32) {
         // ── 5. Propagate via gossip (multi-timescale: every N ticks) ─────
-        let should_gossip = self.tick_count % self.config.gossip_interval.max(1) == 0;
+        let should_gossip = self
+            .tick_count
+            .is_multiple_of(self.config.gossip_interval.max(1));
         if should_gossip {
             self.gossip_version += 1;
 
