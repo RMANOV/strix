@@ -31,16 +31,19 @@ impl OrderParameters {
     /// - `positions`: (drone_id, position) pairs
     /// - `velocities`: drone_id → velocity
     /// - `regimes`: drone_id → regime
-    /// - `per_drone_fear`: drone_id → fear level (used as proxy for trust diversity)
+    /// - `per_drone_trust`: drone_id → aggregate trust score ∈ [0, 1].
+    ///   Pass actual trust values from `TrustTracker::aggregate_trust()`.
+    ///   Falls back to `per_drone_fear` semantics if trust is unavailable
+    ///   (same computation, different interpretation).
     pub fn compute(
         positions: &[(u32, Vector3<f64>)],
         velocities: &HashMap<u32, Vector3<f64>>,
         regimes: &HashMap<u32, Regime>,
-        per_drone_fear: &HashMap<u32, f64>,
+        per_drone_trust: &HashMap<u32, f64>,
     ) -> Self {
         let alignment_order = compute_alignment(positions, velocities);
         let fragmentation_index = compute_fragmentation(positions);
-        let trust_entropy = compute_trust_entropy(per_drone_fear);
+        let trust_entropy = compute_trust_entropy(per_drone_trust);
         let coverage_dispersion = compute_coverage_dispersion(positions);
         let mission_progress = compute_mission_progress(regimes);
 
@@ -129,16 +132,19 @@ fn compute_fragmentation(positions: &[(u32, Vector3<f64>)]) -> f64 {
     (mean_dist / 100.0).clamp(0.0, 1.0)
 }
 
-/// Shannon entropy of fear/trust values, normalised to [0, 1].
-fn compute_trust_entropy(per_drone_fear: &HashMap<u32, f64>) -> f64 {
-    let n = per_drone_fear.len();
+/// Shannon entropy of per-peer trust scores, normalised to [0, 1].
+///
+/// High entropy = uniform trust (healthy disagreement or uniform trust).
+/// Low entropy = polarised trust (some peers highly trusted, others not).
+fn compute_trust_entropy(per_drone_trust: &HashMap<u32, f64>) -> f64 {
+    let n = per_drone_trust.len();
     if n <= 1 {
         return 0.0;
     }
 
     // Bucket into 10 bins
     let mut bins = [0u32; 10];
-    for &f in per_drone_fear.values() {
+    for &f in per_drone_trust.values() {
         let f = f.clamp(0.0, 1.0);
         let idx = ((f * 9.999) as usize).min(9);
         bins[idx] += 1;

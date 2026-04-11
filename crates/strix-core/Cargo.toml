@@ -28,3 +28,4 @@ harness = false
 [dev-dependencies]
 serde_json.workspace = true
 criterion.workspace = true
+proptest.workspace = true

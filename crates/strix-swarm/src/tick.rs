@@ -222,6 +222,15 @@ pub struct SwarmDecision {
     pub epistemic_vacuums: u32,
     /// Escalation events this tick.
     pub epistemic_escalations: u32,
+    // ── System health ─────────────────────────────────────────────────
+    /// Runtime health assessment.
+    pub health_status: crate::health::HealthStatus,
+    /// Number of oscillation events detected.
+    pub oscillation_count: u32,
+    /// Mean aggregate trust across all peers.
+    pub trust_mean: f64,
+    /// Fraction of peers currently quarantined.
+    pub quarantine_fraction: f64,
 }
 
 // ── Phase 3 intermediate structs ─────────────────────────────────────────
@@ -316,6 +325,12 @@ pub struct SwarmOrchestrator {
     gbp_nodes: HashMap<u32, strix_mesh::gbp::GbpNode>,
     /// Epistemic evidence graph for boolean-gated inference.
     evidence_graph: strix_mesh::evidence_graph::EvidenceGraph,
+    /// Runtime health monitor.
+    health_monitor: crate::health::HealthMonitor,
+    /// Previous tick's criticality (for stability contract verification).
+    prev_criticality: CriticalityAdjustment,
+    /// Previous tick's fear level (for stability contract verification).
+    prev_fear: f64,
 
     // ── Island modules ───────────────────────────────────────────────────
     /// Current formation type (None = formation disabled).
@@ -419,6 +434,11 @@ impl SwarmOrchestrator {
             evidence_graph: strix_mesh::evidence_graph::EvidenceGraph::new(
                 config.evidence_config.clone(),
             ),
+            health_monitor: crate::health::HealthMonitor::new(
+                crate::health::HealthConfig::default(),
+            ),
+            prev_criticality: CriticalityAdjustment::default(),
+            prev_fear: 0.0,
             // Capture island module configs before moving config
             formation_type: config.formation_type,
             formation_config: config.formation_config.clone(),
@@ -2316,11 +2336,34 @@ impl SwarmOrchestrator {
                     )
                 })
                 .collect();
+            // Build per-drone trust map from gossip trust tracker.
+            // Falls back to fear values for drones with no trust data.
+            let per_drone_trust: HashMap<u32, f64> = telemetry
+                .iter()
+                .map(|(id, _)| {
+                    let trust = self
+                        .gossip
+                        .trust_tracker
+                        .aggregate_trust(strix_mesh::NodeId(*id));
+                    // If trust is exactly default (0.5) and we have fear data, blend:
+                    // this smooths the transition from fear-only to trust-aware.
+                    let blended = if let Some(&fear) = per_drone_fear.get(id) {
+                        if (trust - 0.5).abs() < 1e-6 {
+                            fear // no trust data yet, use fear as before
+                        } else {
+                            trust
+                        }
+                    } else {
+                        trust
+                    };
+                    (*id, blended)
+                })
+                .collect();
             let op = crate::order_params::OrderParameters::compute(
                 &op_positions,
                 &op_velocities,
                 &self.regimes,
-                &per_drone_fear,
+                &per_drone_trust,
             );
             self.last_order_params = op;
             // Feed macro-level signals to evidence graph.
@@ -2383,6 +2426,82 @@ impl SwarmOrchestrator {
             epistemic_corroborations: self.evidence_graph.tick_corroborations(),
             epistemic_vacuums: self.evidence_graph.tick_vacuums(),
             epistemic_escalations: self.evidence_graph.tick_escalations(),
+            // Health monitoring.
+            health_status: {
+                let trust_mean = self.gossip.trust_tracker.mean_aggregate();
+                let total_peers = self.gossip.peers.len().max(1) as f64;
+                let quarantined = self
+                    .gossip
+                    .peers
+                    .iter()
+                    .filter(|p| {
+                        matches!(
+                            self.gossip.quarantine.level(**p),
+                            strix_mesh::quarantine::ParticipationLevel::Quarantine
+                        )
+                    })
+                    .count() as f64;
+                let quarantine_fraction = quarantined / total_peers;
+                let gbp_unc = if self.config.gbp_config.enabled {
+                    let count = self.gbp_nodes.len().max(1) as f64;
+                    let total: f64 = self
+                        .gbp_nodes
+                        .values()
+                        .map(|g| {
+                            let d = g.fused_covariance_diagonal();
+                            d[0] + d[1] + d[2]
+                        })
+                        .sum();
+                    Some(total / count)
+                } else {
+                    None
+                };
+
+                // Verify stability contracts in debug builds.
+                #[cfg(debug_assertions)]
+                {
+                    let violations = crate::stability::verify_loop_gains(
+                        &criticality,
+                        &order_parameters,
+                        &self.prev_criticality,
+                        self.prev_fear,
+                        fear.f,
+                        &self.config,
+                    );
+                    for v in &violations {
+                        eprintln!("{v}");
+                    }
+                }
+                self.prev_criticality = criticality;
+                self.prev_fear = fear.f;
+
+                self.health_monitor.check(
+                    fear.f,
+                    criticality.criticality,
+                    self.gossip.convergence_estimate(),
+                    trust_mean,
+                    quarantine_fraction,
+                    &self.regimes,
+                    gbp_unc,
+                )
+            },
+            oscillation_count: self.health_monitor.oscillation_count(),
+            trust_mean: self.gossip.trust_tracker.mean_aggregate(),
+            quarantine_fraction: {
+                let total = self.gossip.peers.len().max(1) as f64;
+                let quarantined = self
+                    .gossip
+                    .peers
+                    .iter()
+                    .filter(|p| {
+                        matches!(
+                            self.gossip.quarantine.level(**p),
+                            strix_mesh::quarantine::ParticipationLevel::Quarantine
+                        )
+                    })
+                    .count() as f64;
+                quarantined / total
+            },
         }
     }
 

@@ -33,3 +33,4 @@ rand_distr = "0.4"
 thiserror = "2"
 tracing = "0.1"
 criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"

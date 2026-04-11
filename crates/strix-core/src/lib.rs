@@ -20,6 +20,7 @@
 
 pub mod anomaly;
 pub mod cbf;
+// Phase 18: semantic newtypes for compile-time safety.
 pub mod ew_response;
 pub mod fleet_metrics;
 pub mod formation;
@@ -34,6 +35,7 @@ pub mod state;
 pub mod temporal;
 pub mod threat_tracker;
 pub mod uncertainty;
+pub mod units;
 
 // Re-export primary types at crate root for convenience.
 pub use state::{

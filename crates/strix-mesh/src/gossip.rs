@@ -21,6 +21,7 @@ use crate::bool_gates::{GateSignal, SignalSource};
 use crate::byzantine::{self, ByzantineConfig, ValidationResult};
 use crate::contagion::{ContagionEngine, ContagionPolicy};
 use crate::quarantine::{QuarantineConfig, QuarantineManager};
+use crate::trust::{TrustConfig, TrustDimension, TrustTracker};
 use crate::{NodeId, Position3D};
 
 fn position_is_finite(position: &Position3D) -> bool {
@@ -232,6 +233,8 @@ pub struct GossipEngine {
     pub adaptive_selection: bool,
     /// Gate signals emitted during merge_state (drained by orchestrator).
     pending_gate_signals: Vec<GateSignal>,
+    /// 4-dimensional trust tracker for all known peers.
+    pub trust_tracker: TrustTracker,
 }
 
 impl GossipEngine {
@@ -253,6 +256,7 @@ impl GossipEngine {
             peer_quality: HashMap::new(),
             adaptive_selection: false,
             pending_gate_signals: Vec::new(),
+            trust_tracker: TrustTracker::new(TrustConfig::default()),
         }
     }
 
@@ -571,6 +575,11 @@ impl GossipEngine {
                 ValidationResult::Reject => {
                     self.byzantine_rejections += 1;
                     self.quarantine.record_strike(sender, now);
+                    // Trust: penalise integrity and kinematic for rejected data.
+                    self.trust_tracker
+                        .observe(sender, TrustDimension::Integrity, 0.0, now);
+                    self.trust_tracker
+                        .observe(sender, TrustDimension::Kinematic, 0.1, now);
                     // XOR: byzantine rejects gossip claim (high severity).
                     self.pending_gate_signals.push(GateSignal::Conflict {
                         source_a: SignalSource::Byzantine(sender),
@@ -583,6 +592,9 @@ impl GossipEngine {
                 ValidationResult::Suspicious => {
                     self.byzantine_suspicions += 1;
                     self.quarantine.record_strike(sender, now);
+                    // Trust: moderate integrity penalty for suspicious data.
+                    self.trust_tracker
+                        .observe(sender, TrustDimension::Integrity, 0.3, now);
                     // XOR: byzantine flags suspicious gossip (medium severity).
                     self.pending_gate_signals.push(GateSignal::Conflict {
                         source_a: SignalSource::Byzantine(sender),
@@ -594,6 +606,11 @@ impl GossipEngine {
                 }
                 ValidationResult::Accept => {
                     self.quarantine.record_good(sender, now);
+                    // Trust: reinforce integrity and timeliness for valid data.
+                    self.trust_tracker
+                        .observe(sender, TrustDimension::Integrity, 0.9, now);
+                    self.trust_tracker
+                        .observe(sender, TrustDimension::Timeliness, 0.9, now);
                     // XNOR: byzantine and gossip agree (corroboration).
                     self.pending_gate_signals.push(GateSignal::Corroboration {
                         sources: vec![
