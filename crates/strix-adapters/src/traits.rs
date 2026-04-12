@@ -3,9 +3,20 @@
 //! Every drone platform (MAVLink autopilot, ROS2 node, simulator) implements
 //! [`PlatformAdapter`] so the upper layers can issue commands and read telemetry
 //! without caring about the transport protocol.
+//!
+//! ## Migration path
+//!
+//! New code should prefer the richer sub-traits ([`TelemetrySource`],
+//! [`CommandSink`], [`PlatformInfo`]) and [`RichTelemetry`] for explicit frame
+//! tracking and command lifecycle.  The original [`PlatformAdapter`] and
+//! [`Telemetry`] are preserved for backward compatibility.
 
 use serde::{Deserialize, Serialize};
+use strix_core::frames::{Frame, NedPosition};
+use strix_core::units::Timestamp;
 use thiserror::Error;
+
+use crate::command::{CommandAcceptance, CommandId, CommandOutcome};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -120,10 +131,50 @@ pub enum SensorType {
 }
 
 // ---------------------------------------------------------------------------
-// Waypoint
+// Waypoint — frame-safe variants
 // ---------------------------------------------------------------------------
 
-/// A geographic waypoint the drone should fly through.
+/// A geographic waypoint in WGS-84 (for MAVLink / global missions).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeoWaypoint {
+    /// Latitude in degrees (positive = north).
+    pub lat_deg: f64,
+    /// Longitude in degrees (positive = east).
+    pub lon_deg: f64,
+    /// Altitude above MSL (metres).
+    pub alt_m: f64,
+    /// Desired speed at this waypoint (m/s).
+    pub speed: f64,
+    /// Desired heading at arrival (radians), if any.
+    pub heading: Option<f64>,
+}
+
+/// A local waypoint in NED frame (metres, relative to mission origin).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalWaypoint {
+    /// North (metres from origin).
+    pub north: f64,
+    /// East (metres from origin).
+    pub east: f64,
+    /// Down (metres, positive = below origin; negate for altitude AGL).
+    pub down: f64,
+    /// Desired speed at this waypoint (m/s).
+    pub speed: f64,
+    /// Desired heading at arrival (radians), if any.
+    pub heading: Option<f64>,
+}
+
+/// Frame-dispatched waypoint target.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WaypointTarget {
+    /// Global WGS-84 waypoint.
+    Geo(GeoWaypoint),
+    /// Local NED waypoint.
+    Local(LocalWaypoint),
+}
+
+/// Legacy waypoint — kept for backward compatibility during migration.
+/// New code should use [`WaypointTarget`] instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Waypoint {
     /// Latitude (degrees) or local-X (meters).
@@ -136,6 +187,39 @@ pub struct Waypoint {
     pub speed: f64,
     /// Desired heading at arrival (radians), if any.
     pub heading: Option<f64>,
+}
+
+impl From<GeoWaypoint> for Waypoint {
+    fn from(g: GeoWaypoint) -> Self {
+        Self {
+            lat: g.lat_deg,
+            lon: g.lon_deg,
+            alt: g.alt_m,
+            speed: g.speed,
+            heading: g.heading,
+        }
+    }
+}
+
+impl From<LocalWaypoint> for Waypoint {
+    fn from(l: LocalWaypoint) -> Self {
+        Self {
+            lat: l.north,
+            lon: l.east,
+            alt: -l.down,
+            speed: l.speed,
+            heading: l.heading,
+        }
+    }
+}
+
+impl From<WaypointTarget> for Waypoint {
+    fn from(wt: WaypointTarget) -> Self {
+        match wt {
+            WaypointTarget::Geo(g) => g.into(),
+            WaypointTarget::Local(l) => l.into(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +245,62 @@ pub struct Telemetry {
     pub mode: FlightMode,
     /// Timestamp (seconds since epoch or monotonic clock).
     pub timestamp: f64,
+}
+
+// ---------------------------------------------------------------------------
+// RichTelemetry — frame-safe, provenance-tagged telemetry
+// ---------------------------------------------------------------------------
+
+/// Enhanced telemetry with provenance and explicit frame information.
+///
+/// New code should prefer this over [`Telemetry`] because it:
+/// - carries an explicit [`Frame`] tag to prevent NED/ENU confusion,
+/// - records both *observed_at* (sensor sample time) and *received_at*
+///   (adapter ingestion time) so staleness can be detected,
+/// - optionally carries position uncertainty for sensor fusion consumers.
+///
+/// Use [`From<RichTelemetry> for Telemetry`] to downcast when interacting
+/// with legacy code that still expects the flat [`Telemetry`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RichTelemetry {
+    /// Position in the coordinate frame named by [`Self::frame`].
+    pub position: NedPosition,
+    /// Velocity `[vx, vy, vz]` in m/s (NED frame).
+    pub velocity: [f64; 3],
+    /// Attitude `[roll, pitch, yaw]` in radians.
+    pub attitude: [f64; 3],
+    /// Battery state of charge `[0, 1]`.
+    pub battery: f64,
+    /// GPS fix quality.
+    pub gps_fix: GpsFix,
+    /// Whether motors are armed.
+    pub armed: bool,
+    /// Current flight mode.
+    pub mode: FlightMode,
+    /// When the sensor sampled this data (platform/sensor clock).
+    pub observed_at: Timestamp,
+    /// When the adapter received this data (adapter clock).
+    pub received_at: Timestamp,
+    /// Coordinate frame of [`Self::position`].
+    pub frame: Frame,
+    /// Optional position uncertainty — diagonal of position covariance (NED), in m².
+    pub position_covariance: Option<[f64; 3]>,
+}
+
+impl From<RichTelemetry> for Telemetry {
+    fn from(r: RichTelemetry) -> Self {
+        let p = r.position.0;
+        Self {
+            position: [p.x, p.y, p.z],
+            velocity: r.velocity,
+            attitude: r.attitude,
+            battery: r.battery,
+            gps_fix: r.gps_fix,
+            armed: r.armed,
+            mode: r.mode,
+            timestamp: r.observed_at.as_secs(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +382,59 @@ pub trait PlatformAdapter: Send + Sync {
 
     /// Whether the data link to the platform is alive.
     fn is_connected(&self) -> bool;
+
+    /// Run a health check and return the platform's status.
+    fn health_check(&self) -> Result<HealthStatus, AdapterError>;
+}
+
+// ---------------------------------------------------------------------------
+// Sub-traits for incremental adoption
+// ---------------------------------------------------------------------------
+
+/// Telemetry source with provenance and frame tracking.
+///
+/// Implementors provide richer telemetry than the legacy [`PlatformAdapter`]
+/// by returning [`RichTelemetry`] which carries frame tags and dual timestamps.
+pub trait TelemetrySource: Send + Sync {
+    /// Unique drone identifier.
+    fn id(&self) -> u32;
+
+    /// Read the latest rich telemetry with explicit frame and timing info.
+    fn get_rich_telemetry(&self) -> Result<RichTelemetry, AdapterError>;
+
+    /// Whether the data link to the platform is alive.
+    fn is_connected(&self) -> bool;
+}
+
+/// Command sink with lifecycle tracking.
+///
+/// Unlike [`PlatformAdapter::send_waypoint`] / [`PlatformAdapter::execute_action`]
+/// which fire-and-forget, this trait returns a [`CommandId`] that can be used to
+/// poll completion via [`CommandSink::command_status`].
+pub trait CommandSink: Send + Sync {
+    /// Submit a waypoint and receive a command ID (or rejection).
+    fn submit_waypoint(&self, wp: &WaypointTarget) -> Result<CommandAcceptance, AdapterError>;
+
+    /// Submit a discrete action and receive a command ID (or rejection).
+    fn submit_action(&self, action: &Action) -> Result<CommandAcceptance, AdapterError>;
+
+    /// Check the current outcome of a previously submitted command.
+    ///
+    /// Returns [`CommandOutcome::Unknown`] if the ID is unrecognised or has
+    /// expired from the adapter's tracking window.
+    fn command_status(&self, id: CommandId) -> CommandOutcome;
+}
+
+/// Platform identity and health information.
+///
+/// Separate from [`TelemetrySource`] and [`CommandSink`] so it can be
+/// implemented by lightweight proxy objects that don't hold live connections.
+pub trait PlatformInfo: Send + Sync {
+    /// Human-readable platform name (e.g. "PX4 Quadrotor", "STRIX Simulator").
+    fn platform_name(&self) -> &str;
+
+    /// Static capability descriptor for this platform.
+    fn capabilities(&self) -> &Capabilities;
 
     /// Run a health check and return the platform's status.
     fn health_check(&self) -> Result<HealthStatus, AdapterError>;

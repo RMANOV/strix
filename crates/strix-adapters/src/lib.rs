@@ -8,11 +8,13 @@
 //!
 //! ## Modules
 //!
-//! - [`traits`]: Core trait + shared types (Waypoint, Telemetry, Action, …)
+//! - [`traits`]: Core trait + shared types (Waypoint, Telemetry, RichTelemetry, Action, …)
+//! - [`command`]: Command lifecycle types (CommandId, CommandAcceptance, CommandOutcome)
 //! - [`mavlink`]: MAVLink adapter stub (PX4 / ArduPilot)
 //! - [`ros2`]: ROS2 adapter stub (UGV / USV)
 //! - [`simulator`]: Fully working simulator for testing
 
+pub mod command;
 pub mod mavlink;
 pub mod ros2;
 pub mod simulator;

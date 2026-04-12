@@ -9,6 +9,7 @@
 //! [`SwarmOrchestrator`] is the central struct that owns instances of every
 //! subsystem and runs them in the correct sequence each tick.
 
+pub mod anti_panic;
 pub mod convert;
 pub mod criticality;
 pub mod fear_adapter;

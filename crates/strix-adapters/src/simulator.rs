@@ -23,6 +23,10 @@ use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
 use strix_core::cbf::{self, CbfConfig, NeighborState, NoFlyZone};
 
+use strix_core::frames::{Frame, NedPosition};
+use strix_core::units::Timestamp;
+
+use crate::command::{CommandAcceptance, CommandId, CommandOutcome};
 use crate::traits::*;
 
 // ---------------------------------------------------------------------------
@@ -461,6 +465,89 @@ impl PlatformAdapter for SimulatorAdapter {
 }
 
 // ---------------------------------------------------------------------------
+// Sub-trait implementations (Phase 2A)
+// ---------------------------------------------------------------------------
+
+impl TelemetrySource for SimulatorAdapter {
+    fn id(&self) -> u32 {
+        self.drone_id
+    }
+
+    fn get_rich_telemetry(&self) -> Result<RichTelemetry, AdapterError> {
+        let s = self.state.lock().expect("simulator state mutex poisoned");
+        if s.failed {
+            return Err(AdapterError::TelemetryUnavailable(
+                "drone has failed".into(),
+            ));
+        }
+        let ts = Timestamp::from_secs(s.clock);
+        Ok(RichTelemetry {
+            position: NedPosition::new(s.position[0], s.position[1], s.position[2]),
+            velocity: s.velocity,
+            attitude: s.attitude,
+            battery: s.battery,
+            gps_fix: if self.config.gps_noise_std > 0.0 {
+                GpsFix::DGps
+            } else {
+                GpsFix::Fix3D
+            },
+            armed: s.armed,
+            mode: s.mode,
+            observed_at: ts,
+            received_at: ts, // simulator has zero transport latency
+            frame: Frame::Ned,
+            position_covariance: None,
+        })
+    }
+
+    fn is_connected(&self) -> bool {
+        !self
+            .state
+            .lock()
+            .expect("simulator state mutex poisoned")
+            .failed
+    }
+}
+
+impl CommandSink for SimulatorAdapter {
+    fn submit_waypoint(&self, wp: &WaypointTarget) -> Result<CommandAcceptance, AdapterError> {
+        let legacy: Waypoint = wp.clone().into();
+        self.send_waypoint(&legacy)?;
+        Ok(CommandAcceptance::Accepted(CommandId::next()))
+    }
+
+    fn submit_action(&self, action: &Action) -> Result<CommandAcceptance, AdapterError> {
+        self.execute_action(action)?;
+        Ok(CommandAcceptance::Accepted(CommandId::next()))
+    }
+
+    /// Returns `CommandOutcome::Completed` for all recognised IDs.
+    ///
+    /// The simulator's synchronous execution model means every accepted
+    /// command is instantly applied to state; there is no in-flight queue
+    /// to track. A full async adapter would maintain a `HashMap<CommandId,
+    /// CommandOutcome>` and update it from telemetry events.
+    fn command_status(&self, _id: CommandId) -> CommandOutcome {
+        CommandOutcome::Completed
+    }
+}
+
+impl PlatformInfo for SimulatorAdapter {
+    fn platform_name(&self) -> &str {
+        "STRIX Simulator"
+    }
+
+    fn capabilities(&self) -> &Capabilities {
+        &self.caps
+    }
+
+    fn health_check(&self) -> Result<HealthStatus, AdapterError> {
+        // Delegate to the PlatformAdapter implementation.
+        PlatformAdapter::health_check(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Simulator Fleet
 // ---------------------------------------------------------------------------
 
@@ -556,7 +643,7 @@ impl SimulatorFleet {
             .filter_map(|d| {
                 d.get_telemetry().ok().map(|t| {
                     (
-                        d.id(),
+                        PlatformAdapter::id(d),
                         NeighborState {
                             position: Vector3::new(t.position[0], t.position[1], t.position[2]),
                             velocity: Vector3::new(t.velocity[0], t.velocity[1], t.velocity[2]),
@@ -582,7 +669,7 @@ impl SimulatorFleet {
             // Collect neighbor states (exclude self).
             let neighbors: Vec<NeighborState> = neighbor_states
                 .iter()
-                .filter(|(id, _)| *id != drone.id())
+                .filter(|(id, _)| *id != PlatformAdapter::id(drone))
                 .map(|(_, state)| state.clone())
                 .collect();
 
@@ -633,7 +720,7 @@ impl SimulatorFleet {
 
     /// Get a reference to a drone by ID.
     pub fn get(&self, id: u32) -> Option<&SimulatorAdapter> {
-        self.drones.iter().find(|d| d.id() == id)
+        self.drones.iter().find(|d| PlatformAdapter::id(*d) == id)
     }
 }
 
@@ -718,11 +805,14 @@ mod tests {
         let sim = SimulatorAdapter::new(1, [0.0, 0.0, 0.0], config);
         sim.execute_action(&Action::Arm).unwrap();
 
-        assert_eq!(sim.health_check().unwrap(), HealthStatus::Healthy);
+        assert_eq!(
+            PlatformAdapter::health_check(&sim).unwrap(),
+            HealthStatus::Healthy
+        );
 
         // Drain to low
         sim.step_n(70);
-        let health = sim.health_check().unwrap();
+        let health = PlatformAdapter::health_check(&sim).unwrap();
         assert!(
             matches!(
                 health,
@@ -796,5 +886,168 @@ mod tests {
 
         let dist = sim.distance_to([0.0, 0.0, 0.0]);
         assert!(dist < 5.0, "RTL distance = {dist:.1}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 2A sub-trait tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rich_telemetry_to_telemetry_conversion() {
+        use crate::traits::RichTelemetry;
+        use strix_core::frames::{Frame, NedPosition};
+        use strix_core::units::Timestamp;
+
+        let rt = RichTelemetry {
+            position: NedPosition::new(10.0, 20.0, -5.0),
+            velocity: [1.0, 2.0, 3.0],
+            attitude: [0.1, 0.2, 0.3],
+            battery: 0.75,
+            gps_fix: GpsFix::Fix3D,
+            armed: true,
+            mode: FlightMode::Guided,
+            observed_at: Timestamp::from_secs(42.0),
+            received_at: Timestamp::from_secs(42.1),
+            frame: Frame::Ned,
+            position_covariance: Some([0.01, 0.01, 0.04]),
+        };
+
+        let t: crate::traits::Telemetry = rt.into();
+        assert_eq!(t.position, [10.0, 20.0, -5.0]);
+        assert_eq!(t.velocity, [1.0, 2.0, 3.0]);
+        assert_eq!(t.attitude, [0.1, 0.2, 0.3]);
+        assert!((t.battery - 0.75).abs() < 1e-10);
+        assert!(t.armed);
+        assert_eq!(t.mode, FlightMode::Guided);
+        assert!((t.timestamp - 42.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn telemetry_source_connected_unarmed() {
+        use crate::traits::TelemetrySource;
+
+        let sim = SimulatorAdapter::new_default(42);
+        assert!(TelemetrySource::is_connected(&sim));
+        assert_eq!(TelemetrySource::id(&sim), 42);
+
+        let rt = sim.get_rich_telemetry().unwrap();
+        assert_eq!(rt.position.north(), 0.0);
+        assert_eq!(rt.position.east(), 0.0);
+        assert_eq!(rt.position.down(), 0.0);
+        assert!(!rt.armed);
+    }
+
+    #[test]
+    fn telemetry_source_after_flight() {
+        use crate::traits::TelemetrySource;
+        use strix_core::frames::Frame;
+
+        let sim = SimulatorAdapter::new_default(7);
+        sim.execute_action(&Action::Arm).unwrap();
+        sim.execute_action(&Action::Takeoff(50.0)).unwrap();
+        sim.step_n(500);
+
+        let rt = sim.get_rich_telemetry().unwrap();
+        // Frame must be NED
+        assert_eq!(rt.frame, Frame::Ned);
+        // The position in the rich telemetry and the legacy telemetry must agree.
+        let legacy = sim.get_telemetry().unwrap();
+        assert!((rt.position.north() - legacy.position[0]).abs() < 1e-10);
+        assert!((rt.position.east() - legacy.position[1]).abs() < 1e-10);
+        assert!((rt.position.down() - legacy.position[2]).abs() < 1e-10);
+        // observed_at == received_at (zero latency sim)
+        assert!((rt.observed_at.as_secs() - rt.received_at.as_secs()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn command_sink_submit_waypoint_accepts() {
+        use crate::traits::{CommandSink, LocalWaypoint, WaypointTarget};
+
+        let sim = SimulatorAdapter::new_default(3);
+        sim.execute_action(&Action::Arm).unwrap();
+
+        let wp = WaypointTarget::Local(LocalWaypoint {
+            north: 50.0,
+            east: 0.0,
+            down: -30.0,
+            speed: 5.0,
+            heading: None,
+        });
+        let acceptance = sim.submit_waypoint(&wp).unwrap();
+        assert!(acceptance.is_accepted());
+        let id = acceptance.id().unwrap();
+        assert!(id.0 > 0);
+    }
+
+    #[test]
+    fn command_sink_submit_waypoint_rejected_when_disarmed() {
+        use crate::traits::{CommandSink, LocalWaypoint, WaypointTarget};
+
+        let sim = SimulatorAdapter::new_default(5);
+        // NOT armed
+        let wp = WaypointTarget::Local(LocalWaypoint {
+            north: 10.0,
+            east: 0.0,
+            down: -20.0,
+            speed: 5.0,
+            heading: None,
+        });
+        let result = sim.submit_waypoint(&wp);
+        assert!(result.is_err(), "unarmed submit should fail");
+    }
+
+    #[test]
+    fn command_sink_submit_action_arm() {
+        use crate::traits::CommandSink;
+
+        let sim = SimulatorAdapter::new_default(9);
+        let acceptance = sim.submit_action(&Action::Arm).unwrap();
+        assert!(acceptance.is_accepted());
+        // Verify the action was actually applied
+        assert!(sim.get_telemetry().unwrap().armed);
+    }
+
+    #[test]
+    fn command_status_returns_completed() {
+        use crate::command::CommandOutcome;
+        use crate::traits::CommandSink;
+
+        let sim = SimulatorAdapter::new_default(11);
+        sim.execute_action(&Action::Arm).unwrap();
+
+        let acceptance = sim.submit_action(&Action::SetSpeed(5.0)).unwrap();
+        let id = acceptance.id().unwrap();
+        let status = sim.command_status(id);
+        assert_eq!(status, CommandOutcome::Completed);
+        assert!(status.is_terminal());
+        assert!(status.is_success());
+    }
+
+    #[test]
+    fn platform_info_trait() {
+        use crate::traits::PlatformInfo;
+
+        let sim = SimulatorAdapter::new_default(13);
+        assert_eq!(PlatformInfo::platform_name(&sim), "STRIX Simulator");
+        assert!((PlatformInfo::capabilities(&sim).max_speed - 20.0).abs() < 1e-10);
+        assert_eq!(
+            PlatformInfo::health_check(&sim).unwrap(),
+            HealthStatus::Healthy
+        );
+    }
+
+    #[test]
+    fn simulator_implements_all_three_subtraits() {
+        // Verify that SimulatorAdapter can be used as each sub-trait object.
+        use crate::traits::{CommandSink, PlatformInfo, TelemetrySource};
+
+        fn needs_telemetry_source(_: &dyn TelemetrySource) {}
+        fn needs_command_sink(_: &dyn CommandSink) {}
+        fn needs_platform_info(_: &dyn PlatformInfo) {}
+
+        let sim = SimulatorAdapter::new_default(99);
+        needs_telemetry_source(&sim);
+        needs_command_sink(&sim);
+        needs_platform_info(&sim);
     }
 }

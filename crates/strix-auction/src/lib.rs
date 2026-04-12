@@ -18,6 +18,7 @@
 pub mod antifragile;
 pub mod auctioneer;
 pub mod bidder;
+pub mod policy;
 pub mod portfolio;
 pub mod risk;
 
@@ -188,5 +189,6 @@ impl From<&strix_core::DroneState> for DroneState {
 pub use antifragile::{LossAnalyzer, LossClassification, LossRecord};
 pub use auctioneer::{AuctionResult, Auctioneer};
 pub use bidder::{Bid, BidComponents, Bidder};
+pub use policy::{BidBreakdown, BidPolicy, ChurnConfig, DefaultBidPolicy};
 pub use portfolio::{CoverageMatrix, PortfolioOptimizer};
 pub use risk::{AttritionMonitor, MaxDrawdown, RiskLevel, ValueAtRisk};

@@ -166,6 +166,171 @@ impl RiskContext {
 }
 
 // ---------------------------------------------------------------------------
+// Semantic newtypes over UnitInterval
+// ---------------------------------------------------------------------------
+
+macro_rules! unit_newtype {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(UnitInterval);
+
+        impl $name {
+            /// Zero.
+            pub const ZERO: Self = Self(UnitInterval::ZERO);
+            /// One.
+            pub const ONE: Self = Self(UnitInterval::ONE);
+            /// Neutral midpoint.
+            pub const HALF: Self = Self(UnitInterval::HALF);
+
+            /// Create from raw f64, clamping to [0, 1].
+            #[inline]
+            pub fn new(v: f64) -> Self {
+                Self(UnitInterval::new(v))
+            }
+
+            /// Inner value as f64.
+            #[inline]
+            pub fn get(self) -> f64 {
+                self.0.get()
+            }
+
+            /// Underlying UnitInterval.
+            #[inline]
+            pub fn unit(self) -> UnitInterval {
+                self.0
+            }
+
+            /// Complement: 1 - self.
+            #[inline]
+            pub fn complement(self) -> Self {
+                Self(self.0.complement())
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self(UnitInterval::default())
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{:.4}", self.0.get())
+            }
+        }
+
+        impl From<$name> for f64 {
+            #[inline]
+            fn from(v: $name) -> f64 {
+                v.0.get()
+            }
+        }
+
+        impl From<UnitInterval> for $name {
+            #[inline]
+            fn from(u: UnitInterval) -> Self {
+                Self(u)
+            }
+        }
+
+        impl From<$name> for UnitInterval {
+            #[inline]
+            fn from(v: $name) -> UnitInterval {
+                v.0
+            }
+        }
+    };
+}
+
+unit_newtype!(
+    /// Peer trust score — how much we believe a peer's data.
+    Trust
+);
+
+unit_newtype!(
+    /// Fear level — meta-parameter controlling risk aversion.
+    Fear
+);
+
+unit_newtype!(
+    /// Confidence in a measurement or estimate.
+    Confidence
+);
+
+unit_newtype!(
+    /// Gossip convergence — fraction of peers with consistent state.
+    Convergence
+);
+
+// ---------------------------------------------------------------------------
+// Timestamp
+// ---------------------------------------------------------------------------
+
+/// Monotonic timestamp in seconds.
+///
+/// Wraps f64 to prevent mixing timestamps with durations or other scalars.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Timestamp(f64);
+
+impl Timestamp {
+    /// Create a timestamp from seconds.
+    #[inline]
+    pub fn from_secs(s: f64) -> Self {
+        Self(if s.is_finite() { s } else { 0.0 })
+    }
+
+    /// Zero timestamp.
+    pub const ZERO: Self = Self(0.0);
+
+    /// Inner value in seconds.
+    #[inline]
+    pub fn as_secs(self) -> f64 {
+        self.0
+    }
+
+    /// Seconds elapsed since this timestamp, given a current time.
+    #[inline]
+    pub fn elapsed_since(self, now: f64) -> f64 {
+        (now - self.0).max(0.0)
+    }
+
+    /// Whether this timestamp is older than `max_age_s` relative to `now`.
+    #[inline]
+    pub fn is_stale(self, now: f64, max_age_s: f64) -> bool {
+        self.elapsed_since(now) > max_age_s
+    }
+}
+
+impl Default for Timestamp {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
+impl fmt::Display for Timestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:.3}s", self.0)
+    }
+}
+
+impl From<f64> for Timestamp {
+    #[inline]
+    fn from(s: f64) -> Self {
+        Self::from_secs(s)
+    }
+}
+
+impl From<Timestamp> for f64 {
+    #[inline]
+    fn from(t: Timestamp) -> f64 {
+        t.0
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -255,5 +420,85 @@ mod tests {
     #[test]
     fn default_is_half() {
         assert!((UnitInterval::default().get() - 0.5).abs() < 1e-10);
+    }
+
+    // --- Semantic newtypes ---
+
+    #[test]
+    fn trust_and_fear_are_distinct_types() {
+        let t = Trust::new(0.8);
+        let f = Fear::new(0.3);
+        // They have the same inner value type but are NOT interchangeable:
+        // Trust + Fear does NOT compile — that's the point.
+        assert!((t.get() - 0.8).abs() < 1e-10);
+        assert!((f.get() - 0.3).abs() < 1e-10);
+    }
+
+    #[test]
+    fn semantic_newtype_clamps() {
+        assert_eq!(Trust::new(1.5).get(), 1.0);
+        assert_eq!(Fear::new(-0.1).get(), 0.0);
+        assert_eq!(Confidence::new(f64::NAN).get(), 0.0);
+    }
+
+    #[test]
+    fn semantic_newtype_complement() {
+        let t = Trust::new(0.3);
+        assert!((t.complement().get() - 0.7).abs() < 1e-10);
+    }
+
+    #[test]
+    fn semantic_newtype_conversions() {
+        let u = UnitInterval::new(0.6);
+        let t: Trust = u.into();
+        let back: UnitInterval = t.into();
+        assert!((back.get() - 0.6).abs() < 1e-10);
+
+        let f64_val: f64 = t.into();
+        assert!((f64_val - 0.6).abs() < 1e-10);
+    }
+
+    #[test]
+    fn semantic_newtype_serde() {
+        let c = Confidence::new(0.95);
+        let json = serde_json::to_string(&c).unwrap();
+        let back: Confidence = serde_json::from_str(&json).unwrap();
+        assert!((back.get() - 0.95).abs() < 1e-10);
+    }
+
+    // --- Timestamp ---
+
+    #[test]
+    fn timestamp_elapsed() {
+        let t = Timestamp::from_secs(10.0);
+        assert!((t.elapsed_since(15.0) - 5.0).abs() < 1e-10);
+        // Negative elapsed is clamped to 0
+        assert!((t.elapsed_since(5.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn timestamp_is_stale() {
+        let t = Timestamp::from_secs(10.0);
+        assert!(!t.is_stale(12.0, 5.0)); // 2s old, max 5s
+        assert!(t.is_stale(20.0, 5.0)); // 10s old, max 5s
+        assert!(!t.is_stale(15.0, 5.0)); // exactly 5s, not stale (> not >=)
+    }
+
+    #[test]
+    fn timestamp_nan_handled() {
+        let t = Timestamp::from_secs(f64::NAN);
+        assert_eq!(t.as_secs(), 0.0);
+    }
+
+    #[test]
+    fn timestamp_conversions() {
+        let t: Timestamp = 42.0_f64.into();
+        let back: f64 = t.into();
+        assert!((back - 42.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn convergence_default() {
+        assert!((Convergence::default().get() - 0.5).abs() < 1e-10);
     }
 }

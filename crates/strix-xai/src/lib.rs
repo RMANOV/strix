@@ -11,6 +11,8 @@
 //! - **[`narrator`]** — Convert machine traces into human-readable text.
 //! - **[`replay`]** — After-action review, what-if analysis, and timeline export.
 
+pub mod correlation;
 pub mod narrator;
+pub mod reason_codes;
 pub mod replay;
 pub mod trace;

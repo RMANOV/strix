@@ -18,16 +18,19 @@
 //! - **CUSUM anomaly detection**: jamming, threat shifts, environment
 //! - **Uncertainty quantification**: Hurst, volatility, kurtosis
 
+pub mod adversarial;
 pub mod anomaly;
 pub mod cbf;
 pub mod ew_response;
 pub mod fleet_metrics;
 pub mod formation;
+pub mod frames;
 pub mod gcbf;
 pub mod hysteresis;
 pub mod intent;
 pub mod particle_common;
 pub mod particle_nav;
+pub mod pipeline;
 pub mod regime;
 pub mod roe;
 pub mod state;
@@ -37,6 +40,7 @@ pub mod uncertainty;
 pub mod units;
 
 // Re-export primary types at crate root for convenience.
+pub use frames::{EnuPosition, Frame, NedPosition, WgsPosition};
 pub use state::{
     DroneState, FleetState, Observation, Regime, SensorConfig, StateError, ThreatRegime,
     ThreatState,
