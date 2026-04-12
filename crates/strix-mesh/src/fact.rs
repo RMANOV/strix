@@ -98,7 +98,7 @@ pub struct DroneObservation {
 
 /// Observation of a threat.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThreatObservation {
+pub struct ThreatFactPayload {
     /// Threat identifier.
     pub threat_id: u64,
     /// Observed position.
@@ -124,7 +124,7 @@ pub enum MeshFact {
     /// Observation of a drone.
     Drone(FactEnvelope<DroneObservation>),
     /// Observation of a threat.
-    Threat(FactEnvelope<ThreatObservation>),
+    Threat(FactEnvelope<ThreatFactPayload>),
     /// Retraction of a previous fact.
     Retraction(FactEnvelope<FactRetraction>),
 }
@@ -219,7 +219,7 @@ mod tests {
         MeshFact::Threat(FactEnvelope {
             id: FactId { origin, seq },
             kind: FactKind::Observation,
-            payload: ThreatObservation {
+            payload: ThreatFactPayload {
                 threat_id,
                 position: Position3D([10.0, 20.0, 0.0]),
                 threat_level: 0.7,
@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(back.id(), drone_fact.id());
         assert_eq!(back.originator(), drone_fact.originator());
 
-        // ThreatObservation envelope
+        // ThreatFactPayload envelope
         let threat_fact = make_threat_fact(NodeId(3), 2, 10.0, 60.0, 0.75, 99);
         let json = serde_json::to_string(&threat_fact).expect("serialize threat fact");
         let back: MeshFact = serde_json::from_str(&json).expect("deserialize threat fact");

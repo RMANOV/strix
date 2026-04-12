@@ -45,7 +45,6 @@ impl NedPosition {
 
     /// Origin.
     pub const fn origin() -> Self {
-        // const fn can't call Vector3::new, use raw array
         Self(Vector3::new(0.0, 0.0, 0.0))
     }
 

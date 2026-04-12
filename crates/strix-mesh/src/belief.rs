@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::NodeId;
 
-use super::fact::{DroneObservation, FactId, MeshFact, ThreatObservation};
+use super::fact::{DroneObservation, FactId, MeshFact, ThreatFactPayload};
 
 /// Composed belief about a single drone.
 #[derive(Debug, Clone)]
@@ -26,7 +26,7 @@ pub struct DroneBelief {
 #[derive(Debug, Clone)]
 pub struct ThreatBelief {
     /// Latest observation.
-    pub observation: ThreatObservation,
+    pub observation: ThreatFactPayload,
     /// Effective confidence.
     pub confidence: f64,
     /// Source fact ID.
@@ -100,13 +100,13 @@ impl BeliefCompositor {
 
     /// Compose drone beliefs from all non-retracted drone observations.
     pub fn drone_beliefs(&self, now: f64) -> HashMap<NodeId, DroneBelief> {
-        let mut beliefs: HashMap<NodeId, DroneBelief> = HashMap::new();
+        let mut beliefs: HashMap<NodeId, DroneBelief> = HashMap::with_capacity(self.facts.len());
 
         for fact in self.facts.values() {
-            if self.retracted.contains(&fact.id()) {
-                continue;
-            }
             if let MeshFact::Drone(ref envelope) = fact {
+                if self.retracted.contains(&fact.id()) {
+                    continue;
+                }
                 let drone_id = envelope.payload.drone_id;
                 let eff_conf = envelope.effective_confidence(now);
 
@@ -140,7 +140,7 @@ impl BeliefCompositor {
 
     /// Compose threat beliefs.
     pub fn threat_beliefs(&self, now: f64) -> HashMap<u64, ThreatBelief> {
-        let mut beliefs: HashMap<u64, ThreatBelief> = HashMap::new();
+        let mut beliefs: HashMap<u64, ThreatBelief> = HashMap::with_capacity(self.facts.len());
 
         for fact in self.facts.values() {
             let is_retracted = self.retracted.contains(&fact.id());
@@ -201,7 +201,7 @@ impl BeliefCompositor {
 mod tests {
     use super::*;
     use crate::fact::{
-        CausalStamp, DroneObservation, FactEnvelope, FactKind, FactRetraction, ThreatObservation,
+        CausalStamp, DroneObservation, FactEnvelope, FactKind, FactRetraction, ThreatFactPayload,
     };
     use crate::Position3D;
 
@@ -250,7 +250,7 @@ mod tests {
         MeshFact::Threat(FactEnvelope {
             id: FactId { origin, seq },
             kind: FactKind::Observation,
-            payload: ThreatObservation {
+            payload: ThreatFactPayload {
                 threat_id,
                 position: Position3D([10.0, 20.0, 0.0]),
                 threat_level: 0.7,

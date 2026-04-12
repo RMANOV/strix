@@ -3,7 +3,11 @@
 //! Instead of modeling individual enemy intent (DEFENDING/ATTACKING/RETREATING),
 //! this module models aggregate swarm-level intent patterns.
 
+use std::collections::VecDeque;
+
 use serde::{Deserialize, Serialize};
+
+use crate::state::Regime;
 
 /// Swarm-level intent classification for adversary forces.
 ///
@@ -40,13 +44,11 @@ impl SwarmIntent {
     }
 
     /// Suggested regime for our swarm in response.
-    pub fn suggested_response(&self) -> &'static str {
+    pub fn suggested_response(&self) -> Regime {
         match self {
-            Self::Withdrawing => "patrol",
-            Self::Defensive => "patrol",
-            Self::Probing => "engage",
-            Self::Flanking => "evade",
-            Self::Massing => "evade",
+            Self::Withdrawing | Self::Defensive => Regime::Patrol,
+            Self::Probing => Regime::Engage,
+            Self::Flanking | Self::Massing => Regime::Evade,
         }
     }
 }
@@ -72,7 +74,7 @@ pub struct AdversaryObservation {
 /// Classifier for swarm-level adversarial intent.
 pub struct SwarmIntentClassifier {
     /// History of observations for trend detection.
-    history: Vec<AdversaryObservation>,
+    history: VecDeque<AdversaryObservation>,
     /// Maximum history length.
     max_history: usize,
     /// Current classification.
@@ -84,9 +86,10 @@ pub struct SwarmIntentClassifier {
 impl SwarmIntentClassifier {
     /// Create a new classifier.
     pub fn new(max_history: usize) -> Self {
+        let cap = max_history.max(5);
         Self {
-            history: Vec::new(),
-            max_history: max_history.max(5),
+            history: VecDeque::with_capacity(cap),
+            max_history: cap,
             current_intent: SwarmIntent::Defensive,
             confidence: 0.0,
         }
@@ -94,9 +97,9 @@ impl SwarmIntentClassifier {
 
     /// Ingest a new observation and update classification.
     pub fn observe(&mut self, obs: AdversaryObservation) {
-        self.history.push(obs);
+        self.history.push_back(obs);
         if self.history.len() > self.max_history {
-            self.history.remove(0);
+            self.history.pop_front();
         }
         self.classify();
     }
@@ -127,7 +130,7 @@ impl SwarmIntentClassifier {
             return;
         }
 
-        let latest = self.history.last().unwrap();
+        let latest = self.history.back().unwrap();
         let prev = &self.history[self.history.len() - 2];
 
         // Massing: spacing decreasing, entities stable or increasing

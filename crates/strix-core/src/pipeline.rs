@@ -109,23 +109,27 @@ impl UncertaintyFeature for HurstFeature {
             return FeatureValue::invalid(self.name());
         }
 
-        // R/S analysis (simplified)
+        // R/S analysis — single-pass, zero allocations
         let n = history.len();
         let mean: f64 = history.iter().sum::<f64>() / n as f64;
-        let deviations: Vec<f64> = history.iter().map(|x| x - mean).collect();
 
-        // Cumulative deviations
-        let mut cum_dev = Vec::with_capacity(n);
-        let mut sum = 0.0;
-        for d in &deviations {
-            sum += d;
-            cum_dev.push(sum);
+        let mut cum = 0.0_f64;
+        let mut cum_max = f64::NEG_INFINITY;
+        let mut cum_min = f64::INFINITY;
+        let mut ss = 0.0_f64;
+        for &x in history {
+            let d = x - mean;
+            cum += d;
+            ss += d * d;
+            if cum > cum_max {
+                cum_max = cum;
+            }
+            if cum < cum_min {
+                cum_min = cum;
+            }
         }
-
-        let range = cum_dev.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
-            - cum_dev.iter().cloned().fold(f64::INFINITY, f64::min);
-
-        let std_dev = (deviations.iter().map(|d| d * d).sum::<f64>() / n as f64).sqrt();
+        let range = cum_max - cum_min;
+        let std_dev = (ss / n as f64).sqrt();
 
         if std_dev < 1e-12 {
             return FeatureValue {

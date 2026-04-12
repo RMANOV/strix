@@ -60,7 +60,11 @@ impl PartitionDetector {
 
     /// Detect current connectivity status.
     pub fn detect(&self, now: f64) -> ConnectivityStatus {
-        let reachable = self.reachable_peers(now).len();
+        let reachable = self
+            .last_heard
+            .values()
+            .filter(|&&last| now - last <= self.max_age_s)
+            .count();
         if reachable == 0 {
             ConnectivityStatus::Isolated
         } else if reachable < self.expected_peers {

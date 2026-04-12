@@ -52,6 +52,7 @@ impl PanicDamper {
     }
 
     /// Create with default config.
+    #[deprecated(note = "use PanicDamper::default() instead")]
     pub fn default_config() -> Self {
         Self::new(PanicDamperConfig::default())
     }
@@ -65,7 +66,7 @@ impl PanicDamper {
         let total = requests.len().max(1) as f64;
         let max_changes = (total * self.config.max_regime_change_rate).ceil() as usize;
 
-        let mut allowed = Vec::new();
+        let mut allowed = Vec::with_capacity(max_changes);
 
         for &(drone_id, wants_change) in requests {
             if !wants_change {
@@ -91,6 +92,9 @@ impl PanicDamper {
     ///
     /// Limits the rate of fear increase and applies decay.
     pub fn dampen_fear(&mut self, raw_fear: f64) -> f64 {
+        if !raw_fear.is_finite() {
+            return self.dampened_fear;
+        }
         let clamped = raw_fear.clamp(0.0, 1.0);
         let delta = clamped - self.dampened_fear;
 
@@ -119,6 +123,12 @@ impl PanicDamper {
     /// Remove a drone from tracking (e.g. after loss).
     pub fn remove_drone(&mut self, drone_id: u32) {
         self.last_regime_change.remove(&drone_id);
+    }
+}
+
+impl Default for PanicDamper {
+    fn default() -> Self {
+        Self::new(PanicDamperConfig::default())
     }
 }
 

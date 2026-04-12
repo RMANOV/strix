@@ -162,11 +162,34 @@ pub struct Escalation {
 /// Attention filter — suppresses low-priority escalations during high-tempo ops.
 pub struct AttentionFilter {
     /// Minimum escalation level to surface.
-    pub min_level: EscalationLevel,
+    min_level: EscalationLevel,
     /// Cooldown between escalations of the same type (seconds).
-    pub cooldown_s: f64,
+    cooldown_s: f64,
     /// Last escalation time per label.
-    last_escalation: std::collections::HashMap<String, f64>,
+    last_escalation: std::collections::HashMap<&'static str, f64>,
+}
+
+impl AttentionFilter {
+    /// Current minimum escalation level.
+    pub fn min_level(&self) -> EscalationLevel {
+        self.min_level
+    }
+
+    /// Set minimum escalation level.
+    pub fn set_min_level(&mut self, level: EscalationLevel) {
+        self.min_level = level;
+    }
+
+    /// Current cooldown in seconds.
+    pub fn cooldown_s(&self) -> f64 {
+        self.cooldown_s
+    }
+
+    /// Set cooldown, clearing cached escalation times.
+    pub fn set_cooldown(&mut self, cooldown_s: f64) {
+        self.cooldown_s = cooldown_s;
+        self.last_escalation.clear();
+    }
 }
 
 impl AttentionFilter {
@@ -201,8 +224,8 @@ impl AttentionFilter {
         }
 
         // Check cooldown
-        let label = escalation.reason.label().to_string();
-        if let Some(&last) = self.last_escalation.get(&label) {
+        let label = escalation.reason.label();
+        if let Some(&last) = self.last_escalation.get(label) {
             if escalation.timestamp - last < self.cooldown_s {
                 return false;
             }
