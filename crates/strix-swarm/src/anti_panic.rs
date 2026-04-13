@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn rate_limiting() {
         let mut d = PanicDamper::default(); // 30% rate
-                                                   // 10 drones all want to change — only ceil(10 * 0.3) = 3 allowed
+                                            // 10 drones all want to change — only ceil(10 * 0.3) = 3 allowed
         let requests: Vec<(u32, bool)> = (0u32..10).map(|id| (id, true)).collect();
         let allowed = d.filter_regime_changes(&requests);
         assert_eq!(
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn fear_dampening_limits_spike() {
         let mut d = PanicDamper::default(); // max_fear_delta = 0.15
-                                                   // Sudden spike from 0 to 1.0
+                                            // Sudden spike from 0 to 1.0
         let dampened = d.dampen_fear(1.0);
         assert!(
             dampened <= 0.15 + 1e-10,
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn fear_decay() {
         let mut d = PanicDamper::default(); // fear_decay_rate = 0.05
-                                                   // Raise fear to 0.5 via gradual steps (each step ≤ max_fear_delta=0.15)
+                                            // Raise fear to 0.5 via gradual steps (each step ≤ max_fear_delta=0.15)
         d.dampen_fear(0.15);
         d.dampen_fear(0.30);
         d.dampen_fear(0.45);
