@@ -1,15 +1,17 @@
-"""Mission Brain -- the central market-inspired mission planner.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Mission Brain -- orchestration loop for the public autonomy core.
 
 Layer 1 of the STRIX architecture.  Orchestrates the particle filter loop,
 regime management, combinatorial auctions, and mesh coordination to convert
-high-level human intent into executable drone assignments.
+high-level human intent into executable platform assignments.
 
 The main loop mirrors a quantitative trading engine:
 
     predict -> update -> regime_check -> auction -> assign
 
 Each tick runs this pipeline at 10 Hz, producing a list of Decisions that the
-Puppet Master layer (strix-adapters) translates into platform commands.
+adapter layer (`strix-adapters`) translates into platform commands.
 """
 
 # Coordinate Convention — NED (North-East-Down)
@@ -27,7 +29,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from enum import Enum, auto
+from enum import Enum
 from typing import Optional
 
 from strix.orientation import OrientationEngine, OrientationSnapshot
@@ -50,7 +52,7 @@ class BrainConfig:
     """Particle count for the friendly-side navigation filter."""
 
     n_enemy_particles: int = 500
-    """Particle count for the adversarial (enemy) filter."""
+    """Particle count for the contact-side filter."""
 
     regime_transition_matrix: list[list[float]] = field(
         default_factory=lambda: [
@@ -88,12 +90,14 @@ class BrainConfig:
 class MissionType(Enum):
     """High-level mission categories."""
 
-    RECON = auto()
-    STRIKE = auto()
-    ESCORT = auto()
-    DEFEND = auto()
-    PATROL = auto()
-    RELAY = auto()
+    RECON = 1
+    STRIKE = 2
+    INTERDICT = 2
+    ESCORT = 3
+    DEFEND = 4
+    SECURE = 4
+    PATROL = 5
+    RELAY = 6
 
 
 class RegimeLabel(Enum):
@@ -101,19 +105,46 @@ class RegimeLabel(Enum):
 
     PATROL = 0
     ENGAGE = 1
+    TRACK = 1
     EVADE = 2
+    AVOID = 2
 
 
 class DecisionKind(Enum):
     """Atomic decision types emitted by the brain each tick."""
 
-    GOTO = auto()
-    LOITER = auto()
-    ENGAGE_TARGET = auto()
-    EVADE = auto()
-    RETURN_TO_BASE = auto()
-    RELAY_STATION = auto()
-    LAND = auto()
+    GOTO = 1
+    LOITER = 2
+    ENGAGE_TARGET = 3
+    ACT_ON_TARGET = 3
+    EVADE = 4
+    RETURN_TO_BASE = 5
+    RELAY_STATION = 6
+    LAND = 7
+
+
+_THREAT_TYPE_ALIASES: dict[str, str] = {
+    "area_denial": "sam",
+    "air_denial": "sam",
+    "local_hazard": "small_arms",
+    "interference": "electronic_warfare",
+    "ew": "electronic_warfare",
+    "jamming": "electronic_warfare",
+}
+
+
+def _normalize_threat_type_label(label: str | None) -> str:
+    """Map neutral aliases onto the canonical threat labels used internally."""
+
+    if not label:
+        return "unknown"
+
+    head, sep, tail = label.strip().partition(":")
+    normalized_head = head.lower().replace("-", "_").replace(" ", "_")
+    normalized_head = _THREAT_TYPE_ALIASES.get(normalized_head, normalized_head)
+    if not sep:
+        return normalized_head
+    return f"{normalized_head}:{tail}"
 
 
 @dataclass
@@ -153,7 +184,7 @@ class Constraint:
 
 @dataclass
 class MissionIntent:
-    """Structured representation of what the commander wants."""
+    """Structured representation of what the operator wants."""
 
     mission_type: MissionType = MissionType.RECON
     area: Optional[MissionArea] = None
@@ -180,7 +211,7 @@ class DroneSnapshot:
 
 @dataclass
 class ThreatObservation:
-    """An observation about an enemy entity."""
+    """An observation about an external contact."""
 
     threat_id: int = 0
     position: Vec3 = field(default_factory=Vec3)
@@ -412,7 +443,7 @@ class MissionBrain:
             1. Validate intent feasibility (enough drones, within range).
             2. Compute optimal allocation via combinatorial auction.
             3. Generate waypoints and assignments.
-            4. Package into a MissionPlan for commander review.
+            4. Package into a MissionPlan for operator review.
         """
         logger.info("Processing intent: %s over %s", intent.mission_type.name, intent.area)
         self._refresh_runtime_comms()
@@ -470,7 +501,7 @@ class MissionBrain:
         Returns
         -------
         list[Decision]
-            Zero or more decisions for the Puppet Master to execute.
+            Zero or more decisions for the adapter layer to execute.
         """
         self._tick_count += 1
         decisions: list[Decision] = []
@@ -566,6 +597,9 @@ class MissionBrain:
 
     def update_threat_sync(self, observation: ThreatObservation) -> None:
         """Incorporate a new threat observation into the adversarial filter."""
+        normalized_type = _normalize_threat_type_label(observation.threat_type)
+        if normalized_type != observation.threat_type:
+            observation = dataclasses.replace(observation, threat_type=normalized_type)
         self._threats[observation.threat_id] = observation
         logger.info(
             "Threat updated: id=%d type=%s confidence=%.2f",
@@ -573,7 +607,7 @@ class MissionBrain:
             observation.threat_type,
             observation.confidence,
         )
-        source_label = (observation.threat_type or "unknown").split(":", 1)[0]
+        source_label = observation.threat_type.split(":", 1)[0]
         self._orientation.observe_source(source_label, observation.confidence, time.monotonic())
 
         # High-confidence threat near the fleet -> consider regime shift
@@ -703,7 +737,8 @@ class MissionBrain:
                 ) / distance
                 approach_score = max(0.0, min(approach_projection / 25.0, 1.0))
 
-            kill_zone_bias = 0.25 if threat.threat_type.startswith("kill_zone:") else 0.0
+            threat_label = _normalize_threat_type_label(threat.threat_type)
+            kill_zone_bias = 0.25 if threat_label.startswith("kill_zone:") else 0.0
             confidence = max(0.0, min(threat.confidence, 1.0))
 
             engage_pressure += confidence * (0.65 * proximity + 0.35 * approach_score)
@@ -1112,7 +1147,7 @@ class MissionBrain:
         for threat in self._threats.values():
             confidence = max(0.0, min(threat.confidence, 1.0))
             threat_confidences.append(confidence)
-            label = (threat.threat_type or "unknown").split(":", 1)[0].lower()
+            label = _normalize_threat_type_label(threat.threat_type).split(":", 1)[0]
             source_confidences[label] = max(source_confidences.get(label, 0.0), confidence)
             doctrine_scores[label] = doctrine_scores.get(label, 0.0) + confidence
 

@@ -1,12 +1,14 @@
-"""Edge inference engine for on-device LLM.
+# SPDX-License-Identifier: Apache-2.0
 
-Targets hardware platforms commonly used in military drone payloads:
+"""Edge inference engine for on-device language models.
+
+Targets hardware platforms commonly used in autonomy and robotics deployments:
 
 NVIDIA Jetson Orin (AGX / NX / Nano)
     - llama.cpp with CUDA backend
     - 8-64 GB unified memory
     - INT4/INT8 quantization for 3B models
-    - Target: <100ms inference for tactical parsing
+    - Target: <100ms inference for short-horizon parsing
 
 Intel NUC / x86 edge servers
     - ONNX Runtime with OpenVINO EP
@@ -23,12 +25,13 @@ The edge inference engine provides:
     2. Warm-up and latency benchmarking
     3. Graceful degradation when hardware is insufficient
     4. Memory-mapped model loading to minimize startup time
-    5. Batch inference for multi-drone decision requests
+    5. Batch inference for multi-platform decision requests
 
-Integration with strix.llm.military_llm:
-    The MilitaryLLM class delegates to EdgeInference when running
-    on embedded hardware.  The factory function ``create_inference()``
-    auto-detects the platform and returns the appropriate backend.
+Integration with strix.llm.autonomy_llm:
+    The optional public LLM interface may delegate to EdgeInference when
+    running on embedded hardware. The factory function
+    ``create_inference()`` auto-detects the platform and returns the
+    appropriate backend.
 """
 
 from __future__ import annotations

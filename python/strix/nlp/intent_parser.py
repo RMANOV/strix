@@ -1,16 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Voice / text command parser -- converts natural language to structured MissionIntent.
 
-Input:  "Recon north ridge, avoid AA corridor, report in 10 min"
+Input:  "Survey north ridge, avoid high-interference corridor, report in 10 min"
 Output: MissionIntent(type=RECON, area=NorthRidge, constraints=[AvoidAA], deadline=600s)
 
 The parser uses a keyword-matching approach as a baseline.  Production
-deployment will swap in a military-domain finetuned LLM (see strix.llm)
+deployment may swap in a domain-adapted language model (see strix.llm)
 for richer understanding, but the keyword fallback remains as a
-degraded-mode capability when LLM inference is unavailable (edge devices,
-comms-denied, etc.).
+degraded-mode capability when LLM inference is unavailable.
 
-Supported languages: English (primary), Bulgarian (partial -- commander
-may issue orders in native language).
+Supported languages: English (primary), Bulgarian (partial -- operator
+may issue requests in native language).
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from strix.brain import Constraint, MissionArea, MissionIntent, MissionType, Vec
 logger = logging.getLogger("strix.nlp.intent_parser")
 
 # ---------------------------------------------------------------------------
-# Named areas (lookup table -- in production loaded from mission config)
+# Named areas (lookup table -- in production loaded from scenario config)
 # ---------------------------------------------------------------------------
 
 _NAMED_AREAS: dict[str, MissionArea] = {
@@ -53,6 +54,7 @@ _MISSION_KEYWORDS: dict[str, MissionType] = {
     "watch": MissionType.RECON,
     "isr": MissionType.RECON,
     "strike": MissionType.STRIKE,
+    "interdict": MissionType.INTERDICT,
     "attack": MissionType.STRIKE,
     "engage": MissionType.STRIKE,
     "destroy": MissionType.STRIKE,
@@ -79,17 +81,17 @@ _MISSION_KEYWORDS: dict[str, MissionType] = {
 # ---------------------------------------------------------------------------
 
 _CONSTRAINT_KEYWORDS: dict[str, str] = {
-    "avoid aa": "Avoid anti-aircraft corridor",
-    "avoid sam": "Avoid SAM engagement zone",
+    "avoid aa": "Avoid restricted air corridor",
+    "avoid sam": "Avoid high-interference zone",
     "avoid civilian": "Avoid civilian areas",
     "low altitude": "Maintain low altitude profile",
     "high altitude": "Maintain high altitude",
-    "stealth": "Minimize radar cross-section exposure",
+    "stealth": "Minimize sensor exposure",
     "silent": "Radio silence -- passive sensors only",
     "fast": "Maximize speed, accept higher risk",
     "safe": "Minimize risk, accept slower execution",
-    "no weapons": "Reconnaissance only -- weapons hold",
-    "weapons free": "Cleared to engage targets of opportunity",
+    "observation only": "Observation-focused action profile requested",
+    "broad autonomy": "Expanded autonomy envelope requested by caller",
 }
 
 # ---------------------------------------------------------------------------
@@ -140,15 +142,15 @@ class IntentParser:
 
         parser = IntentParser()
 
-        intent = parser.parse("Recon north ridge, avoid AA corridor, report in 10 min")
+        intent = parser.parse("Survey north ridge, avoid high-interference corridor, report in 10 min")
         # -> MissionIntent(type=RECON, area=NorthRidge, constraints=[AvoidAA], deadline=600s)
 
-        intent = parser.parse("Send 6 drones to strike checkpoint alpha, weapons free")
-        # -> MissionIntent(type=STRIKE, area=CheckpointAlpha, drone_count=6,
-        #                  constraints=[WeaponsFree])
+        intent = parser.parse("Send 6 drones to secure checkpoint alpha, high priority")
+        # -> MissionIntent(type=DEFEND, area=CheckpointAlpha, drone_count=6,
+        #                  constraints=[...])
 
     The parser is intentionally simple -- keyword matching with regex.
-    For production, plug in a military LLM via ``strix.llm.military_llm``
+    For production, plug in a richer language-model provider via ``strix.llm``
     and use this parser as the fallback for degraded-mode operation.
     """
 
@@ -161,7 +163,7 @@ class IntentParser:
         Parameters
         ----------
         text : str
-            Free-form text command from the commander.
+            Free-form text command from the operator.
 
         Returns
         -------
