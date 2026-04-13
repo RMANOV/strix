@@ -439,3 +439,292 @@ pub trait PlatformInfo: Send + Sync {
     /// Run a health check and return the platform's status.
     fn health_check(&self) -> Result<HealthStatus, AdapterError>;
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn geo_waypoint_to_legacy() {
+        let g = GeoWaypoint {
+            lat_deg: 42.0,
+            lon_deg: 23.0,
+            alt_m: 100.0,
+            speed: 5.0,
+            heading: Some(1.57),
+        };
+        let w: Waypoint = g.into();
+        assert_eq!(w.lat, 42.0);
+        assert_eq!(w.lon, 23.0);
+        assert_eq!(w.alt, 100.0);
+        assert_eq!(w.speed, 5.0);
+        assert_eq!(w.heading, Some(1.57));
+    }
+
+    #[test]
+    fn local_waypoint_to_legacy_sign_flip() {
+        let l = LocalWaypoint {
+            north: 100.0,
+            east: 200.0,
+            down: 50.0,
+            speed: 3.0,
+            heading: None,
+        };
+        let w: Waypoint = l.into();
+        assert_eq!(w.lat, 100.0);
+        assert_eq!(w.lon, 200.0);
+        assert_eq!(w.alt, -50.0); // NED sign flip: -down
+        assert_eq!(w.speed, 3.0);
+        assert_eq!(w.heading, None);
+    }
+
+    #[test]
+    fn waypoint_target_geo_dispatch() {
+        let g = GeoWaypoint {
+            lat_deg: 10.0,
+            lon_deg: 20.0,
+            alt_m: 30.0,
+            speed: 4.0,
+            heading: None,
+        };
+        let direct: Waypoint = g.clone().into();
+        let via_target: Waypoint = WaypointTarget::Geo(g).into();
+        assert_eq!(direct.lat, via_target.lat);
+        assert_eq!(direct.lon, via_target.lon);
+        assert_eq!(direct.alt, via_target.alt);
+    }
+
+    #[test]
+    fn waypoint_target_local_dispatch() {
+        let l = LocalWaypoint {
+            north: 50.0,
+            east: 60.0,
+            down: 10.0,
+            speed: 2.0,
+            heading: Some(3.14),
+        };
+        let direct: Waypoint = l.clone().into();
+        let via_target: Waypoint = WaypointTarget::Local(l).into();
+        assert_eq!(direct.lat, via_target.lat);
+        assert_eq!(direct.lon, via_target.lon);
+        assert_eq!(direct.alt, via_target.alt);
+        assert_eq!(direct.heading, via_target.heading);
+    }
+
+    #[test]
+    fn heading_none_passthrough() {
+        let g = GeoWaypoint {
+            lat_deg: 0.0,
+            lon_deg: 0.0,
+            alt_m: 0.0,
+            speed: 0.0,
+            heading: None,
+        };
+        assert_eq!(Waypoint::from(g).heading, None);
+        let l = LocalWaypoint {
+            north: 0.0,
+            east: 0.0,
+            down: 0.0,
+            speed: 0.0,
+            heading: None,
+        };
+        assert_eq!(Waypoint::from(l).heading, None);
+    }
+
+    #[test]
+    fn rich_telemetry_to_legacy() {
+        let rt = RichTelemetry {
+            position: NedPosition::new(1.0, 2.0, 3.0),
+            velocity: [4.0, 5.0, 6.0],
+            attitude: [0.1, 0.2, 0.3],
+            battery: 0.85,
+            gps_fix: GpsFix::Fix3D,
+            armed: true,
+            mode: FlightMode::Guided,
+            observed_at: Timestamp::from_secs(42.0),
+            received_at: Timestamp::from_secs(42.1),
+            frame: Frame::Ned,
+            position_covariance: Some([0.5, 0.5, 1.0]),
+        };
+        let t: Telemetry = rt.into();
+        assert!((t.position[0] - 1.0).abs() < 1e-10);
+        assert!((t.position[1] - 2.0).abs() < 1e-10);
+        assert!((t.position[2] - 3.0).abs() < 1e-10);
+        assert_eq!(t.velocity, [4.0, 5.0, 6.0]);
+        assert_eq!(t.attitude, [0.1, 0.2, 0.3]);
+        assert_eq!(t.battery, 0.85);
+        assert_eq!(t.gps_fix, GpsFix::Fix3D);
+        assert!(t.armed);
+        assert_eq!(t.mode, FlightMode::Guided);
+        assert!((t.timestamp - 42.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn adapter_error_display() {
+        let errs: Vec<(AdapterError, &str)> = vec![
+            (
+                AdapterError::ConnectionLost("timeout".into()),
+                "connection lost",
+            ),
+            (
+                AdapterError::CommandRejected("disarmed".into()),
+                "command rejected",
+            ),
+            (
+                AdapterError::TelemetryUnavailable("stale".into()),
+                "telemetry unavailable",
+            ),
+            (
+                AdapterError::UnsupportedAction("flip".into()),
+                "unsupported action",
+            ),
+            (AdapterError::TransportError("io".into()), "transport error"),
+            (AdapterError::Internal("bug".into()), "internal error"),
+        ];
+        for (e, prefix) in errs {
+            let msg = format!("{e}");
+            assert!(msg.contains(prefix), "'{msg}' should contain '{prefix}'");
+        }
+    }
+
+    #[test]
+    fn health_status_variants_distinct() {
+        assert_ne!(HealthStatus::Healthy, HealthStatus::Degraded("x".into()));
+        assert_ne!(HealthStatus::Healthy, HealthStatus::Critical("x".into()));
+        assert_ne!(
+            HealthStatus::Degraded("a".into()),
+            HealthStatus::Critical("a".into())
+        );
+        assert_eq!(HealthStatus::Healthy, HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn gps_fix_all_distinct() {
+        let all = [
+            GpsFix::NoFix,
+            GpsFix::Fix2D,
+            GpsFix::Fix3D,
+            GpsFix::DGps,
+            GpsFix::RtkFloat,
+            GpsFix::RtkFixed,
+        ];
+        let set: HashSet<_> = all.iter().collect();
+        assert_eq!(set.len(), 6);
+    }
+
+    #[test]
+    fn flight_mode_all_distinct() {
+        let all = [
+            FlightMode::Manual,
+            FlightMode::Stabilize,
+            FlightMode::Guided,
+            FlightMode::Auto,
+            FlightMode::RTL,
+            FlightMode::Land,
+            FlightMode::Loiter,
+        ];
+        let set: HashSet<_> = all.iter().collect();
+        assert_eq!(set.len(), 7);
+    }
+
+    #[test]
+    fn sensor_type_all_distinct() {
+        let all = [
+            SensorType::Camera,
+            SensorType::Thermal,
+            SensorType::Lidar,
+            SensorType::Radar,
+            SensorType::EW,
+            SensorType::Sonar,
+        ];
+        let set: HashSet<_> = all.iter().collect();
+        assert_eq!(set.len(), 6);
+    }
+
+    #[test]
+    fn action_serde_roundtrip() {
+        let wp = Waypoint {
+            lat: 42.0,
+            lon: 23.0,
+            alt: 100.0,
+            speed: 5.0,
+            heading: Some(1.0),
+        };
+        let actions = vec![
+            Action::Arm,
+            Action::Disarm,
+            Action::Takeoff(100.0),
+            Action::Land,
+            Action::RTL,
+            Action::GoTo(wp),
+            Action::SetSpeed(5.0),
+            Action::SetMode(FlightMode::Guided),
+            Action::PayloadDrop,
+            Action::CameraCapture,
+        ];
+        for action in &actions {
+            let json = serde_json::to_string(action).expect("serialize");
+            let back: Action = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(
+                serde_json::to_string(&back).unwrap(),
+                json,
+                "roundtrip failed for {action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn capabilities_serde_roundtrip() {
+        let cap = Capabilities {
+            max_speed: 25.0,
+            max_altitude: 500.0,
+            endurance: 1800.0,
+            sensors: vec![SensorType::Camera, SensorType::Thermal],
+            payload_kg: 2.5,
+            comms_range: 5000.0,
+        };
+        let json = serde_json::to_string(&cap).expect("serialize");
+        let back: Capabilities = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.max_speed, 25.0);
+        assert_eq!(back.sensors.len(), 2);
+    }
+
+    #[test]
+    fn waypoint_target_serde_roundtrip() {
+        let geo = WaypointTarget::Geo(GeoWaypoint {
+            lat_deg: 42.7,
+            lon_deg: 23.3,
+            alt_m: 150.0,
+            speed: 10.0,
+            heading: Some(0.5),
+        });
+        let json = serde_json::to_string(&geo).expect("serialize");
+        let back: WaypointTarget = serde_json::from_str(&json).expect("deserialize");
+        if let WaypointTarget::Geo(g) = back {
+            assert_eq!(g.lat_deg, 42.7);
+        } else {
+            panic!("expected Geo");
+        }
+
+        let local = WaypointTarget::Local(LocalWaypoint {
+            north: 100.0,
+            east: 200.0,
+            down: 30.0,
+            speed: 5.0,
+            heading: None,
+        });
+        let json = serde_json::to_string(&local).expect("serialize");
+        let back: WaypointTarget = serde_json::from_str(&json).expect("deserialize");
+        if let WaypointTarget::Local(l) = back {
+            assert_eq!(l.north, 100.0);
+            assert_eq!(l.heading, None);
+        } else {
+            panic!("expected Local");
+        }
+    }
+}

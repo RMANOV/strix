@@ -258,4 +258,63 @@ mod tests {
         let allowed = d.filter_regime_changes(&[(42, true)]);
         assert_eq!(allowed, vec![42], "removed drone should bypass cooldown");
     }
+
+    // -- Edge-case / boundary tests --
+
+    #[test]
+    fn nan_fear_returns_previous() {
+        let mut d = PanicDamper::default_config();
+        // Gradually ramp up fear to 0.5 (max_fear_delta=0.15 per call)
+        for _ in 0..10 {
+            d.dampen_fear(1.0);
+        }
+        let before_nan = d.current_fear();
+        let result = d.dampen_fear(f64::NAN);
+        assert!(
+            result.is_finite(),
+            "NaN fear must return finite dampened value"
+        );
+        assert_eq!(
+            result, before_nan,
+            "NaN fear should return previous dampened value unchanged"
+        );
+    }
+
+    #[test]
+    fn infinity_fear_clamped() {
+        let mut d = PanicDamper::default_config();
+        d.dampen_fear(0.3);
+        let result = d.dampen_fear(f64::INFINITY);
+        assert!(result.is_finite(), "Infinity fear must not propagate");
+    }
+
+    #[test]
+    fn fear_exactly_zero() {
+        let mut d = PanicDamper::default_config();
+        d.dampen_fear(0.5); // start at 0.5
+                            // Should decay toward 0
+        let v = d.dampen_fear(0.0);
+        assert!(v < 0.5, "fear=0.0 should decay below 0.5");
+        assert!(v >= 0.0, "fear must not go negative");
+    }
+
+    #[test]
+    fn fear_exactly_one_clamped() {
+        let mut d = PanicDamper::default_config();
+        d.dampen_fear(0.0); // start at 0
+                            // max_fear_delta=0.15, so spike from 0 to 1.0 is clamped
+        let v = d.dampen_fear(1.0);
+        assert!(
+            v <= 0.15 + 1e-10,
+            "spike should be clamped to max_fear_delta=0.15, got {v}"
+        );
+    }
+
+    #[test]
+    fn default_impl_matches_default_config() {
+        let a = PanicDamper::default();
+        let b = PanicDamper::default_config();
+        assert_eq!(a.current_fear(), b.current_fear());
+        assert_eq!(a.current_tick(), b.current_tick());
+    }
 }

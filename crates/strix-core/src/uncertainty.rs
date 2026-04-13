@@ -504,4 +504,57 @@ mod tests {
         let ess = crate::particle_common::effective_sample_size(&weights);
         assert!((ess - 1.0).abs() < 0.1);
     }
+
+    // -- Edge-case / NaN-safety tests --
+
+    #[test]
+    fn hurst_single_value() {
+        let values = vec![42.0];
+        let (h, unc) = hurst_exponent(&values, 2, 10);
+        assert_eq!(h, 0.5);
+        assert_eq!(unc, 0.5);
+    }
+
+    #[test]
+    fn hurst_empty_slice() {
+        let (h, unc) = hurst_exponent(&[], 2, 10);
+        assert_eq!(h, 0.5);
+        assert_eq!(unc, 0.5);
+    }
+
+    #[test]
+    fn hurst_constant_series() {
+        let values = vec![7.0; 100];
+        let (h, unc) = hurst_exponent(&values, 10, 50);
+        // All returns are 0 → std=0 → no valid R/S chunks → default
+        assert_eq!(h, 0.5);
+        assert_eq!(unc, 0.5);
+    }
+
+    #[test]
+    fn volatility_compression_constant_series() {
+        let values = vec![5.0; 100];
+        let (ratio, _compressed, expanding) = volatility_compression(&values, 10, 50);
+        assert!(ratio.is_finite());
+        assert!(!expanding);
+        // Both vols ≈ 1e-12 → ratio ≈ 1.0
+        assert!((ratio - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rolling_kurtosis_short_window() {
+        // window=20 > n=5 → early return 0.0
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let k = rolling_kurtosis(&values, 20);
+        assert_eq!(k, 0.0);
+    }
+
+    #[test]
+    fn momentum_constant_series() {
+        let values = vec![3.0; 20];
+        let m = momentum_score(&values, 20);
+        assert!(m.is_finite());
+        // recent_avg == older_avg → tanh(0) = 0.0
+        assert_eq!(m, 0.0);
+    }
 }

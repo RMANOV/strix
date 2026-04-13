@@ -228,4 +228,43 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].channel, "threat_bearing");
     }
+
+    // -- Edge-case tests --
+
+    #[test]
+    fn cusum_empty_values() {
+        let (is_break, dir, val) = cusum_test(&[], 0.5, 10);
+        assert!(!is_break);
+        assert_eq!(dir, 0);
+        assert_eq!(val, 0.0);
+    }
+
+    #[test]
+    fn cusum_half_less_than_3() {
+        // n=5, half=2 < 3 → early return
+        let values = vec![1.0; 5];
+        let (is_break, dir, val) = cusum_test(&values, 0.5, 3);
+        assert!(!is_break);
+        assert_eq!(dir, 0);
+        assert_eq!(val, 0.0);
+    }
+
+    #[test]
+    fn cusum_exactly_min_samples() {
+        // n=10 == min_samples, half=5 >= 3 → should compute
+        let values = vec![1.0; 10];
+        let (is_break, _, _) = cusum_test(&values, 0.5, 10);
+        // Constant series → no break
+        assert!(!is_break);
+    }
+
+    #[test]
+    fn cusum_nan_does_not_panic() {
+        // NaN propagates through arithmetic but comparisons return false
+        let mut values = vec![1.0; 15];
+        values[7] = f64::NAN;
+        values.extend(vec![100.0; 15]);
+        // Should not panic — NaN in reference mean makes all comparisons false
+        let (_, _, _) = cusum_test(&values, 0.5, 10);
+    }
 }

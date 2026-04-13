@@ -319,4 +319,76 @@ mod tests {
         assert!((obs.avg_spacing - back.avg_spacing).abs() < 1e-12);
         assert!((obs.approach_speed - back.approach_speed).abs() < 1e-12);
     }
+
+    // -- Boundary / edge-case tests --
+
+    #[test]
+    fn spacing_trend_exactly_minus_5_not_compacting() {
+        let mut clf = SwarmIntentClassifier::new(10);
+        clf.observe(make_obs(200.0, 0.0, 1.0));
+        // spacing_trend = 195.0 - 200.0 = -5.0 → NOT < -5.0 → not compacting
+        clf.observe(make_obs(195.0, 0.0, 1.0));
+        assert_ne!(
+            clf.intent(),
+            SwarmIntent::Massing,
+            "exactly -5.0 spacing trend should NOT trigger compacting"
+        );
+    }
+
+    #[test]
+    fn approach_speed_exactly_2_not_approaching() {
+        let mut clf = SwarmIntentClassifier::new(10);
+        clf.observe(make_obs(200.0, 0.0, 1.0));
+        // approach_speed = 2.0 → NOT > 2.0 → not approaching
+        clf.observe(make_obs(200.0, 2.0, 1.0));
+        assert_ne!(
+            clf.intent(),
+            SwarmIntent::Probing,
+            "exactly 2.0 approach speed should NOT trigger approaching"
+        );
+    }
+
+    #[test]
+    fn angular_coverage_exactly_pi_not_flanking() {
+        let mut clf = SwarmIntentClassifier::new(10);
+        clf.observe(make_obs(200.0, 0.0, 1.0));
+        // angular = PI → NOT > PI → not flanking
+        clf.observe(make_obs(200.0, 0.0, std::f64::consts::PI));
+        assert_ne!(
+            clf.intent(),
+            SwarmIntent::Flanking,
+            "exactly PI should NOT trigger flanking"
+        );
+    }
+
+    #[test]
+    fn single_observation_defaults_defensive() {
+        let mut clf = SwarmIntentClassifier::new(10);
+        clf.observe(make_obs(200.0, 5.0, 4.0));
+        // Only 1 observation → classify defaults to Defensive, confidence=0.1
+        assert_eq!(clf.intent(), SwarmIntent::Defensive);
+        assert!((clf.confidence() - 0.1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn suggested_response_all_intents() {
+        use crate::state::Regime;
+        assert_eq!(
+            SwarmIntent::Withdrawing.suggested_response(),
+            Regime::Patrol
+        );
+        assert_eq!(SwarmIntent::Defensive.suggested_response(), Regime::Patrol);
+        assert_eq!(SwarmIntent::Probing.suggested_response(), Regime::Engage);
+        assert_eq!(SwarmIntent::Flanking.suggested_response(), Regime::Evade);
+        assert_eq!(SwarmIntent::Massing.suggested_response(), Regime::Evade);
+    }
+
+    #[test]
+    fn threat_level_monotonic_with_severity() {
+        // Withdrawing < Defensive < Probing < Flanking < Massing
+        assert!(SwarmIntent::Withdrawing.threat_level() < SwarmIntent::Defensive.threat_level());
+        assert!(SwarmIntent::Defensive.threat_level() < SwarmIntent::Probing.threat_level());
+        assert!(SwarmIntent::Probing.threat_level() < SwarmIntent::Flanking.threat_level());
+        assert!(SwarmIntent::Flanking.threat_level() < SwarmIntent::Massing.threat_level());
+    }
 }

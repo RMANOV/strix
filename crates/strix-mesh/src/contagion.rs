@@ -263,4 +263,124 @@ mod tests {
         };
         assert_eq!(ContagionEngine::mode_for(&msg), ContagionMode::Simple);
     }
+
+    // -- Edge-case / boundary tests --
+
+    #[test]
+    fn simple_ttl_expiry_re_forwards() {
+        let policy = ContagionPolicy {
+            simple_ttl_s: 2.0,
+            ..ContagionPolicy::default()
+        };
+        let mut engine = ContagionEngine::new(policy);
+        let msg = MeshMessage::Heartbeat {
+            sender: NodeId(10),
+            timestamp: 1.0,
+        };
+        assert!(engine.should_forward(&msg, 1.0), "fresh: forward");
+        assert!(!engine.should_forward(&msg, 1.5), "within TTL: block");
+        // now=4.0, last=1.0, dt=3.0 > TTL=2.0 → stale → re-forward
+        assert!(
+            engine.should_forward(&msg, 4.0),
+            "after TTL expiry: must re-forward"
+        );
+    }
+
+    #[test]
+    fn damped_energy_below_floor_blocks() {
+        let policy = ContagionPolicy {
+            damped_half_life_s: 1.0,
+            damped_floor: 0.45,
+            ..ContagionPolicy::default()
+        };
+        let mut engine = ContagionEngine::new(policy);
+        let msg = MeshMessage::AffectSignal {
+            sender: NodeId(5),
+            label: "fear".into(),
+            intensity: 0.5,
+            timestamp: 0.0,
+        };
+        assert!(engine.should_forward(&msg, 0.0), "initial above floor");
+        // After several half-lives, energy decays below floor
+        assert!(
+            !engine.should_forward(&msg, 10.0),
+            "energy decayed below floor"
+        );
+    }
+
+    #[test]
+    fn counter_values_and_reset() {
+        let mut engine = ContagionEngine::new(ContagionPolicy::default());
+        let a = MeshMessage::Heartbeat {
+            sender: NodeId(1),
+            timestamp: 0.0,
+        };
+        let b = MeshMessage::Heartbeat {
+            sender: NodeId(2),
+            timestamp: 0.0,
+        };
+        engine.should_forward(&a, 0.0); // forward (new)
+        engine.should_forward(&a, 0.5); // block (dup within TTL)
+        engine.should_forward(&b, 0.0); // forward (different sender → different sig)
+        assert_eq!(engine.forwarded_count(), 2);
+        assert_eq!(engine.blocked_count(), 1);
+        engine.reset_counters();
+        assert_eq!(engine.forwarded_count(), 0);
+        assert_eq!(engine.blocked_count(), 0);
+    }
+
+    #[test]
+    fn complex_min_sources_boundary() {
+        let policy = ContagionPolicy {
+            complex_min_sources: 2,
+            complex_reinforcement_threshold: 100.0, // high → only sources path
+            ..ContagionPolicy::default()
+        };
+        let mut engine = ContagionEngine::new(policy);
+        let d1 = MeshMessage::CoordinationDirective {
+            sender: NodeId(1),
+            directive: CoordinationDirectiveKind::Retreat,
+            focus: Some(Position3D([0.0, 0.0, 0.0])),
+            intensity: 0.1,
+            timestamp: 1.0,
+        };
+        let d2 = MeshMessage::CoordinationDirective {
+            sender: NodeId(2),
+            directive: CoordinationDirectiveKind::Retreat,
+            focus: Some(Position3D([0.0, 0.0, 0.0])),
+            intensity: 0.1,
+            timestamp: 1.1,
+        };
+        assert!(!engine.should_forward(&d1, 1.0), "1 source < min_sources=2");
+        assert!(
+            engine.should_forward(&d2, 1.1),
+            "exactly min_sources=2 must forward"
+        );
+    }
+
+    #[test]
+    fn mode_classification_all_variants() {
+        let hb = MeshMessage::Heartbeat {
+            sender: NodeId(1),
+            timestamp: 0.0,
+        };
+        assert_eq!(ContagionEngine::mode_for(&hb), ContagionMode::Simple);
+
+        let ta = MeshMessage::TaskAssignment {
+            assigner: NodeId(1),
+            assignee: NodeId(2),
+            task_id: 1,
+            description: String::new(),
+            timestamp: 0.0,
+        };
+        assert_eq!(ContagionEngine::mode_for(&ta), ContagionMode::Complex);
+
+        let af = MeshMessage::AffectSignal {
+            sender: NodeId(1),
+            label: "x".into(),
+            intensity: 0.5,
+            timestamp: 0.0,
+        };
+        assert_eq!(ContagionEngine::mode_for(&af), ContagionMode::Damped);
+    }
 }

@@ -330,4 +330,72 @@ mod tests {
         assert!(tv.kinematic > 0.5);
         assert!(tv.consensus > 0.5);
     }
+
+    // -- Edge-case / boundary tests --
+
+    #[test]
+    fn peer_count_tracks_observed_peers() {
+        let mut tracker = TrustTracker::new(TrustConfig::default());
+        assert_eq!(tracker.peer_count(), 0);
+        tracker.observe(NodeId(1), TrustDimension::Integrity, 0.8, 0.0);
+        assert_eq!(tracker.peer_count(), 1);
+        tracker.observe(NodeId(2), TrustDimension::Kinematic, 0.7, 0.0);
+        assert_eq!(tracker.peer_count(), 2);
+        // Same peer again → no increase
+        tracker.observe(NodeId(1), TrustDimension::Timeliness, 0.9, 0.0);
+        assert_eq!(tracker.peer_count(), 2);
+    }
+
+    #[test]
+    fn mean_aggregate_with_multiple_peers() {
+        let mut tracker = TrustTracker::new(TrustConfig::default());
+        // Observe two peers with high trust
+        tracker.observe_all(NodeId(1), 0.9, 0.9, 0.9, 0.9, 0.0);
+        tracker.observe_all(NodeId(2), 0.9, 0.9, 0.9, 0.9, 0.0);
+        let mean = tracker.mean_aggregate();
+        assert!(mean > 0.5, "high observations → mean aggregate > 0.5");
+        assert!(mean <= 1.0);
+    }
+
+    #[test]
+    fn aggregate_always_in_0_1() {
+        // Extreme values
+        let tv_zero = TrustVector {
+            integrity: 0.0,
+            timeliness: 0.0,
+            kinematic: 0.0,
+            consensus: 0.0,
+        };
+        let tv_one = TrustVector {
+            integrity: 1.0,
+            timeliness: 1.0,
+            kinematic: 1.0,
+            consensus: 1.0,
+        };
+        assert!(tv_zero.aggregate() >= 0.0);
+        assert!(tv_one.aggregate() <= 1.0);
+    }
+
+    #[test]
+    fn dimensions_independent() {
+        let mut tracker = TrustTracker::new(TrustConfig::default());
+        let peer = NodeId(10);
+        // Observe only integrity
+        tracker.observe(peer, TrustDimension::Integrity, 0.99, 0.0);
+        let tv = tracker.trust_for(peer);
+        assert!(tv.integrity > 0.5, "observed dimension should change");
+        // Other dims stay at default 0.5
+        assert!(
+            (tv.timeliness - 0.5).abs() < 1e-6,
+            "unobserved dimension should stay at default"
+        );
+        assert!(
+            (tv.kinematic - 0.5).abs() < 1e-6,
+            "unobserved dimension should stay at default"
+        );
+        assert!(
+            (tv.consensus - 0.5).abs() < 1e-6,
+            "unobserved dimension should stay at default"
+        );
+    }
 }

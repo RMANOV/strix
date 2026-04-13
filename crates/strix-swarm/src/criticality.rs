@@ -185,4 +185,105 @@ mod tests {
         });
         assert!(hot.bid_aggression > calm.bid_aggression);
     }
+
+    // -- Edge-case / boundary tests --
+
+    #[test]
+    fn all_zero_signals() {
+        let mut scheduler = CriticalityScheduler::new(CriticalityConfig::default());
+        let adj = scheduler.evaluate(CriticalitySignals {
+            gossip_convergence: 0.0,
+            uncertainty: 0.0,
+            dispersion: 0.0,
+            consensus_collapse: 0.0,
+            fear: 0.0,
+            threat_pressure: 0.0,
+        });
+        assert!(adj.exploration_noise.is_finite());
+        assert!(adj.pheromone_decay_multiplier.is_finite());
+        assert!(adj.bid_aggression.is_finite());
+        assert!(adj.criticality.is_finite());
+    }
+
+    #[test]
+    fn all_one_signals() {
+        let mut scheduler = CriticalityScheduler::new(CriticalityConfig::default());
+        let adj = scheduler.evaluate(CriticalitySignals {
+            gossip_convergence: 1.0,
+            uncertainty: 1.0,
+            dispersion: 1.0,
+            consensus_collapse: 1.0,
+            fear: 1.0,
+            threat_pressure: 1.0,
+        });
+        assert!(adj.exploration_noise.is_finite());
+        assert!(adj.bid_aggression.is_finite());
+    }
+
+    #[test]
+    fn nan_signal_does_not_crash() {
+        let mut scheduler = CriticalityScheduler::new(CriticalityConfig::default());
+        let adj = scheduler.evaluate(CriticalitySignals {
+            gossip_convergence: f64::NAN,
+            uncertainty: 0.5,
+            dispersion: 0.5,
+            consensus_collapse: 0.5,
+            fear: 0.5,
+            threat_pressure: 0.5,
+        });
+        // clamp01 handles NaN → 0.0, so outputs must be finite
+        assert!(adj.exploration_noise.is_finite());
+        assert!(adj.bid_aggression.is_finite());
+        assert!(adj.pheromone_decay_multiplier.is_finite());
+    }
+
+    #[test]
+    fn output_bounds_within_config_range() {
+        let cfg = CriticalityConfig::default();
+        let mut scheduler = CriticalityScheduler::new(cfg.clone());
+        // Test multiple signal combos
+        for conv in [0.0, 0.3, 0.5, 0.8, 1.0] {
+            let adj = scheduler.evaluate(CriticalitySignals {
+                gossip_convergence: conv,
+                uncertainty: 1.0 - conv,
+                dispersion: 0.5,
+                consensus_collapse: 0.3,
+                fear: 0.4,
+                threat_pressure: 0.5,
+            });
+            assert!(
+                adj.exploration_noise >= cfg.min_exploration_noise
+                    && adj.exploration_noise <= cfg.max_exploration_noise,
+                "exploration_noise={} out of [{}, {}]",
+                adj.exploration_noise,
+                cfg.min_exploration_noise,
+                cfg.max_exploration_noise
+            );
+            assert!(
+                adj.bid_aggression >= cfg.min_bid_aggression
+                    && adj.bid_aggression <= cfg.max_bid_aggression,
+                "bid_aggression={} out of [{}, {}]",
+                adj.bid_aggression,
+                cfg.min_bid_aggression,
+                cfg.max_bid_aggression
+            );
+        }
+    }
+
+    #[test]
+    fn last_returns_previous_evaluation() {
+        let mut scheduler = CriticalityScheduler::new(CriticalityConfig::default());
+        let adj = scheduler.evaluate(CriticalitySignals {
+            gossip_convergence: 0.7,
+            uncertainty: 0.3,
+            dispersion: 0.4,
+            consensus_collapse: 0.2,
+            fear: 0.3,
+            threat_pressure: 0.5,
+        });
+        let last = scheduler.last();
+        assert_eq!(adj.criticality, last.criticality);
+        assert_eq!(adj.exploration_noise, last.exploration_noise);
+        assert_eq!(adj.bid_aggression, last.bid_aggression);
+    }
 }

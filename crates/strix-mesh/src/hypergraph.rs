@@ -184,4 +184,107 @@ mod tests {
             res.support
         );
     }
+
+    // -- Edge-case / boundary tests --
+
+    #[test]
+    fn non_member_vote_ignored() {
+        let mut coord = HypergraphCoordinator::default();
+        coord.add_edge(HyperEdge {
+            edge_id: 100,
+            members: vec![NodeId(1), NodeId(2)],
+            effect: GroupEffect::ThreatConfirm,
+            quorum_ratio: 0.5,
+        });
+        // NodeId(99) not in members
+        coord.record_vote(GroupVote {
+            edge_id: 100,
+            voter: NodeId(99),
+            confidence: 1.0,
+            timestamp: 1.0,
+        });
+        let res = coord.resolve(100).unwrap();
+        assert_eq!(res.support, 0, "non-member vote must not count");
+        assert!(!res.confirmed);
+    }
+
+    #[test]
+    fn quorum_exactly_met() {
+        let mut coord = HypergraphCoordinator::default();
+        // 3 members, quorum_ratio=0.66 → required=ceil(1.98)=2
+        coord.add_edge(HyperEdge {
+            edge_id: 200,
+            members: vec![NodeId(1), NodeId(2), NodeId(3)],
+            effect: GroupEffect::ThreatConfirm,
+            quorum_ratio: 0.66,
+        });
+        coord.record_vote(GroupVote {
+            edge_id: 200,
+            voter: NodeId(1),
+            confidence: 0.8,
+            timestamp: 1.0,
+        });
+        coord.record_vote(GroupVote {
+            edge_id: 200,
+            voter: NodeId(2),
+            confidence: 0.75,
+            timestamp: 1.1,
+        });
+        let res = coord.resolve(200).unwrap();
+        assert!(res.confirmed, "exactly quorum must confirm");
+    }
+
+    #[test]
+    fn quorum_not_met_one_short() {
+        let mut coord = HypergraphCoordinator::default();
+        coord.add_edge(HyperEdge {
+            edge_id: 201,
+            members: vec![NodeId(1), NodeId(2), NodeId(3)],
+            effect: GroupEffect::ThreatConfirm,
+            quorum_ratio: 0.66,
+        });
+        coord.record_vote(GroupVote {
+            edge_id: 201,
+            voter: NodeId(1),
+            confidence: 0.9,
+            timestamp: 1.0,
+        });
+        let res = coord.resolve(201).unwrap();
+        assert!(!res.confirmed, "one vote short must not confirm");
+    }
+
+    #[test]
+    fn below_confidence_threshold() {
+        let mut coord = HypergraphCoordinator::default();
+        coord.add_edge(HyperEdge {
+            edge_id: 202,
+            members: vec![NodeId(1), NodeId(2)],
+            effect: GroupEffect::BundleBid,
+            quorum_ratio: 0.5,
+        });
+        // Both vote with low confidence (mean=0.35 < 0.55)
+        coord.record_vote(GroupVote {
+            edge_id: 202,
+            voter: NodeId(1),
+            confidence: 0.3,
+            timestamp: 1.0,
+        });
+        coord.record_vote(GroupVote {
+            edge_id: 202,
+            voter: NodeId(2),
+            confidence: 0.4,
+            timestamp: 1.1,
+        });
+        let res = coord.resolve(202).unwrap();
+        assert!(
+            !res.confirmed,
+            "low mean confidence must prevent confirmation"
+        );
+    }
+
+    #[test]
+    fn unknown_edge_returns_none() {
+        let coord = HypergraphCoordinator::default();
+        assert!(coord.resolve(9999).is_none());
+    }
 }

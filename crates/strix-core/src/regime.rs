@@ -300,4 +300,117 @@ mod tests {
             assert!((sum - 1.0).abs() < 1e-12);
         }
     }
+
+    // -- Boundary / edge-case tests --
+
+    #[test]
+    fn evade_bias_boundary() {
+        let base = RegimeSignals {
+            cusum_triggered: false,
+            cusum_direction: 0,
+            hurst: 0.4,
+            volatility_ratio: 1.0,
+            threat_distance: 1000.0,
+            closing_rate: 0.0,
+            evade_bias: 0.0,
+        };
+        let cfg = DetectionConfig::default();
+
+        // 0.50 is NOT > 0.5, should NOT trigger evade
+        let mut s = base.clone();
+        s.evade_bias = 0.50;
+        assert_ne!(detect_regime(&s, Regime::Patrol, &cfg), Regime::Evade);
+
+        // 0.51 IS > 0.5, MUST trigger evade
+        s.evade_bias = 0.51;
+        assert_eq!(detect_regime(&s, Regime::Patrol, &cfg), Regime::Evade);
+    }
+
+    #[test]
+    fn time_to_contact_boundary() {
+        let cfg = DetectionConfig::default();
+        // threat_distance=25, closing_rate=-5 → TTC=5.0s (NOT < 5.0 → Engage)
+        let s = RegimeSignals {
+            cusum_triggered: false,
+            cusum_direction: 0,
+            hurst: 0.7,
+            volatility_ratio: 1.0,
+            threat_distance: 25.0,
+            closing_rate: -5.0,
+            evade_bias: 0.0,
+        };
+        assert_eq!(detect_regime(&s, Regime::Patrol, &cfg), Regime::Engage);
+
+        // threat_distance=24.9, closing_rate=-5 → TTC=4.98s (< 5.0 → Evade)
+        let s2 = RegimeSignals {
+            threat_distance: 24.9,
+            ..s
+        };
+        assert_eq!(detect_regime(&s2, Regime::Patrol, &cfg), Regime::Evade);
+    }
+
+    #[test]
+    fn volatility_compression_holds_engaged() {
+        let cfg = DetectionConfig::default();
+        let s = RegimeSignals {
+            cusum_triggered: false,
+            cusum_direction: 0,
+            hurst: 0.4,
+            volatility_ratio: 0.3, // < 0.5 → compression
+            threat_distance: 1000.0,
+            closing_rate: 0.0,
+            evade_bias: 0.0,
+        };
+        // current=Engage → holds Engage
+        assert_eq!(detect_regime(&s, Regime::Engage, &cfg), Regime::Engage);
+        // current=Patrol → falls through to default Patrol
+        assert_eq!(detect_regime(&s, Regime::Patrol, &cfg), Regime::Patrol);
+    }
+
+    #[test]
+    fn cusum_far_threat_engages() {
+        let cfg = DetectionConfig::default(); // engage_distance=500
+        let s = RegimeSignals {
+            cusum_triggered: true,
+            cusum_direction: 1,
+            hurst: 0.4,
+            volatility_ratio: 1.0,
+            threat_distance: 700.0, // < 500*1.5=750 → Priority 3
+            closing_rate: 0.0,
+            evade_bias: 0.0,
+        };
+        assert_eq!(detect_regime(&s, Regime::Patrol, &cfg), Regime::Engage);
+    }
+
+    #[test]
+    fn all_regimes_reachable() {
+        let cfg = DetectionConfig::default();
+        // Patrol: default
+        let patrol = RegimeSignals {
+            cusum_triggered: false,
+            cusum_direction: 0,
+            hurst: 0.4,
+            volatility_ratio: 1.0,
+            threat_distance: 1000.0,
+            closing_rate: 0.0,
+            evade_bias: 0.0,
+        };
+        assert_eq!(detect_regime(&patrol, Regime::Patrol, &cfg), Regime::Patrol);
+
+        // Engage: systematic approach within range
+        let engage = RegimeSignals {
+            hurst: 0.7,
+            threat_distance: 300.0,
+            closing_rate: -1.0,
+            ..patrol
+        };
+        assert_eq!(detect_regime(&engage, Regime::Patrol, &cfg), Regime::Engage);
+
+        // Evade: kill zone bias
+        let evade = RegimeSignals {
+            evade_bias: 0.8,
+            ..patrol
+        };
+        assert_eq!(detect_regime(&evade, Regime::Patrol, &cfg), Regime::Evade);
+    }
 }

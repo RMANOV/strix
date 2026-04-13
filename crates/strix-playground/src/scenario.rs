@@ -157,3 +157,90 @@ pub struct ScheduledEvent {
     pub time_secs: f64,
     pub event: Event,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn threat_spec_approaching() {
+        let s = ThreatSpec::approaching(500.0, 10.0);
+        assert_eq!(s.initial_distance, 500.0);
+        assert!(matches!(s.behavior, ThreatBehavior::Approaching { speed } if speed == 10.0));
+    }
+
+    #[test]
+    fn threat_spec_flanking() {
+        let s = ThreatSpec::flanking(400.0, 8.0, 45.0);
+        assert!(
+            matches!(s.behavior, ThreatBehavior::Flanking { speed, angle_deg } if speed == 8.0 && angle_deg == 45.0)
+        );
+    }
+
+    #[test]
+    fn threat_spec_retreating() {
+        let s = ThreatSpec::retreating(300.0, 5.0);
+        assert!(matches!(s.behavior, ThreatBehavior::Retreating { speed } if speed == 5.0));
+    }
+
+    #[test]
+    fn threat_spec_stationary() {
+        let s = ThreatSpec::stationary(200.0);
+        assert!(matches!(s.behavior, ThreatBehavior::Stationary));
+    }
+
+    #[test]
+    fn threat_spec_circling() {
+        let s = ThreatSpec::circling(600.0, 15.0);
+        assert!(
+            matches!(s.behavior, ThreatBehavior::Circling { speed, radius } if speed == 15.0 && radius == 600.0)
+        );
+    }
+
+    #[test]
+    fn threat_spec_builder_chain() {
+        let s = ThreatSpec::approaching(500.0, 10.0)
+            .bearing(90.0)
+            .altitude(-100.0)
+            .lethal_radius(300.0);
+        assert_eq!(s.initial_bearing_deg, 90.0);
+        assert_eq!(s.altitude, -100.0);
+        assert_eq!(s.lethal_radius, 300.0);
+    }
+
+    #[test]
+    fn scheduled_event_serde_roundtrip() {
+        let se = ScheduledEvent {
+            time_secs: 30.0,
+            event: Event::JamGps {
+                noise_multiplier: 5.0,
+            },
+        };
+        let json = serde_json::to_string(&se).expect("serialize");
+        let back: ScheduledEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.time_secs, 30.0);
+    }
+
+    #[test]
+    fn event_all_variants_serde() {
+        let events = vec![
+            Event::JamGps {
+                noise_multiplier: 3.0,
+            },
+            Event::RestoreGps,
+            Event::LoseDrone { drone_id: 5 },
+            Event::SpawnThreat(ThreatSpec::stationary(100.0)),
+            Event::WindChange([1.0, 2.0, 0.0]),
+            Event::AddNfz {
+                center: [100.0, 200.0, 0.0],
+                radius: 50.0,
+            },
+        ];
+        for e in &events {
+            let json = serde_json::to_string(e).expect("serialize");
+            let back: Event = serde_json::from_str(&json).expect("deserialize");
+            let json2 = serde_json::to_string(&back).expect("re-serialize");
+            assert_eq!(json, json2, "roundtrip failed for {e:?}");
+        }
+    }
+}

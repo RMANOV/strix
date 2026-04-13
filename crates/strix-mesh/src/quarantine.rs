@@ -391,4 +391,87 @@ mod tests {
         assert_eq!(mgr.degraded_count(), 1);
         assert_eq!(mgr.quarantined_count(), 0);
     }
+
+    // -- Edge-case / boundary tests --
+
+    #[test]
+    fn can_vote_and_can_bid_all_levels() {
+        // FullParticipant: can vote, can bid
+        assert!(ParticipationLevel::FullParticipant.can_vote());
+        assert!(ParticipationLevel::FullParticipant.can_bid());
+        // LimitedInfluence: cannot vote, can bid
+        assert!(!ParticipationLevel::LimitedInfluence.can_vote());
+        assert!(ParticipationLevel::LimitedInfluence.can_bid());
+        // ReadOnly: cannot vote, cannot bid
+        assert!(!ParticipationLevel::ReadOnly.can_vote());
+        assert!(!ParticipationLevel::ReadOnly.can_bid());
+        // Quarantine: cannot vote, cannot bid
+        assert!(!ParticipationLevel::Quarantine.can_vote());
+        assert!(!ParticipationLevel::Quarantine.can_bid());
+        // RecoveryProbation: can vote, can bid (recovering trust)
+        assert!(ParticipationLevel::RecoveryProbation.can_vote());
+        assert!(ParticipationLevel::RecoveryProbation.can_bid());
+    }
+
+    #[test]
+    fn accepts_messages_all_levels() {
+        assert!(ParticipationLevel::FullParticipant.accepts_messages());
+        assert!(ParticipationLevel::LimitedInfluence.accepts_messages());
+        assert!(ParticipationLevel::ReadOnly.accepts_messages());
+        assert!(!ParticipationLevel::Quarantine.accepts_messages());
+        assert!(ParticipationLevel::RecoveryProbation.accepts_messages());
+    }
+
+    #[test]
+    fn influence_weight_all_levels() {
+        assert_eq!(ParticipationLevel::FullParticipant.influence_weight(), 1.0);
+        assert!(ParticipationLevel::LimitedInfluence.influence_weight() > 0.0);
+        assert!(ParticipationLevel::LimitedInfluence.influence_weight() < 1.0);
+        assert_eq!(ParticipationLevel::ReadOnly.influence_weight(), 0.0);
+        assert_eq!(ParticipationLevel::Quarantine.influence_weight(), 0.0);
+        assert!(ParticipationLevel::RecoveryProbation.influence_weight() > 0.0);
+        assert!(ParticipationLevel::RecoveryProbation.influence_weight() < 1.0);
+    }
+
+    #[test]
+    fn full_lifecycle_strike_to_recovery() {
+        let cfg = QuarantineConfig {
+            strikes_to_limit: 2,
+            strikes_to_readonly: 4,
+            strikes_to_quarantine: 6,
+            recovery_period_s: 5.0,
+            quarantine_duration_s: 10.0,
+            strike_decay_period_s: 120.0,
+        };
+        let mut mgr = QuarantineManager::new(cfg);
+        let node = NodeId(42);
+
+        // Start as FullParticipant
+        assert_eq!(mgr.level(node), ParticipationLevel::FullParticipant);
+
+        // 2 strikes → LimitedInfluence
+        mgr.record_strike(node, 0.0);
+        mgr.record_strike(node, 0.1);
+        assert_eq!(mgr.level(node), ParticipationLevel::LimitedInfluence);
+
+        // 2 more → ReadOnly (4 total)
+        mgr.record_strike(node, 0.2);
+        mgr.record_strike(node, 0.3);
+        assert_eq!(mgr.level(node), ParticipationLevel::ReadOnly);
+
+        // 2 more → Quarantine (6 total)
+        mgr.record_strike(node, 0.4);
+        mgr.record_strike(node, 0.5);
+        assert_eq!(mgr.level(node), ParticipationLevel::Quarantine);
+        assert_eq!(mgr.quarantined_count(), 1);
+
+        // After quarantine_duration=10s → RecoveryProbation
+        mgr.maintain(15.0);
+        let level = mgr.level(node);
+        assert_eq!(
+            level,
+            ParticipationLevel::RecoveryProbation,
+            "should exit quarantine to RecoveryProbation after quarantine_duration"
+        );
+    }
 }

@@ -582,4 +582,63 @@ mod tests {
             }
         }
     }
+
+    // -- Edge-case / boundary tests --
+
+    #[test]
+    fn hurst_feature_constant_series() {
+        // std_dev < 1e-12 path → value=0.5
+        let data = vec![42.0; 30];
+        let fv = HurstFeature.compute(&data);
+        assert!(fv.valid);
+        assert!((fv.value - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn hurst_feature_exactly_min_samples() {
+        // 20 == min_samples → should compute, not return invalid
+        let data: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let fv = HurstFeature.compute(&data);
+        assert!(fv.valid, "exactly min_samples must be valid");
+        assert!((0.0..=1.0).contains(&fv.value));
+    }
+
+    #[test]
+    fn volatility_feature_single_element() {
+        let fv = VolatilityFeature::default().compute(&[99.0]);
+        assert!(!fv.valid, "single element below min_samples");
+    }
+
+    #[test]
+    fn kurtosis_feature_exactly_10() {
+        let data: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let fv = KurtosisFeature.compute(&data);
+        assert!(fv.valid, "exactly min_samples=10 must compute");
+        assert!(fv.value.is_finite());
+    }
+
+    #[test]
+    fn ess_health_single_value() {
+        let fv = EssHealthFeature::new(100).compute(&[50.0]);
+        assert!(fv.valid);
+        assert!((fv.value - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn momentum_alternating() {
+        // +1, -1, +1, ... → not saturated at ±1
+        let data: Vec<f64> = (0..20)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        let fv = MomentumFeature::default().compute(&data);
+        assert!(fv.valid);
+        assert!(fv.value.abs() < 0.99, "alternating should not saturate");
+    }
+
+    #[test]
+    fn engine_compute_valid_empty_history() {
+        let engine = UncertaintyEngine::default_features(200);
+        let results = engine.compute_valid(&[]);
+        assert!(results.is_empty(), "empty history → no valid features");
+    }
 }

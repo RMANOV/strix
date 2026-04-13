@@ -385,4 +385,139 @@ mod tests {
             "attacking intent should boost urgency: {urgency_multiplier}"
         );
     }
+
+    // -- Boundary / edge-case tests --
+
+    #[test]
+    fn hurst_at_purposeful_boundary() {
+        let cfg = IntentConfig::default();
+        // hurst = 0.55 is NOT > 0.55, should NOT trigger purposeful hurst score
+        let at_boundary = IntentSignals {
+            hurst: 0.55,
+            hurst_uncertainty: 0.1,
+            closing_rate: -3.0,
+            closing_acceleration: -1.0,
+            volatility_ratio: 0.4,
+            threat_distance: 200.0,
+            fleet_coherence: None,
+        };
+        let above = IntentSignals {
+            hurst: 0.56,
+            ..at_boundary.clone()
+        };
+        let r_at = detect_intent(&at_boundary, &cfg);
+        let r_above = detect_intent(&above, &cfg);
+        // Above boundary should have higher score
+        assert!(
+            r_above.score >= r_at.score,
+            "hurst above purposeful should score >= at boundary"
+        );
+    }
+
+    #[test]
+    fn score_clamped_to_bounds() {
+        let cfg = IntentConfig::default();
+        // Extreme attacking signals
+        let extreme_attack = IntentSignals {
+            hurst: 0.99,
+            hurst_uncertainty: 0.01,
+            closing_rate: -50.0,
+            closing_acceleration: -10.0,
+            volatility_ratio: 0.01,
+            threat_distance: 50.0,
+            fleet_coherence: None,
+        };
+        let r = detect_intent(&extreme_attack, &cfg);
+        assert!(
+            r.score >= -1.0 && r.score <= 1.0,
+            "score must be in [-1, 1], got {}",
+            r.score
+        );
+
+        // Extreme retreating signals
+        let extreme_retreat = IntentSignals {
+            hurst: 0.1,
+            hurst_uncertainty: 0.01,
+            closing_rate: 50.0,
+            closing_acceleration: 10.0,
+            volatility_ratio: 3.0,
+            threat_distance: 2000.0,
+            fleet_coherence: None,
+        };
+        let r2 = detect_intent(&extreme_retreat, &cfg);
+        assert!(
+            r2.score >= -1.0 && r2.score <= 1.0,
+            "score must be in [-1, 1], got {}",
+            r2.score
+        );
+    }
+
+    #[test]
+    fn nan_hurst_does_not_crash() {
+        let cfg = IntentConfig::default();
+        let signals = IntentSignals {
+            hurst: f64::NAN,
+            hurst_uncertainty: 0.5,
+            closing_rate: -3.0,
+            closing_acceleration: -1.0,
+            volatility_ratio: 0.5,
+            threat_distance: 300.0,
+            fleet_coherence: None,
+        };
+        let r = detect_intent(&signals, &cfg);
+        // Should not panic, score should still be finite
+        assert!(
+            r.score.is_finite(),
+            "NaN hurst should not produce NaN score"
+        );
+    }
+
+    #[test]
+    fn all_intent_classes_reachable() {
+        let cfg = IntentConfig::default();
+        // Attacking
+        let attacking = detect_intent(
+            &IntentSignals {
+                hurst: 0.8,
+                hurst_uncertainty: 0.1,
+                closing_rate: -8.0,
+                closing_acceleration: -2.0,
+                volatility_ratio: 0.3,
+                threat_distance: 200.0,
+                fleet_coherence: None,
+            },
+            &cfg,
+        );
+        assert_eq!(attacking.class, IntentClass::Attacking);
+
+        // Retreating
+        let retreating = detect_intent(
+            &IntentSignals {
+                hurst: 0.3,
+                hurst_uncertainty: 0.1,
+                closing_rate: 5.0,
+                closing_acceleration: 2.0,
+                volatility_ratio: 2.0,
+                threat_distance: 800.0,
+                fleet_coherence: None,
+            },
+            &cfg,
+        );
+        assert_eq!(retreating.class, IntentClass::Retreating);
+
+        // Neutral
+        let neutral = detect_intent(
+            &IntentSignals {
+                hurst: 0.5,
+                hurst_uncertainty: 0.1,
+                closing_rate: 0.0,
+                closing_acceleration: 0.0,
+                volatility_ratio: 1.0,
+                threat_distance: 500.0,
+                fleet_coherence: None,
+            },
+            &cfg,
+        );
+        assert_eq!(neutral.class, IntentClass::Neutral);
+    }
 }
