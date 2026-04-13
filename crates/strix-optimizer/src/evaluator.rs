@@ -260,9 +260,9 @@ impl FromStr for DoctrineProfile {
             "survival_first" => Ok(Self::SurvivalFirst),
             "persistent_isr" => Ok(Self::PersistentIsr),
             "communications_denied" => Ok(Self::CommunicationsDenied),
-            "aggressive_strike" => Ok(Self::AggressiveStrike),
+            "aggressive_strike" | "high_tempo" | "rapid_action" => Ok(Self::AggressiveStrike),
             other => Err(format!(
-                "unsupported doctrine '{other}' (expected balanced, survival_first, persistent_isr, communications_denied, or aggressive_strike)"
+                "unsupported doctrine '{other}' (expected balanced, survival_first, persistent_isr, communications_denied, aggressive_strike, high_tempo, or rapid_action)"
             )),
         }
     }
@@ -658,6 +658,18 @@ mod tests {
             "persistent_isr reserve objective should exceed aggressive_strike: {:?} vs {:?}",
             isr,
             strike
+        );
+    }
+
+    #[test]
+    fn doctrine_profile_accepts_neutral_aliases() {
+        assert_eq!(
+            DoctrineProfile::from_str("high_tempo").unwrap(),
+            DoctrineProfile::AggressiveStrike
+        );
+        assert_eq!(
+            DoctrineProfile::from_str("rapid-action").unwrap(),
+            DoctrineProfile::AggressiveStrike
         );
     }
 }
