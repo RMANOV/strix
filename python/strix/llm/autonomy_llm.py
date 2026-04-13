@@ -49,15 +49,19 @@ class AutonomyLLM:
         self._loaded = True
         return True
 
-    def parse_intent(self, text: str) -> dict | None:
-        """Parse a natural-language request into structured intent data."""
+    def parse_intent(self, text: str) -> dict[str, object]:
+        """Parse a natural-language request into structured intent data.
+
+        The public stub keeps a stable return contract and yields an empty
+        mapping until a concrete provider is wired in.
+        """
 
         if not self._loaded:
             logger.warning("LLM not loaded -- returning empty parse")
             return {}
 
         logger.info("parse_intent called (stub): '%s'", text[:80])
-        return None
+        return {}
 
     def narrate_situation(self, snapshot_dict: dict) -> str:
         """Generate a neutral status summary from a world snapshot."""

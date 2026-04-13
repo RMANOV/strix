@@ -24,6 +24,7 @@ from strix.brain import (
     RegimeLabel,
     ThreatObservation,
     Vec3,
+    _normalize_threat_type_label,
 )
 
 
@@ -48,6 +49,18 @@ class TestBrainInit:
     def test_filters_dict_empty_on_init(self):
         brain = MissionBrain()
         assert brain._filters == {}
+
+
+class TestPublicThreatAliases:
+    @pytest.mark.parametrize("label", [None, "", "   "])
+    def test_normalize_threat_type_empty_inputs_return_unknown(self, label):
+        assert _normalize_threat_type_label(label) == "unknown"
+
+    def test_normalize_threat_type_alias_without_suffix(self):
+        assert _normalize_threat_type_label("ew") == "electronic_warfare"
+
+    def test_normalize_threat_type_alias_with_suffix(self):
+        assert _normalize_threat_type_label("air denial:fixed") == "sam:fixed"
 
 
 class TestBrainWithRust:

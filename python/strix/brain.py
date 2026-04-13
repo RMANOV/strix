@@ -136,15 +136,24 @@ _THREAT_TYPE_ALIASES: dict[str, str] = {
 def _normalize_threat_type_label(label: str | None) -> str:
     """Map neutral aliases onto the canonical threat labels used internally."""
 
-    if not label:
+    if label is None:
         return "unknown"
 
-    head, sep, tail = label.strip().partition(":")
-    normalized_head = head.lower().replace("-", "_").replace(" ", "_")
+    stripped = label.strip()
+    if not stripped:
+        return "unknown"
+
+    head, sep, tail = stripped.partition(":")
+    normalized_head = head.strip().lower().replace("-", "_").replace(" ", "_")
+    if not normalized_head:
+        return "unknown"
     normalized_head = _THREAT_TYPE_ALIASES.get(normalized_head, normalized_head)
     if not sep:
         return normalized_head
-    return f"{normalized_head}:{tail}"
+    normalized_tail = tail.strip()
+    if not normalized_tail:
+        return normalized_head
+    return f"{normalized_head}:{normalized_tail}"
 
 
 @dataclass

@@ -2,8 +2,11 @@
 
 """Voice / text command parser -- converts natural language to structured MissionIntent.
 
-Input:  "Survey north ridge, avoid high-interference corridor, report in 10 min"
-Output: MissionIntent(type=RECON, area=NorthRidge, constraints=[AvoidAA], deadline=600s)
+Input:  "Survey north ridge, avoid civilian areas, report in 10 min"
+Parsed fields:
+  mission_type=RECON
+  constraints=[Constraint(name="avoid_civilian", description="Avoid civilian areas", area=None, avoid=True)]
+  deadline_s=600.0
 
 The parser uses a keyword-matching approach as a baseline.  Production
 deployment may swap in a domain-adapted language model (see strix.llm)
@@ -142,8 +145,12 @@ class IntentParser:
 
         parser = IntentParser()
 
-        intent = parser.parse("Survey north ridge, avoid high-interference corridor, report in 10 min")
-        # -> MissionIntent(type=RECON, area=NorthRidge, constraints=[AvoidAA], deadline=600s)
+        intent = parser.parse("Survey north ridge, avoid civilian areas, report in 10 min")
+        # -> mission_type=RECON
+        #    constraints=[Constraint(name="avoid_civilian",
+        #                            description="Avoid civilian areas",
+        #                            area=None, avoid=True)]
+        #    deadline_s=600.0
 
         intent = parser.parse("Send 6 drones to secure checkpoint alpha, high priority")
         # -> MissionIntent(type=DEFEND, area=CheckpointAlpha, drone_count=6,
