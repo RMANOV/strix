@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! strix-optimize — Multi-objective SMCO parameter search for STRIX drone swarm.
 
 use std::path::Path;

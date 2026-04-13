@@ -1,8 +1,9 @@
-"""STRIX -- Swarm Tactical Reasoning and Intelligence eXchange
+# SPDX-License-Identifier: Apache-2.0
 
-A drone swarm orchestrator built on quantitative trading mathematics.
-The battlefield is a market. Drones are traders. Missions are positions.
-The enemy is a counterparty.
+"""STRIX -- Swarm Coordination, Safety, and Explainable Autonomy.
+
+Apache-2.0 public core for multi-agent autonomy research, simulation,
+and explainable coordination in degraded environments.
 """
 
 from .orientation import (
