@@ -182,27 +182,43 @@ strix/
 │   ├── temporal/            Multi-horizon planner (H1/H2/H3 cascade)
 │   ├── digital_twin/        3D world model, rehearsal, visualization
 │   └── llm/                 Military LLM, edge inference, narration
-├── sim/scenarios/           YAML simulation scenarios
-├── demo/                    Dashboard and demo scripts
-└── docs/                    Architecture, trading mapping, ITAR analysis
+├── sim/scenarios/           Public simulation scenarios (sensitive packs split out)
+├── demo/                    Public demo placeholders and notes
+├── docs/                    Public notes and repo-split artifacts
+└── paper/                   Paper source and generated PDF
 ```
+
+---
+
+## Public/Private Boundary
+
+`strix` remains the public Apache-2.0 open core.
+
+Operationally specific scenario packs, evaluator-facing demo collateral, and program/application materials have been split into a separate local private repository. The public repository keeps the published algorithms, simulation core, tests, and reusable orchestration logic.
+
+This boundary improves control over future material. It does **not** retroactively make already-published content secret.
 
 ---
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) -- 6-layer system design with data flow diagrams
-- [Trading-to-Warfare Mapping](docs/trading_mapping.md) -- complete algorithm mapping (14 transformations)
-- [Competitor Comparison](docs/competitor_comparison.md) -- differentiation vs. OpenAI, xAI/SpaceX, Shield AI, Anduril, Auterion
-- [ITAR Analysis](docs/itar_analysis.md) -- open-source legal strategy and export control precedents
-
+- [Repo Split Map](docs/repo-split/PUBLIC_PRIVATE_MAP.yaml) -- current public/private classification decisions
+- [Repo Split Log](docs/repo-split/MOVE_LOG.md) -- move history and baseline for the split
+- [Repo Split Open Questions](docs/repo-split/OPEN_QUESTIONS.md) -- deferred review items for later passes
+- [Scenario Boundary](sim/scenarios/README.md) -- what stays public in simulation assets
+- [Demo Boundary](demo/README.md) -- what moved out of the public demo tree
 ---
 
 ## License
 
-Apache 2.0 -- see [LICENSE-APACHE](LICENSE-APACHE).
+**Dual-licensed.** See [LICENSING.md](LICENSING.md) for full details.
 
-The open-source core contains published mathematics and general-purpose algorithms. It is ITAR-exempt under **EAR Section 734.7 (Published Information Exemption)**: algorithms derived from published academic literature and publicly available quantitative finance research do not constitute controlled technical data. Military-specific integrations (weapon adapters, classified platform interfaces, classified operational scenarios) are maintained in a separate, access-controlled repository with appropriate export controls. See [ITAR Analysis](docs/itar_analysis.md) for the full legal framework.
+- **v0.1.x and earlier**: [Apache License 2.0](LICENSE-APACHE)
+- **v0.2.0 and later**: [Business Source License 1.1](LICENSE-BSL) -- converts to Apache 2.0 after 4 years
+
+You may freely read, study, audit, fork, and use STRIX for non-commercial research and development. Commercial and defense production deployment requires a [commercial license](LICENSING.md).
+
+The open-source core contains published mathematics and general-purpose algorithms. It is ITAR-exempt under **EAR Section 734.7 (Published Information Exemption)**. Military-specific integrations are maintained in a separate, access-controlled repository.
 
 ---
 
