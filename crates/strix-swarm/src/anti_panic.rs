@@ -153,14 +153,14 @@ mod tests {
 
     #[test]
     fn empty_requests() {
-        let mut d = PanicDamper::default_config();
+        let mut d = PanicDamper::default();
         let allowed = d.filter_regime_changes(&[]);
         assert!(allowed.is_empty());
     }
 
     #[test]
     fn rate_limiting() {
-        let mut d = PanicDamper::default_config(); // 30% rate
+        let mut d = PanicDamper::default(); // 30% rate
                                                    // 10 drones all want to change — only ceil(10 * 0.3) = 3 allowed
         let requests: Vec<(u32, bool)> = (0u32..10).map(|id| (id, true)).collect();
         let allowed = d.filter_regime_changes(&requests);
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn cooldown_enforcement() {
-        let mut d = PanicDamper::default_config(); // cooldown = 5 ticks
+        let mut d = PanicDamper::default(); // cooldown = 5 ticks
 
         // Tick 1: drone 0 changes
         let allowed = d.filter_regime_changes(&[(0, true)]);
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn fear_dampening_limits_spike() {
-        let mut d = PanicDamper::default_config(); // max_fear_delta = 0.15
+        let mut d = PanicDamper::default(); // max_fear_delta = 0.15
                                                    // Sudden spike from 0 to 1.0
         let dampened = d.dampen_fear(1.0);
         assert!(
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn fear_decay() {
-        let mut d = PanicDamper::default_config(); // fear_decay_rate = 0.05
+        let mut d = PanicDamper::default(); // fear_decay_rate = 0.05
                                                    // Raise fear to 0.5 via gradual steps (each step ≤ max_fear_delta=0.15)
         d.dampen_fear(0.15);
         d.dampen_fear(0.30);
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn fear_gradual_rise() {
-        let mut d = PanicDamper::default_config();
+        let mut d = PanicDamper::default();
         // Small increments should pass through unchanged
         let v1 = d.dampen_fear(0.05);
         assert!((v1 - 0.05).abs() < 1e-10, "small delta should pass through");
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn remove_drone_clears_cooldown() {
-        let mut d = PanicDamper::default_config();
+        let mut d = PanicDamper::default();
         // Let drone 42 change on tick 1
         d.filter_regime_changes(&[(42, true)]);
         // Tick 2 — normally still in cooldown
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn nan_fear_returns_previous() {
-        let mut d = PanicDamper::default_config();
+        let mut d = PanicDamper::default();
         // Gradually ramp up fear to 0.5 (max_fear_delta=0.15 per call)
         for _ in 0..10 {
             d.dampen_fear(1.0);
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn infinity_fear_clamped() {
-        let mut d = PanicDamper::default_config();
+        let mut d = PanicDamper::default();
         d.dampen_fear(0.3);
         let result = d.dampen_fear(f64::INFINITY);
         assert!(result.is_finite(), "Infinity fear must not propagate");
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn fear_exactly_zero() {
-        let mut d = PanicDamper::default_config();
+        let mut d = PanicDamper::default();
         d.dampen_fear(0.5); // start at 0.5
                             // Should decay toward 0
         let v = d.dampen_fear(0.0);
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn fear_exactly_one_clamped() {
-        let mut d = PanicDamper::default_config();
+        let mut d = PanicDamper::default();
         d.dampen_fear(0.0); // start at 0
                             // max_fear_delta=0.15, so spike from 0 to 1.0 is clamped
         let v = d.dampen_fear(1.0);
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn default_impl_matches_default_config() {
         let a = PanicDamper::default();
-        let b = PanicDamper::default_config();
+        let b = PanicDamper::default();
         assert_eq!(a.current_fear(), b.current_fear());
         assert_eq!(a.current_tick(), b.current_tick());
     }

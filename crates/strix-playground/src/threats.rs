@@ -178,7 +178,6 @@ mod tests {
         for _ in 0..100 {
             actor.advance(&c, 0.1);
         }
-        let dist = (actor.position - c).norm();
         // XY plane distance should be ~300m (altitude separate)
         let xy_dist = ((actor.position.x - c.x).powi(2) + (actor.position.y - c.y).powi(2)).sqrt();
         assert!(
