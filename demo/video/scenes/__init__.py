@@ -1,1 +1,0 @@
-"""STRIX Demo — Scene definitions."""
