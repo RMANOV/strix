@@ -1,5 +1,12 @@
 # STRIX -- Swarm Coordination, Safety, and Explainable Autonomy
 
+## Technical deep-dives
+
+- **Medium:** [Sixty Seconds of Fear: How a Drone Swarm Learned to Survive](https://medium.com/@r.manov/sixty-seconds-of-fear-how-a-drone-swarm-learned-to-survive-bec79d34de0b)
+- **Medium:** [I Taught a Drone Swarm to Be Afraid — and It Made Better Decisions](https://medium.com/@r.manov/i-taught-a-drone-swarm-to-be-afraid-and-it-made-better-decisions-a32bdea5fb93)
+- **Dev.to:** [The Day the Swarm Got Scared — And Saved Everyone](https://dev.to/ruslan_manov/the-day-the-swarm-got-scared-and-saved-everyone-3gl2)
+- **Dev.to:** [Building a Drone Swarm Orchestrator That Gets Scared — 20 Subsystems in 35K Lines of Rust](https://dev.to/ruslan_manov/building-a-drone-swarm-orchestrator-that-gets-scared-20-subsystems-in-35k-lines-of-rust-4bp4)
+
 [![CI](https://github.com/RMANOV/strix/actions/workflows/ci.yml/badge.svg)](https://github.com/RMANOV/strix/actions/workflows/ci.yml)
 
 STRIX is a Rust + Python research platform for coordinating heterogeneous autonomous systems in degraded environments. The public repository focuses on state estimation, task allocation, resilient mesh coordination, safety constraints, simulation, and explainable decision traces.
