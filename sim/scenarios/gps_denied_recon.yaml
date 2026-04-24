@@ -1,3 +1,5 @@
+scenario_id: gps_denied_recon
+seed: 42001
 name: GPS-Denied Reconnaissance
 description: >
   4 drones perform systematic area reconnaissance after losing GPS at t=30s.

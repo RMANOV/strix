@@ -53,6 +53,23 @@
       "timeout_s": 60
     },
     {
+      "id": "scenario_contract",
+      "name": "Public scenario contract validation",
+      "tags": [
+        "smoke",
+        "scenario",
+        "contract"
+      ],
+      "command": [
+        "python",
+        "scripts/strix_scenario_contract.py",
+        "--scenario-dir",
+        "sim/scenarios"
+      ],
+      "expected_exit": 0,
+      "timeout_s": 30
+    },
+    {
       "id": "scenario_schema_contract",
       "name": "Scenario envelope contract tests",
       "tags": [
