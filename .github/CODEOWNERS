@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# CODEOWNERS protects the official upstream review path.
+# It is enforced only when GitHub branch protection requires code-owner review.
+
+* @RMANOV
+
+/.github/ @RMANOV
+/scripts/ @RMANOV
+
+/README.md @RMANOV
+/NOTICE @RMANOV
+/TRADEMARKS.md @RMANOV
+/CONTRIBUTING.md @RMANOV
+/SECURITY.md @RMANOV
+
+/Cargo.toml @RMANOV
+/Cargo.lock @RMANOV
+/pyproject.toml @RMANOV
+
+/Project_Docs/provenance/ @RMANOV
+/Project_Docs/commercial/ @RMANOV
+
+/crates/strix-python/ @RMANOV
+/python/strix/llm/ @RMANOV
+/sim/scenarios/ @RMANOV
+/demo/ @RMANOV

@@ -75,3 +75,18 @@ python scripts/strix_release_manifest.py manifest --output release-manifest.json
 
 The manifest is useful provenance by itself, but it becomes authoritative only
 when paired with a published signature or another verifiable release process.
+
+## Local Hook Setup
+
+Maintainer machines should install local hooks:
+
+```bash
+python scripts/install_local_git_hooks.py --force
+```
+
+The hooks run the public-surface guard before commits and pushes. The pre-push
+hook also blocks direct pushes to `main` unless `STRIX_ALLOW_MAIN_PUSH=1` is set
+for an intentional maintainer release operation.
+
+These hooks are not a substitute for GitHub branch protection. They are a local
+friction layer that catches mistakes before they reach the official upstream.
