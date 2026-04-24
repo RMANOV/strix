@@ -1,0 +1,15 @@
+STRIX
+Copyright 2026 RMANOV
+
+This repository contains the public Apache-2.0 STRIX open core.
+
+The names "STRIX" and "RMANOV/strix" identify the official upstream project
+maintained by RMANOV. The Apache-2.0 license grants copyright and patent
+rights to the covered source code, but it does not grant trademark rights or
+the right to present a fork as the official STRIX project.
+
+Official source repository:
+https://github.com/RMANOV/strix
+
+Official releases are expected to be traceable to the upstream repository and
+to the maintainer release authority described in Project_Docs/provenance/.
