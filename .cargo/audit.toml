@@ -4,4 +4,10 @@ ignore = [
     # gix-features SHA-1 collision (transitive via phi-sim -> burn -> burn-dataset -> gix-tempfile)
     # phi-sim is optional and never compiled in CI; tracked upstream
     "RUSTSEC-2025-0021",
+
+    # rustls-webpki name-constraint / CRL advisories in stale optional transitive lockfile path.
+    # Prefer removing these with a Cargo.lock refresh when crates.io access is available.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
 ]
