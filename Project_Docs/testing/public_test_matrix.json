@@ -1,0 +1,107 @@
+{
+  "description": "Public-safe STRIX validation matrix for repeatable evidence reports.",
+  "matrix_version": 1,
+  "suite": "public-safe",
+  "commands": [
+    {
+      "id": "public_surface",
+      "name": "Public surface guard",
+      "tags": [
+        "smoke",
+        "governance",
+        "public_surface"
+      ],
+      "command": [
+        "python",
+        "scripts/verify_public_surface.py"
+      ],
+      "expected_exit": 0,
+      "timeout_s": 30
+    },
+    {
+      "id": "release_manifest",
+      "name": "Release manifest can be generated without local authority",
+      "tags": [
+        "smoke",
+        "governance",
+        "provenance"
+      ],
+      "command": [
+        "python",
+        "scripts/strix_release_manifest.py",
+        "manifest",
+        "--allow-missing-authority"
+      ],
+      "expected_exit": 0,
+      "timeout_s": 30
+    },
+    {
+      "id": "test_matrix_selftest",
+      "name": "Test matrix harness unit tests",
+      "tags": [
+        "smoke",
+        "tools"
+      ],
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "python/tests/test_strix_test_matrix.py"
+      ],
+      "expected_exit": 0,
+      "timeout_s": 60
+    },
+    {
+      "id": "scenario_schema_contract",
+      "name": "Scenario envelope contract tests",
+      "tags": [
+        "scenario",
+        "regression"
+      ],
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "python/tests/test_scenario_regression.py"
+      ],
+      "expected_exit": 0,
+      "timeout_s": 60
+    },
+    {
+      "id": "python_unit",
+      "name": "Python unit tests",
+      "tags": [
+        "python",
+        "regression"
+      ],
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q"
+      ],
+      "expected_exit": 0,
+      "timeout_s": 120
+    },
+    {
+      "id": "optimizer_alias_contract",
+      "name": "Optimizer neutral alias contract",
+      "tags": [
+        "rust",
+        "regression"
+      ],
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "strix-optimizer",
+        "doctrine_profile_accepts_neutral_aliases",
+        "--lib"
+      ],
+      "expected_exit": 0,
+      "timeout_s": 120
+    }
+  ]
+}

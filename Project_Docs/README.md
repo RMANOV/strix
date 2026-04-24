@@ -10,6 +10,8 @@ and internal pricing or evaluator collateral do not belong in this tree.
 
 ## Public Governance Notes
 
+- [testing/EVIDENCE_HARNESS.md](testing/EVIDENCE_HARNESS.md) defines the
+  public test-matrix evidence workflow.
 - [provenance/OFFICIAL_RELEASES.md](provenance/OFFICIAL_RELEASES.md) defines
   the official source and release-provenance model.
 - [provenance/BRANCH_PROTECTION.md](provenance/BRANCH_PROTECTION.md) defines
