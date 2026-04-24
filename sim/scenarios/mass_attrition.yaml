@@ -1,3 +1,5 @@
+scenario_id: mass_attrition
+seed: 42002
 name: Mass Attrition Survivability
 description: >
   12 drones performing area patrol suffer 50% losses over 10 minutes from
@@ -139,6 +141,7 @@ success_criteria:
   max_near_miss_kill_zone: 1
 
 metrics:
+  - drone_survival_rate
   - drone_survival_timeline
   - kill_zones_identified
   - per_drone_coverage_rate

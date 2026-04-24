@@ -17,6 +17,7 @@ The public matrix is intentionally conservative. It covers:
 - public surface hygiene;
 - release manifest generation;
 - harness self-tests;
+- scenario contract validation;
 - public scenario envelope checks;
 - Python regression tests;
 - targeted Rust contract tests.
@@ -53,7 +54,7 @@ maintainer intentionally promotes a report into release notes.
 ## Next Capabilities
 
 The next useful expansion is scenario-family regression: every public scenario
-should declare a seed, metric set, and `pass_envelope`, then the harness should
+already declares a seed, metric set, and `pass_envelope`; the next step is to
 compare observed metrics against that envelope. After that, add statistical
 Monte Carlo sweeps and integration checks for criticality, contagion, and
 quorum-style confirmation loops.

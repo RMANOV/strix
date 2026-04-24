@@ -1,3 +1,5 @@
+scenario_id: multi_domain
+seed: 42003
 name: Multi-Domain Combined Operations
 description: >
   Combined UAV + UGV mission demonstrating STRIX's platform-agnostic
