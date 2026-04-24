@@ -11,6 +11,16 @@ env:
   RUSTFLAGS: -Dwarnings
 
 jobs:
+  public-surface:
+    name: Public Surface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python scripts/verify_public_surface.py
+
   test:
     name: Test (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
