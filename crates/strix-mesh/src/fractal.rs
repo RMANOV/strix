@@ -486,7 +486,7 @@ pub fn promote_leader(
         .unwrap_or_else(ParticleFilterState::empty);
     let shards = pf_state.distribute(group.members.len());
 
-    for (member_id, shard) in group.members.iter().zip(shards.into_iter()) {
+    for (member_id, shard) in group.members.iter().zip(shards) {
         if let Some(node) = hierarchy.nodes.get_mut(member_id) {
             node.pf_shard = Some(shard);
         }
