@@ -8,6 +8,14 @@ The core design draws from quantitative finance, control theory, and distributed
 
 The public tree is intentionally conservative. It exposes the reusable autonomy core: coordination, safety, simulation, explainability, and platform-agnostic adapter boundaries. Evaluator collateral, internal review packs, and program-specific material are not maintained as part of the public repository.
 
+## Official Project Identity
+
+The official public upstream is `https://github.com/RMANOV/strix`.
+
+Forks are allowed under Apache-2.0, but the STRIX name, project identity, and official release channel are separate from the source-code license. See [NOTICE](NOTICE), [TRADEMARKS.md](TRADEMARKS.md), and [Project_Docs/provenance/OFFICIAL_RELEASES.md](Project_Docs/provenance/OFFICIAL_RELEASES.md).
+
+Public releases should be traceable to the official upstream and maintainer release authority. Private keys, local machine release state, customer-specific material, and private companion modules do not belong in the public repository.
+
 ## Focus Areas
 
 - **State estimation and prediction**: particle filters, regime detection, anomaly handling, and degraded-mode reasoning for uncertain environments.
