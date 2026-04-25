@@ -18,6 +18,7 @@ The public matrix is intentionally conservative. It covers:
 - release manifest generation;
 - harness self-tests;
 - scenario contract validation;
+- software-only scenario replay generation;
 - public scenario envelope checks;
 - Python regression tests;
 - targeted Rust contract tests.
@@ -51,10 +52,25 @@ Each run writes both JSON and Markdown reports. The default output directory is
 under `target/`, so generated evidence stays out of source control unless a
 maintainer intentionally promotes a report into release notes.
 
+Generate a deterministic scenario replay plus a browser-viewable HTML canvas:
+
+```bash
+python scripts/strix_sim_replay.py \
+  --scenario sim/scenarios/gps_denied_recon.yaml \
+  --output target/strix-replays/gps_denied_recon.json \
+  --html target/strix-replays/gps_denied_recon.html
+```
+
+The replay harness is intentionally described as a deterministic kinematic
+public replay. It is useful for visual inspection, regression evidence, seeded
+event playback, and pre-field behavior review. It is not a hardware, RF,
+sensor-fidelity, or field-readiness simulator.
+
 ## Next Capabilities
 
-The next useful expansion is scenario-family regression: every public scenario
+The next useful expansion is scenario-family batch replay: every public scenario
 already declares a seed, metric set, and `pass_envelope`; the next step is to
-compare observed metrics against that envelope. After that, add statistical
-Monte Carlo sweeps and integration checks for criticality, contagion, and
-quorum-style confirmation loops.
+run every scenario through replay and compare observed metrics against that
+envelope. After that, add statistical Monte Carlo sweeps, richer trace exports,
+and integration checks for criticality, contagion, and quorum-style
+confirmation loops.
