@@ -12,7 +12,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError as exc:  # pragma: no cover - exercised only in missing-dependency environments
+    raise RuntimeError(
+        "scripts/strix_scenario_contract.py requires PyYAML. "
+        "Install it with `pip install pyyaml` or use the project dependencies."
+    ) from exc
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -126,13 +132,32 @@ def validate_scenario(path: Path) -> dict[str, Any]:
 
 
 def validate_directory(scenario_dir: Path) -> dict[str, Any]:
+    scenario_dir_str = str(scenario_dir.relative_to(ROOT) if scenario_dir.is_relative_to(ROOT) else scenario_dir)
+
+    if not scenario_dir.exists():
+        return directory_failure_report(
+            scenario_dir_str,
+            f"scenario directory does not exist: {scenario_dir}",
+        )
+    if not scenario_dir.is_dir():
+        return directory_failure_report(
+            scenario_dir_str,
+            f"scenario path is not a directory: {scenario_dir}",
+        )
+
     files = sorted(scenario_dir.glob("*.yaml"))
+    if not files:
+        return directory_failure_report(
+            scenario_dir_str,
+            f"no scenario files found in directory: {scenario_dir}",
+        )
+
     results = [validate_scenario(path) for path in files]
     failed = [result for result in results if result["status"] != "passed"]
     warnings = sum(len(result["warnings"]) for result in results)
     return {
         "report_version": 1,
-        "scenario_dir": str(scenario_dir.relative_to(ROOT) if scenario_dir.is_relative_to(ROOT) else scenario_dir),
+        "scenario_dir": scenario_dir_str,
         "summary": {
             "total": len(results),
             "passed": len(results) - len(failed),
@@ -140,6 +165,28 @@ def validate_directory(scenario_dir: Path) -> dict[str, Any]:
             "warnings": warnings,
         },
         "results": results,
+    }
+
+
+def directory_failure_report(scenario_dir: str, error: str) -> dict[str, Any]:
+    return {
+        "report_version": 1,
+        "scenario_dir": scenario_dir,
+        "summary": {
+            "total": 1,
+            "passed": 0,
+            "failed": 1,
+            "warnings": 0,
+        },
+        "results": [
+            {
+                "path": scenario_dir,
+                "scenario_id": None,
+                "status": "failed",
+                "errors": [error],
+                "warnings": [],
+            }
+        ],
     }
 
 

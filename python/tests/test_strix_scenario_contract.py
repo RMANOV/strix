@@ -88,6 +88,35 @@ def test_public_scenarios_satisfy_contract():
     assert report["summary"]["total"] >= 1
 
 
+def test_validate_directory_rejects_missing_directory(tmp_path):
+    module = _load_module()
+
+    report = module.validate_directory(tmp_path / "missing")
+
+    assert report["summary"]["failed"] == 1
+    assert "does not exist" in report["results"][0]["errors"][0]
+
+
+def test_validate_directory_rejects_file_path(tmp_path):
+    module = _load_module()
+    not_a_dir = tmp_path / "scenario.yaml"
+    not_a_dir.write_text("scenario_id: x\n", encoding="utf-8")
+
+    report = module.validate_directory(not_a_dir)
+
+    assert report["summary"]["failed"] == 1
+    assert "not a directory" in report["results"][0]["errors"][0]
+
+
+def test_validate_directory_rejects_empty_directory(tmp_path):
+    module = _load_module()
+
+    report = module.validate_directory(tmp_path)
+
+    assert report["summary"]["failed"] == 1
+    assert "no scenario files" in report["results"][0]["errors"][0]
+
+
 def test_write_report_outputs_json(tmp_path):
     module = _load_module()
     output = tmp_path / "report.json"

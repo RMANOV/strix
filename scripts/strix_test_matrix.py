@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -131,6 +130,16 @@ def run_entry(entry: dict[str, Any], dry_run: bool) -> dict[str, Any]:
             "stdout_tail": tail(stdout),
             "stderr_tail": tail(stderr),
         }
+    except OSError as exc:
+        elapsed = time.monotonic() - started
+        return {
+            **base_result,
+            "status": "failed",
+            "exit_code": None,
+            "elapsed_s": round(elapsed, 3),
+            "stdout_tail": "",
+            "stderr_tail": str(exc),
+        }
 
     elapsed = time.monotonic() - started
     status = "passed" if completed.returncode == expected_exit else "failed"
@@ -153,6 +162,23 @@ def build_report(
 ) -> dict[str, Any]:
     started_at = utc_now()
     results = [run_entry(entry, dry_run=dry_run) for entry in entries]
+    if not results:
+        selected = ", ".join(sorted(selected_tags)) or "all non-manual entries"
+        results.append(
+            {
+                "id": "__selection__",
+                "name": "Matrix selection",
+                "tags": sorted(selected_tags),
+                "command": [],
+                "expected_exit": 0,
+                "timeout_s": 0.0,
+                "status": "failed",
+                "exit_code": None,
+                "elapsed_s": 0.0,
+                "stdout_tail": "",
+                "stderr_tail": f"no matrix commands selected for: {selected}",
+            }
+        )
     completed_at = utc_now()
     failed = [result for result in results if result["status"] not in {"passed", "dry_run"}]
     return {
