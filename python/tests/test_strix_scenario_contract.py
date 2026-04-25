@@ -45,6 +45,7 @@ pass_envelope:
 
     assert result["status"] == "passed"
     assert result["errors"] == []
+    assert str(tmp_path) not in result["path"]
 
 
 def test_validate_scenario_rejects_missing_seed_and_bad_bounds(tmp_path):
@@ -94,7 +95,9 @@ def test_validate_directory_rejects_missing_directory(tmp_path):
     report = module.validate_directory(tmp_path / "missing")
 
     assert report["summary"]["failed"] == 1
+    assert str(tmp_path) not in report["scenario_dir"]
     assert "does not exist" in report["results"][0]["errors"][0]
+    assert str(tmp_path) not in report["results"][0]["errors"][0]
 
 
 def test_validate_directory_rejects_file_path(tmp_path):
@@ -106,6 +109,7 @@ def test_validate_directory_rejects_file_path(tmp_path):
 
     assert report["summary"]["failed"] == 1
     assert "not a directory" in report["results"][0]["errors"][0]
+    assert str(tmp_path) not in report["results"][0]["errors"][0]
 
 
 def test_validate_directory_rejects_empty_directory(tmp_path):
@@ -115,6 +119,7 @@ def test_validate_directory_rejects_empty_directory(tmp_path):
 
     assert report["summary"]["failed"] == 1
     assert "no scenario files" in report["results"][0]["errors"][0]
+    assert str(tmp_path) not in report["results"][0]["errors"][0]
 
 
 def test_write_report_outputs_json(tmp_path):

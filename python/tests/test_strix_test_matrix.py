@@ -60,6 +60,22 @@ def test_matrix_loads_and_selects_non_manual_entries(tmp_path):
     assert [entry["id"] for entry in selected] == ["pass"]
 
 
+def test_matrix_rejects_empty_command_lists(tmp_path):
+    module = _load_module()
+    matrix_path = tmp_path / "matrix.json"
+    _write_matrix(matrix_path)
+    matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+    matrix["commands"][0]["command"] = []
+    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+
+    try:
+        module.load_matrix(matrix_path)
+    except ValueError as exc:
+        assert "must contain at least one argument" in str(exc)
+    else:
+        raise AssertionError("expected load_matrix to reject empty command list")
+
+
 def test_dry_run_report_does_not_execute_commands(tmp_path):
     module = _load_module()
     matrix_path = tmp_path / "matrix.json"
@@ -121,6 +137,25 @@ def test_run_entry_captures_missing_executable():
     assert result["status"] == "failed"
     assert result["exit_code"] is None
     assert "definitely-not-a-strix-command" in result["stderr_tail"]
+
+
+def test_run_entry_captures_empty_command():
+    module = _load_module()
+
+    result = module.run_entry(
+        {
+            "id": "empty",
+            "command": [],
+            "expected_exit": 0,
+            "timeout_s": 10,
+            "tags": ["unit"],
+        },
+        dry_run=False,
+    )
+
+    assert result["status"] == "failed"
+    assert result["exit_code"] is None
+    assert "at least one argument" in result["stderr_tail"]
 
 
 def test_empty_selection_is_a_failed_report(tmp_path):

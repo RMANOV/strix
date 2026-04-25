@@ -26,6 +26,17 @@ DEFAULT_SCENARIO_DIR = ROOT / "sim" / "scenarios"
 SCENARIO_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
+def public_path(path: Path) -> str:
+    """Return a report-safe path without leaking local checkout layout."""
+
+    if path.is_relative_to(ROOT):
+        return str(path.relative_to(ROOT))
+    if path.is_absolute():
+        name = path.name or "."
+        return f"<external>/{name}"
+    return str(path)
+
+
 def load_yaml(path: Path) -> dict[str, Any]:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -123,7 +134,7 @@ def validate_scenario(path: Path) -> dict[str, Any]:
 
     status = "failed" if errors else "passed"
     return {
-        "path": str(path.relative_to(ROOT) if path.is_relative_to(ROOT) else path),
+        "path": public_path(path),
         "scenario_id": scenario_id,
         "status": status,
         "errors": errors,
@@ -132,24 +143,24 @@ def validate_scenario(path: Path) -> dict[str, Any]:
 
 
 def validate_directory(scenario_dir: Path) -> dict[str, Any]:
-    scenario_dir_str = str(scenario_dir.relative_to(ROOT) if scenario_dir.is_relative_to(ROOT) else scenario_dir)
+    scenario_dir_str = public_path(scenario_dir)
 
     if not scenario_dir.exists():
         return directory_failure_report(
             scenario_dir_str,
-            f"scenario directory does not exist: {scenario_dir}",
+            f"scenario directory does not exist: {scenario_dir_str}",
         )
     if not scenario_dir.is_dir():
         return directory_failure_report(
             scenario_dir_str,
-            f"scenario path is not a directory: {scenario_dir}",
+            f"scenario path is not a directory: {scenario_dir_str}",
         )
 
     files = sorted(scenario_dir.glob("*.yaml"))
     if not files:
         return directory_failure_report(
             scenario_dir_str,
-            f"no scenario files found in directory: {scenario_dir}",
+            f"no scenario files found in directory: {scenario_dir_str}",
         )
 
     results = [validate_scenario(path) for path in files]
