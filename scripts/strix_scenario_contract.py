@@ -37,6 +37,24 @@ def public_path(path: Path) -> str:
     return str(path)
 
 
+def public_exception_message(exc: Exception, path: Path) -> str:
+    """Return an exception message with local filesystem paths redacted."""
+
+    message = str(exc) or type(exc).__name__
+    replacements = {str(path): public_path(path)}
+    filename = getattr(exc, "filename", None)
+    filename2 = getattr(exc, "filename2", None)
+    for candidate in (filename, filename2):
+        if candidate:
+            candidate_path = Path(candidate)
+            replacements[str(candidate_path)] = public_path(candidate_path)
+
+    for raw, safe in replacements.items():
+        if raw:
+            message = message.replace(raw, safe)
+    return message
+
+
 def load_yaml(path: Path) -> dict[str, Any]:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -55,7 +73,12 @@ def validate_scenario(path: Path) -> dict[str, Any]:
     try:
         data = load_yaml(path)
     except Exception as exc:  # noqa: BLE001 - report parse errors as validation failures
-        return {"path": str(path), "status": "failed", "errors": [str(exc)], "warnings": []}
+        return {
+            "path": public_path(path),
+            "status": "failed",
+            "errors": [public_exception_message(exc, path)],
+            "warnings": [],
+        }
 
     required = [
         "scenario_id",

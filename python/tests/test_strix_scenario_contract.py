@@ -79,6 +79,29 @@ pass_envelope:
     assert "coverage: min must be <= max" in result["errors"]
 
 
+def test_validate_scenario_parse_errors_are_public_safe(tmp_path):
+    module = _load_module()
+    scenario = tmp_path / "broken.yaml"
+    scenario.write_text("scenario_id: [unterminated\n", encoding="utf-8")
+
+    result = module.validate_scenario(scenario)
+
+    assert result["status"] == "failed"
+    assert str(tmp_path) not in result["path"]
+    assert str(tmp_path) not in result["errors"][0]
+
+
+def test_validate_scenario_read_errors_are_public_safe(tmp_path):
+    module = _load_module()
+    scenario = tmp_path / "missing.yaml"
+
+    result = module.validate_scenario(scenario)
+
+    assert result["status"] == "failed"
+    assert str(tmp_path) not in result["path"]
+    assert str(tmp_path) not in result["errors"][0]
+
+
 def test_public_scenarios_satisfy_contract():
     module = _load_module()
     scenario_dir = Path(__file__).resolve().parents[2] / "sim" / "scenarios"
