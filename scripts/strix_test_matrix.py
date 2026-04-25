@@ -57,6 +57,8 @@ def load_matrix(path: Path) -> dict[str, Any]:
         command = entry.get("command")
         if not isinstance(command, list) or not all(isinstance(part, str) for part in command):
             raise ValueError(f"{path}: {command_id}: 'command' must be a list of strings")
+        if not command:
+            raise ValueError(f"{path}: {command_id}: 'command' must contain at least one argument")
         tags = entry.get("tags", [])
         if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
             raise ValueError(f"{path}: {command_id}: 'tags' must be a list of strings")
@@ -109,6 +111,17 @@ def run_entry(entry: dict[str, Any], dry_run: bool) -> dict[str, Any]:
             "stderr_tail": "",
         }
 
+    if not command:
+        elapsed = time.monotonic() - started
+        return {
+            **base_result,
+            "status": "failed",
+            "exit_code": None,
+            "elapsed_s": round(elapsed, 3),
+            "stdout_tail": "",
+            "stderr_tail": "command must contain at least one argument",
+        }
+
     try:
         completed = subprocess.run(
             command,
@@ -131,6 +144,16 @@ def run_entry(entry: dict[str, Any], dry_run: bool) -> dict[str, Any]:
             "stderr_tail": tail(stderr),
         }
     except OSError as exc:
+        elapsed = time.monotonic() - started
+        return {
+            **base_result,
+            "status": "failed",
+            "exit_code": None,
+            "elapsed_s": round(elapsed, 3),
+            "stdout_tail": "",
+            "stderr_tail": str(exc),
+        }
+    except (ValueError, IndexError) as exc:
         elapsed = time.monotonic() - started
         return {
             **base_result,
