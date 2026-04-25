@@ -9,7 +9,7 @@ import argparse
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 try:
@@ -29,12 +29,24 @@ SCENARIO_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 def public_path(path: Path) -> str:
     """Return a report-safe path without leaking local checkout layout."""
 
+    path_str = str(path)
+    if re.match(r"^[A-Za-z]:[\\/]", path_str) or path_str.startswith("\\\\"):
+        name = PureWindowsPath(path_str).name or "."
+        return f"<external>/{name}"
     if path.is_relative_to(ROOT):
         return str(path.relative_to(ROOT))
     if path.is_absolute():
         name = path.name or "."
         return f"<external>/{name}"
-    return str(path)
+    return path_str
+
+
+def redaction_variants(value: str) -> set[str]:
+    variants = {value}
+    variants.add(repr(value)[1:-1])
+    variants.add(value.replace("\\", "\\\\"))
+    variants.add(value.replace("\\\\", "\\"))
+    return {variant for variant in variants if variant}
 
 
 def public_exception_message(exc: Exception, path: Path) -> str:
@@ -50,8 +62,8 @@ def public_exception_message(exc: Exception, path: Path) -> str:
             replacements[str(candidate_path)] = public_path(candidate_path)
 
     for raw, safe in replacements.items():
-        if raw:
-            message = message.replace(raw, safe)
+        for variant in redaction_variants(raw):
+            message = message.replace(variant, safe)
     return message
 
 

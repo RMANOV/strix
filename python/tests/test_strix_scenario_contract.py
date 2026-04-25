@@ -102,6 +102,18 @@ def test_validate_scenario_read_errors_are_public_safe(tmp_path):
     assert str(tmp_path) not in result["errors"][0]
 
 
+def test_public_exception_message_redacts_windows_paths():
+    module = _load_module()
+    windows_path = "C:\\tmp\\missing.yaml"
+    error = FileNotFoundError(2, "No such file or directory", windows_path)
+
+    sanitized = module.public_exception_message(error, Path(windows_path))
+
+    assert windows_path not in sanitized
+    assert repr(windows_path)[1:-1] not in sanitized
+    assert "<external>/missing.yaml" in sanitized
+
+
 def test_public_scenarios_satisfy_contract():
     module = _load_module()
     scenario_dir = Path(__file__).resolve().parents[2] / "sim" / "scenarios"
