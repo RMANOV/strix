@@ -30,11 +30,11 @@ def public_path(path: Path) -> str:
     """Return a report-safe path without leaking local checkout layout."""
 
     path_str = str(path)
+    if path.is_relative_to(ROOT):
+        return str(path.relative_to(ROOT))
     if re.match(r"^[A-Za-z]:[\\/]", path_str) or path_str.startswith("\\\\"):
         name = PureWindowsPath(path_str).name or "."
         return f"<external>/{name}"
-    if path.is_relative_to(ROOT):
-        return str(path.relative_to(ROOT))
     if path.is_absolute():
         name = path.name or "."
         return f"<external>/{name}"
