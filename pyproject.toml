@@ -12,6 +12,7 @@ classifiers = [
 dynamic = ["version"]
 dependencies = [
     "numpy>=1.26.0",
+    "PyYAML>=6.0.0",
 ]
 
 [tool.maturin]

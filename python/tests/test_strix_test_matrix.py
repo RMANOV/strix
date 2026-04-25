@@ -104,6 +104,40 @@ def test_run_entry_captures_pass_and_failure():
     assert failed["exit_code"] == 3
 
 
+def test_run_entry_captures_missing_executable():
+    module = _load_module()
+
+    result = module.run_entry(
+        {
+            "id": "missing",
+            "command": ["definitely-not-a-strix-command"],
+            "expected_exit": 0,
+            "timeout_s": 10,
+            "tags": ["unit"],
+        },
+        dry_run=False,
+    )
+
+    assert result["status"] == "failed"
+    assert result["exit_code"] is None
+    assert "definitely-not-a-strix-command" in result["stderr_tail"]
+
+
+def test_empty_selection_is_a_failed_report(tmp_path):
+    module = _load_module()
+    matrix_path = tmp_path / "matrix.json"
+    _write_matrix(matrix_path)
+    matrix = module.load_matrix(matrix_path)
+    entries = module.selected_entries(matrix["commands"], {"missing-tag"}, include_manual=False)
+
+    report = module.build_report(matrix_path, matrix, entries, {"missing-tag"}, dry_run=False)
+
+    assert report["summary"]["total"] == 1
+    assert report["summary"]["failed"] == 1
+    assert report["results"][0]["id"] == "__selection__"
+    assert "missing-tag" in report["results"][0]["stderr_tail"]
+
+
 def test_write_reports_creates_json_and_markdown(tmp_path):
     module = _load_module()
     report = {
