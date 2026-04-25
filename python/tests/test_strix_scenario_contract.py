@@ -114,6 +114,16 @@ def test_public_exception_message_redacts_windows_paths():
     assert "<external>/missing.yaml" in sanitized
 
 
+def test_public_path_prefers_repo_relative_windows_paths(monkeypatch):
+    module = _load_module()
+    root = module.PureWindowsPath("C:/repo")
+    scenario = module.PureWindowsPath("C:/repo/sim/scenarios/a.yaml")
+
+    monkeypatch.setattr(module, "ROOT", root)
+
+    assert module.public_path(scenario) == "sim\\scenarios\\a.yaml"
+
+
 def test_public_scenarios_satisfy_contract():
     module = _load_module()
     scenario_dir = Path(__file__).resolve().parents[2] / "sim" / "scenarios"
