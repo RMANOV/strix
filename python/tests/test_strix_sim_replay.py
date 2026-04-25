@@ -80,6 +80,23 @@ def test_replay_outputs_public_safe_paths(tmp_path):
     assert replay["scenario"]["path"] == "<external>/scenario.yaml"
 
 
+def test_public_path_redacts_parent_traversal(tmp_path, monkeypatch):
+    module = _load_module()
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "secret" / "scenario.yaml"
+    outside.parent.mkdir()
+    outside.write_text("scenario_id: external\n", encoding="utf-8")
+
+    monkeypatch.setattr(module, "ROOT", root)
+
+    reported = module.public_path(root / ".." / "secret" / "scenario.yaml")
+
+    assert reported == "<external>/scenario.yaml"
+    assert ".." not in reported
+    assert "secret" not in reported
+
+
 def test_replay_html_embeds_visualizer_data(tmp_path):
     module = _load_module()
     scenario = tmp_path / "scenario.yaml"
@@ -92,6 +109,36 @@ def test_replay_html_embeds_visualizer_data(tmp_path):
     assert "Software-only deterministic kinematic replay" in html
     assert "replay_case" in html
     assert str(tmp_path) not in html
+
+
+def test_replay_html_escapes_scenario_id_in_title(tmp_path):
+    module = _load_module()
+    scenario = tmp_path / "scenario.yaml"
+    _write_scenario(scenario)
+    data = scenario.read_text(encoding="utf-8").replace("scenario_id: replay_case", "scenario_id: \"<bad>&id\"")
+    scenario.write_text(data, encoding="utf-8")
+    replay = module.build_replay(scenario, tick_s=10)
+
+    html = module.render_html(replay)
+
+    assert "<title>STRIX Software Replay - &lt;bad&gt;&amp;id</title>" in html
+    assert "<title>STRIX Software Replay - <bad>&id</title>" not in html
+
+
+def test_envelope_fails_when_required_metric_is_missing(tmp_path):
+    module = _load_module()
+    scenario = tmp_path / "scenario.yaml"
+    _write_scenario(scenario)
+    data = scenario.read_text(encoding="utf-8").replace(
+        "  area_coverage_pct:\n    min: 0\n    max: 100\n",
+        "  missing_metric:\n    min: 1\n    max: 2\n",
+    )
+    scenario.write_text(data, encoding="utf-8")
+
+    replay = module.build_replay(scenario, tick_s=10)
+
+    assert replay["envelope"]["status"] == "failed"
+    assert replay["envelope"]["checks"][0]["status"] == "not_observed"
 
 
 def test_write_replay_creates_json_and_html(tmp_path):

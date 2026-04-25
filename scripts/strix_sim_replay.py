@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import math
 import random
@@ -54,13 +55,18 @@ class AgentState:
 
 def public_path(path: Path) -> str:
     path_str = str(path)
-    if path.is_relative_to(ROOT):
-        return str(path.relative_to(ROOT))
+
+    root = ROOT.resolve(strict=False)
     if path_str.startswith("\\\\") or path_str[:3].replace("\\", "/").endswith(":/"):
         return f"<external>/{PureWindowsPath(path_str).name or '.'}"
-    if path.is_absolute():
-        return f"<external>/{path.name or '.'}"
-    return path_str
+
+    candidate = path if path.is_absolute() else ROOT / path
+    normalized = candidate.resolve(strict=False)
+    if normalized.is_relative_to(root):
+        return str(normalized.relative_to(root))
+    if normalized.is_absolute():
+        return f"<external>/{normalized.name or '.'}"
+    return f"<external>/{path.name or '.'}"
 
 
 def git_value(args: list[str]) -> str | None:
@@ -328,6 +334,7 @@ def replay_metrics(
         base_coverage = 100.0 * alive_fraction
     metrics: dict[str, float | int] = {
         "active_agents": active_agents,
+        "area_coverage_pct": round(base_coverage, 3),
         "offline_agents": total_agents - active_agents,
         "frame_count": len(frames),
         "mean_energy_remaining_pct": round(
@@ -389,7 +396,7 @@ def evaluate_envelope(metrics: dict[str, float | int], scenario: dict[str, Any])
                 "max": bounds.get("max"),
             }
         )
-    failed = [check for check in checks if check["status"] == "failed"]
+    failed = [check for check in checks if check["status"] != "passed"]
     return {
         "status": "failed" if failed else "passed",
         "checks": checks,
@@ -507,12 +514,13 @@ def world_bounds(replay: dict[str, Any]) -> dict[str, float]:
 
 def render_html(replay: dict[str, Any]) -> str:
     replay_json = json.dumps({**replay, "world": world_bounds(replay)}, sort_keys=True).replace("</", "<\\/")
+    scenario_id = html.escape(str(replay["scenario"]["id"]), quote=True)
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>STRIX Software Replay - {replay['scenario']['id']}</title>
+  <title>STRIX Software Replay - {scenario_id}</title>
   <style>
     :root {{
       --ink: #17211a;
