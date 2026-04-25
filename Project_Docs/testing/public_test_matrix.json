@@ -70,6 +70,30 @@
       "timeout_s": 30
     },
     {
+      "id": "software_replay_gps_denied",
+      "name": "Software-only visual replay generation",
+      "tags": [
+        "smoke",
+        "scenario",
+        "replay",
+        "visual"
+      ],
+      "command": [
+        "python",
+        "scripts/strix_sim_replay.py",
+        "--scenario",
+        "sim/scenarios/gps_denied_recon.yaml",
+        "--output",
+        "target/strix-replays/gps_denied_recon.json",
+        "--html",
+        "target/strix-replays/gps_denied_recon.html",
+        "--tick-s",
+        "10"
+      ],
+      "expected_exit": 0,
+      "timeout_s": 30
+    },
+    {
       "id": "scenario_schema_contract",
       "name": "Scenario envelope contract tests",
       "tags": [

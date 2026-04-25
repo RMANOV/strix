@@ -86,6 +86,20 @@ pip install -e .
 
 **Requirements**: Rust 1.75+, Python 3.11+, maturin 1.11+
 
+## Software-Only Replay
+
+STRIX includes a public-safe deterministic replay harness for inspecting
+scenario behavior before hardware or field validation:
+
+```bash
+python scripts/strix_sim_replay.py --scenario sim/scenarios/gps_denied_recon.yaml
+```
+
+The command writes a JSON timeline and a self-contained HTML canvas under
+`target/strix-replays/` by default. It is useful for seeded behavior review,
+scenario regression evidence, and visual inspection of agent reactions. It is
+not a substitute for hardware, RF, sensor, or field validation.
+
 ## Project Structure
 
 ```text
