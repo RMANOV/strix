@@ -56,6 +56,11 @@ These are the surfaces STRIX stands behind as the public autonomy claim:
 
 ## D2-only changes (out of scope for docs/labels)
 
+In this document, **D1** means documentation-and-labels-only changes (no code,
+build, or runtime impact), while **D2** means runtime- or build-surface-impacting
+work — code, manifests, feature flags, schemas, or tests — which requires a
+separate inventory/RFC and explicit operator approval.
+
 The following are explicitly **not** D1 (docs/labels) work. They require a D2
 inventory / RFC and explicit operator approval before any change:
 
