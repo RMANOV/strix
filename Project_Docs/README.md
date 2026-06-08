@@ -10,6 +10,13 @@ and internal pricing or evaluator collateral do not belong in this tree.
 
 ## Public Governance Notes
 
+Public docs separate load-bearing OODA evidence from experimental and optional
+surfaces, so that public statements reflect what STRIX actually claims.
+
+- [CAPABILITY_BOUNDARY.md](CAPABILITY_BOUNDARY.md) is the canonical claim map. It
+  marks the core / load-bearing autonomy path, the experimental and optional
+  surfaces, the adapter boundaries, and the public claims STRIX does not make.
+  The labels are claim posture, not a product cut.
 - [testing/EVIDENCE_HARNESS.md](testing/EVIDENCE_HARNESS.md) defines the
   public test-matrix evidence workflow.
 - [provenance/OFFICIAL_RELEASES.md](provenance/OFFICIAL_RELEASES.md) defines

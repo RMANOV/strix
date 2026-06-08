@@ -26,6 +26,21 @@ The public matrix is intentionally conservative. It covers:
 Program-specific scenarios, customer data, internal review ledgers, and
 non-public benchmark data do not belong in this public matrix.
 
+The evidence produced here is **software-only** scenario, replay, and test
+evidence for the auditable OODA path. It is explicitly **not** evidence of:
+
+- hardware integration or on-hardware / edge-drone deployment;
+- RF or sensor fidelity, or field readiness;
+- a default-runtime or trained-neural GCBF+ safety guarantee (the shipped safety
+  story is classical-CBF + ROE + traces + simulator);
+- delivered ROS2 / MAVLink deployment (these remain adapter-boundary,
+  validation-ahead surfaces); or
+- edge-LLM autonomy (the Python LLM / edge-inference path is optional /
+  degraded-mode support, not the core autonomy runtime).
+
+For the full claim map, see
+[../CAPABILITY_BOUNDARY.md](../CAPABILITY_BOUNDARY.md).
+
 ## Usage
 
 List the available checks:

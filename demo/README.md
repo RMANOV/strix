@@ -14,3 +14,8 @@ python scripts/strix_sim_replay.py --scenario sim/scenarios/gps_denied_recon.yam
 Open the generated HTML file locally to inspect agent movement, event timing,
 constraint avoidance, energy, and replay metrics. Generated replay assets live
 under `target/` by default and are not committed.
+
+Demo output is public-safe software replay intended for visual inspection of
+seeded behavior. It is **not** hardware, RF, sensor, or field validation. See
+[../Project_Docs/CAPABILITY_BOUNDARY.md](../Project_Docs/CAPABILITY_BOUNDARY.md)
+for the full public claim boundary.
