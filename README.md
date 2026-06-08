@@ -100,6 +100,52 @@ The command writes a JSON timeline and a self-contained HTML canvas under
 scenario regression evidence, and visual inspection of agent reactions. It is
 not a substitute for hardware, RF, sensor, or field validation.
 
+## Capability status / public claim boundary
+
+STRIX is a civilian-dogfooded, single-operator, test-backed, simulator-first
+research platform. To keep public statements honest, the surfaces in this
+repository are labelled by claim posture. These labels describe what STRIX
+**claims publicly**; they are not a product cut. Every labelled surface below
+remains present and functional in the source tree.
+
+The canonical, authoritative version of this map lives in
+[Project_Docs/CAPABILITY_BOUNDARY.md](Project_Docs/CAPABILITY_BOUNDARY.md). The
+summary here is a pointer, not a separate source of truth.
+
+**Core / load-bearing (the claimable autonomy story):**
+
+- Rust-centered OODA / tick path and orchestration loop.
+- Classical safety constraints (classical control-barrier-function gating is the
+  default; `fallback_to_classical = true`).
+- ROE / policy gates with friendly-and-civilian deny-first guarding.
+- DecisionTrace / BattleReport and replayable, auditable decision artifacts.
+- Degraded-mode and electronic-warfare (EW) behavior.
+- Simulator-first, software-replay evidence.
+
+**Experimental / optional / adapter-boundary labels (still in-tree, not the
+public claim center):**
+
+- **GCBF+**: experimental / training path. The shipped safety story is
+  classical-CBF + ROE + traces + simulator, not a trained-weights neural-safety
+  guarantee.
+- **ROS2 / MAVLink**: adapter-boundary, validation-ahead. These are integration
+  boundaries, **not** delivered hardware integration.
+- **Python LLM / edge inference**: optional / facade / degraded-mode support.
+  It is not a required runtime and not the core autonomy path.
+- **Optimizer**: an offline tool, not a live autonomy core.
+
+**Frozen public claim-set.** The full allowed / experimental / forbidden claim
+set is documented in
+[Project_Docs/CAPABILITY_BOUNDARY.md](Project_Docs/CAPABILITY_BOUNDARY.md). In
+short, STRIX does **not** publicly claim: fielded or on-hardware drone
+deployment; delivered ROS2/MAVLink hardware integration; defence
+validation / accreditation / certification; a default-runtime or trained-neural
+GCBF+ safety guarantee; edge-LLM autonomous decision authority; a shipped STRIX
+integration into external memory systems; or sensor / RF / field readiness
+inferred from software replay alone. Scale figures and tick-timing numbers are
+treated as prior measured software-replay results to be re-run on the exact
+submission commit, not as final live facts.
+
 ## Project Structure
 
 ```text
