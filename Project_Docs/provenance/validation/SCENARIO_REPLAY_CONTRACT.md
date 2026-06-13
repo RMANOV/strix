@@ -44,7 +44,7 @@ exact existing field or file that already carries the item.
 | # | Contract field | Carrier (today) | Status |
 |---|---|---|---|
 | 1 | **Scenario id** | `scenario_id` in scenario YAML; echoed as `scenario.id` in replay JSON; format enforced by `strix_scenario_contract.py` | EXISTS |
-| 2 | **Seed** | `seed` (u64) in scenario YAML (e.g. 42001/42002/42003); echoed as `scenario.seed`; drives `random.Random(seed)` in the replay and `ChaCha8Rng::seed_from_u64` in Rust particle navigation | EXISTS |
+| 2 | **Seed** | `seed` (u64) in scenario YAML (e.g. 42001/42002/42003); echoed as `scenario.seed`; drives `random.Random(seed)` in the **Python replay only**. The Rust orchestrator is **not** wired to the scenario seed — `SwarmOrchestrator::new` / `register_drone` use `ParticleNavFilter::new(...)` (unseeded); the seeded `new_seeded()` / `ChaCha8Rng::seed_from_u64` path exists but is exercised only by Rust tests, not driven by scenario YAML | PARTIAL — **GAP (future):** wire the scenario seed into the Rust orchestrator, or keep Rust determinism a separate lane |
 | 3 | **Config hash** | `scenario.config_hash` in replay JSON — SHA-256 of the scenario YAML bytes, first 16 hex chars (`scenario_hash()`, `strix_sim_replay.py` line 175) | EXISTS |
 | 4 | **Git commit** | `repo.commit`, `repo.branch`, `repo.working_tree_clean` in replay JSON (`build_replay()`, lines 464–481) | EXISTS |
 | 5 | **Build / runtime info** | Partially: `report_version: 1`, `kind: "software_replay"`, `simulator`, `fidelity: "deterministic_kinematic_public_replay"`, `tick_s` in replay JSON. Toolchain version, build profile, and OS are **not** recorded | PARTIAL — **GAP (future):** add toolchain/profile/platform stamp |
@@ -77,9 +77,15 @@ means.
 ## 4. What this gate is — and is not
 
 **Is:** a software-only, deterministic, seeded regression and behavior-review
-gate over the algorithmic OODA path (estimation, allocation, coordination,
-ROE gating, classical-CBF safety clamps, degraded-mode/EW behavior), suitable
-as a *pre-field* screen and for after-action visual inspection.
+gate over the **Python public replay** — a kinematic scenario model
+(`strix_sim_replay.py`: `orbit_target` / `apply_constraint_avoidance` /
+`move_toward`) that emits reproducible frames, metrics, and a pass-envelope
+verdict, suitable as a *pre-field* screen and for after-action visual
+inspection. **It does not exercise the Rust orchestrator** —
+`strix_sim_replay.py` invokes no `SwarmOrchestrator`, `RoeEngine`, `Auctioneer`,
+or Rust CBF code. The Rust OODA / ROE / classical-CBF behavior is validated in a
+**separate evidence lane** (the Rust test suite and `BattleReport`; see
+`EVIDENCE_PACKET.md`), not by this replay.
 
 **Is not** (per the claim freeze, `Project_Docs/CAPABILITY_BOUNDARY.md` and
 `Project_Docs/testing/EVIDENCE_HARNESS.md`):
