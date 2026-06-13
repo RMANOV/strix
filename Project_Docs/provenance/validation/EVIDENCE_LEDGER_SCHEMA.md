@@ -93,14 +93,23 @@ governed mission-decision record would capture from it.
   `ThreatClassification::{ConfirmedHostile, SuspectedHostile, Unknown,
   Friendly, Civilian}`.
 - **When emitted:** returned inline by `RoeEngine::authorize_engagement()` at
-  gate-decision time. **Gap (honest):** `EngagementAuth` outcomes are *not*
-  persisted to any timeline or trace log today; denial/escalation counts
-  surface only as aggregate counters in the swarm tick path.
+  gate-decision time. Denial / escalation outcomes **are** persisted per-event
+  today: the swarm tick loop calls `record_roe_trace()`
+  (`crates/strix-swarm/src/tick.rs`, line 2498; invoked on the denial /
+  escalation paths at lines 1197 / 1250 / 1258), which records a
+  `DecisionType::ThreatResponse` `DecisionTrace` (regime `"ROE"`) into the
+  append-only `TraceRecorder` carrying the task id, threat distance, action,
+  and a formatted reason string. **Gap (honest):** that trace is *lossy* — it
+  does not carry the structured `EngagementAuth` variant payload (typed
+  `reason` / `urgency`), the `EngagementContext` snapshot, or the deciding
+  `WeaponsPosture`; the `EngagementAuth` enum is not serialized verbatim, and
+  `Authorized` outcomes are not traced at all (the helper covers only the
+  denial / escalation paths).
 - **Governed record would capture:** one record per `Denied` /
-  `EscalationRequired` outcome — the variant payload (reason, urgency), the
-  `EngagementContext` snapshot that drove it, and the deciding posture. This
-  is the single largest evidentiary gap the ledger design closes: deny-first
-  ROE behavior currently leaves no per-event durable artifact.
+  `EscalationRequired` outcome — the structured variant payload (typed reason,
+  urgency), the `EngagementContext` snapshot that drove it, and the deciding
+  posture — replacing the current free-text `ThreatResponse` trace with a
+  typed, context-complete ROE artifact.
 
 ### 2.4 CBF safety interventions
 
