@@ -345,7 +345,6 @@ mod tests {
             max_iterations: 1,
             damping: 1.0,
             min_precision_diag: 0.01,
-            ..GbpConfig::default()
         };
         let mut node = GbpNode::new(NodeId(0), cfg);
 
