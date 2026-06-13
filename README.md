@@ -84,7 +84,7 @@ cargo build --release
 pip install -e .
 ```
 
-**Requirements**: Rust 1.75+, Python 3.11+, maturin 1.11+
+**Requirements**: Rust 1.83+, Python 3.11+, maturin 1.11+
 
 ## Software-Only Replay
 
