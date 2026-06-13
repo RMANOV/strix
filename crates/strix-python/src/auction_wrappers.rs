@@ -19,7 +19,7 @@ use pyo3::prelude::*;
 // ---------------------------------------------------------------------------
 
 /// Minimal 3-D position used by the auction engine.
-#[pyclass(name = "Position")]
+#[pyclass(name = "Position", skip_from_py_object)]
 #[derive(Debug, Clone, Copy)]
 pub struct PyPosition {
     inner: strix_auction::Position,
@@ -66,7 +66,7 @@ impl PyPosition {
 // ---------------------------------------------------------------------------
 
 /// Capability flags a drone may carry.
-#[pyclass(name = "Capabilities")]
+#[pyclass(name = "Capabilities", skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyCapabilities {
     pub(crate) inner: strix_auction::Capabilities,
@@ -123,7 +123,7 @@ impl PyCapabilities {
 ///
 /// Named `AuctionDroneState` to avoid clash with the existing `DroneState`
 /// wrapper in `python.rs`.
-#[pyclass(name = "AuctionDroneState")]
+#[pyclass(name = "AuctionDroneState", skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyAuctionDroneState {
     pub(crate) inner: strix_auction::DroneState,
@@ -200,7 +200,7 @@ impl PyAuctionDroneState {
 // ---------------------------------------------------------------------------
 
 /// A task to be auctioned among drones.
-#[pyclass(name = "Task")]
+#[pyclass(name = "Task", skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyTask {
     pub(crate) inner: strix_auction::Task,
@@ -272,7 +272,7 @@ impl PyTask {
 // ---------------------------------------------------------------------------
 
 /// Classification of threat types.
-#[pyclass(name = "ThreatType")]
+#[pyclass(name = "ThreatType", skip_from_py_object)]
 #[derive(Debug, Clone, Copy)]
 pub struct PyThreatType {
     pub(crate) inner: strix_auction::ThreatType,
@@ -323,7 +323,7 @@ impl PyThreatType {
 // ---------------------------------------------------------------------------
 
 /// Threat information used for risk calculations.
-#[pyclass(name = "ThreatState")]
+#[pyclass(name = "ThreatState", skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyThreatState {
     pub(crate) inner: strix_auction::ThreatState,
@@ -383,7 +383,7 @@ impl PyThreatState {
 // ---------------------------------------------------------------------------
 
 /// Drone-to-task assignment produced by the auction.
-#[pyclass(name = "Assignment")]
+#[pyclass(name = "Assignment", skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyAssignment {
     inner: strix_auction::Assignment,
@@ -419,7 +419,7 @@ impl PyAssignment {
 // ---------------------------------------------------------------------------
 
 /// Outcome of a single auction round.
-#[pyclass(name = "AuctionResult")]
+#[pyclass(name = "AuctionResult", skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyAuctionResult {
     inner: strix_auction::AuctionResult,

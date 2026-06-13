@@ -257,7 +257,7 @@ mod tests {
         };
         match action {
             FeedbackAction::UpdateTrust { delta, .. } => {
-                assert!(delta >= -0.1 && delta <= 0.05);
+                assert!((-0.1..=0.05).contains(&delta));
             }
             _ => panic!("wrong variant"),
         }

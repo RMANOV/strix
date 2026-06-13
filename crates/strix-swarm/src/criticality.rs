@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn output_bounds_within_config_range() {
         let cfg = CriticalityConfig::default();
-        let mut scheduler = CriticalityScheduler::new(cfg.clone());
+        let mut scheduler = CriticalityScheduler::new(cfg);
         // Test multiple signal combos
         for conv in [0.0, 0.3, 0.5, 0.8, 1.0] {
             let adj = scheduler.evaluate(CriticalitySignals {

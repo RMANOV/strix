@@ -20,8 +20,8 @@ authors = ["RMANOV"]
 repository = "https://github.com/RMANOV/strix"
 
 [workspace.dependencies]
-pyo3 = { version = "0.24", features = ["extension-module"] }
-numpy = "0.24"
+pyo3 = { version = "0.29", features = ["extension-module"] }
+numpy = "0.29"
 ndarray = "0.16"
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }

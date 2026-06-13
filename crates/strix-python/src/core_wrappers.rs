@@ -30,7 +30,7 @@ use strix_core::state::{Observation, Regime, SensorConfig};
 // ---------------------------------------------------------------------------
 
 /// Battlespace operating regime: Patrol, Engage, or Evade.
-#[pyclass(name = "Regime")]
+#[pyclass(name = "Regime", skip_from_py_object)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PyRegime {
     pub(crate) inner: Regime,
@@ -102,7 +102,7 @@ impl From<PyRegime> for Regime {
 // ---------------------------------------------------------------------------
 
 /// Sensor noise configuration for the particle filter.
-#[pyclass(name = "SensorConfig")]
+#[pyclass(name = "SensorConfig", skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PySensorConfig {
     inner: SensorConfig,
@@ -143,7 +143,7 @@ impl PySensorConfig {
 // ---------------------------------------------------------------------------
 
 /// 6-DOF drone state: position + velocity + regime.
-#[pyclass(name = "DroneState")]
+#[pyclass(name = "DroneState", skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyDroneState {
     /// Position [x, y, z] in meters.
