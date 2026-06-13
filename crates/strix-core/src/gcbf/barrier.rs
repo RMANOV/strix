@@ -271,7 +271,7 @@ mod tests {
             .collect();
         let desired = vel.clone();
         let (results, _) = barrier.filter_all(&positions, &vel, &desired, &[], 0.0);
-        for (_, r) in &results {
+        for r in results.values() {
             assert!(r.safe_velocity.x.is_finite());
             assert!(r.safe_velocity.y.is_finite());
             assert!(r.safe_velocity.z.is_finite());
@@ -331,7 +331,7 @@ mod tests {
         let desired = vel.clone();
         let (results, _) = barrier.filter_all(&positions, &vel, &desired, &[], 0.0);
         assert_eq!(results.len(), 5);
-        for (_, r) in &results {
+        for r in results.values() {
             assert!(r.safe_velocity.x.is_finite());
             assert!(r.safe_velocity.y.is_finite());
             assert!(r.safe_velocity.z.is_finite());

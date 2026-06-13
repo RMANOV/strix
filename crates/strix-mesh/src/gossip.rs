@@ -1034,10 +1034,7 @@ mod tests {
 
         let digest = engine.build_digest();
         let version_ids = match digest {
-            GossipMessage::Digest { versions, .. } => versions
-                .into_iter()
-                .map(|(node_id, _)| node_id)
-                .collect::<Vec<_>>(),
+            GossipMessage::Digest { versions, .. } => versions.into_keys().collect::<Vec<_>>(),
             _ => unreachable!(),
         };
         assert_eq!(version_ids, vec![NodeId(1), NodeId(2), NodeId(3)]);

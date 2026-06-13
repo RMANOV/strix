@@ -506,7 +506,7 @@ mod tests {
             east: 60.0,
             down: 10.0,
             speed: 2.0,
-            heading: Some(3.14),
+            heading: Some(std::f64::consts::PI),
         };
         let direct: Waypoint = l.clone().into();
         let via_target: Waypoint = WaypointTarget::Local(l).into();
