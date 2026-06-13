@@ -46,7 +46,7 @@ exact existing field or file that already carries the item.
 | 1 | **Scenario id** | `scenario_id` in scenario YAML; echoed as `scenario.id` in replay JSON; format enforced by `strix_scenario_contract.py` | EXISTS |
 | 2 | **Seed** | `seed` (u64) in scenario YAML (e.g. 42001/42002/42003); echoed as `scenario.seed`; drives `random.Random(seed)` in the **Python replay only**. The Rust orchestrator is **not** wired to the scenario seed — `SwarmOrchestrator::new` / `register_drone` use `ParticleNavFilter::new(...)` (unseeded); the seeded `new_seeded()` / `ChaCha8Rng::seed_from_u64` path exists but is exercised only by Rust tests, not driven by scenario YAML | PARTIAL — **GAP (future):** wire the scenario seed into the Rust orchestrator, or keep Rust determinism a separate lane |
 | 3 | **Config hash** | `scenario.config_hash` in replay JSON — SHA-256 of the scenario YAML bytes, first 16 hex chars (`scenario_hash()`, `strix_sim_replay.py` line 175) | EXISTS |
-| 4 | **Git commit** | `repo.commit`, `repo.branch`, `repo.working_tree_clean` in replay JSON (`build_replay()`, lines 464–481) | EXISTS |
+| 4 | **Git commit** | `repo.commit`, `repo.branch`, `repo.working_tree_clean` in replay JSON (`build_replay()`, lines 477–481) | EXISTS |
 | 5 | **Build / runtime info** | Partially: `report_version: 1`, `kind: "software_replay"`, `simulator`, `fidelity: "deterministic_kinematic_public_replay"`, `tick_s` in replay JSON. Toolchain version, build profile, and OS are **not** recorded | PARTIAL — **GAP (future):** add toolchain/profile/platform stamp |
 | 6 | **Pass envelope** | `pass_envelope` per metric (`min`/`max` bounds) in scenario YAML, validated by `strix_scenario_contract.py`; evaluated by `evaluate_envelope()` into `envelope.status` (`passed`/`failed`) + per-metric `envelope.checks[]` with `observed`/`min`/`max`; missing metrics surface as `not_observed` and fail the run | EXISTS |
 | 7 | **Event timeline** | Replay JSON `frames[]` (`t_s`, per-agent `x/y/z`, `energy`, `status`, `mode`) with `frames[].events` (e.g. `gps_loss`, `wind_gust` from the scenario `events:` schedule). Rust path: `BattleReport.timeline` (`TimelineEntry`/`TimelineEventType`) and optional `tick_data` | EXISTS |
@@ -59,8 +59,9 @@ exact existing field or file that already carries the item.
 A scenario **passes the pre-field gate** when all of the following hold:
 
 1. `strix_scenario_contract.py` validates the scenario file (required fields
-   present, `seed` non-negative integer, every `pass_envelope` metric has
-   numeric `min`/`max` with `min <= max`).
+   present, `seed` non-negative integer, each `pass_envelope` metric provides a
+   numeric `min` and/or `max` — at least one bound — with `min <= max` enforced
+   only when both bounds are present).
 2. The replay is generated from a recorded commit, and `repo.working_tree_clean`
    is `true` (a dirty tree makes the commit stamp non-reproducible).
 3. `envelope.status == "passed"` — every declared metric is observed and

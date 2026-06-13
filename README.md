@@ -57,7 +57,7 @@ Public releases should be traceable to the official upstream and maintainer rele
 
 ## Performance Snapshot
 
-All measurements below are from Criterion benchmarks on a single core in an unoptimized test profile. Release builds are materially faster.
+All measurements below are from Criterion benchmarks on a single core, using the default optimized `bench` profile (opt-level 3; no custom `[profile.bench]`, so not a debug/test profile).
 
 | Benchmark | Configuration | Time |
 |-----------|--------------|------|

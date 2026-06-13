@@ -165,8 +165,9 @@ governed mission-decision record would capture from it.
   `LossClassification::{Sam, SmallArms, Collision, ElectronicWarfare,
   Unknown}` (line 24). `KillZone { center, radius, penalty, classification,
   loss_count }` (line 98).
-- **When emitted:** `LossAnalyzer::record_loss()` produces the record and
-  returns orphaned task IDs; the tick loop then emits a
+- **When emitted:** `LossAnalyzer::record_loss()` accepts a caller-built
+  `LossRecord` (the tick loop constructs it), stores it, and returns its
+  orphaned task IDs; the tick loop then emits a
   `DecisionType::ReAuction` trace (`crates/strix-swarm/src/tick.rs`, line
   608) and the playground timeline logs `TimelineEventType::DroneLost`
   (`crates/strix-playground/src/engine.rs`).
@@ -206,7 +207,7 @@ block with `commit`, `branch`, `working_tree_clean`):
 | `record_id` | string (ULID/UUID) | ledger-assigned (future) |
 | `schema_version` | integer | this document, v1 draft |
 | `kind` | string enum | `safety_intervention` \| `roe_outcome` \| `loss_reauction` \| `ew_degraded` \| `authority_fallback` \| `run_report` |
-| `mission.scenario_id`, `mission.seed` | string, u64 | scenario YAML (`sim/scenarios/*.yaml`) |
+| `mission.scenario_id`, `mission.seed` | string, u64 | scenario YAML (`sim/scenarios/*.yaml`). **For Rust-produced payloads (`safety_intervention`, `loss_reauction`), `mission.seed` is provenance metadata only — not a determinism key**: the Rust orchestrator is not wired to the scenario seed (it uses unseeded `ParticleNavFilter::new(...)`; scenario-seed→Rust wiring is the GAP in `SCENARIO_REPLAY_CONTRACT.md` row 2), so such a record is not bit-reproducible from `mission.seed` alone. The seed determines only the Python replay |
 | `mission.config_hash` | string | `scenario_hash()` (existing) |
 | `repo.commit` / `repo.branch` / `repo.working_tree_clean` | string/string/bool | existing replay `repo` block |
 | `payload_type` | string | exact Rust type name (e.g. `strix_xai::trace::DecisionTrace`) |
