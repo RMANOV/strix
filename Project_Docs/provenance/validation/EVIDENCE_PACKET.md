@@ -53,7 +53,10 @@ Per-suite breakdown (passed counts, all 0 failed):
 
 Per the claim freeze, test counts are **point-in-time software facts** that
 drift with development; they must be re-run on the exact submission commit and
-never quoted as a frozen final number.
+never quoted as a frozen final number. This 843/0/3 was measured at `7ce303c`,
+**before** the pyo3 0.29 security-dependency update (commit `5bd998d`) was
+merged; the current tree includes that update, so the suite must be re-run on
+the exact submission commit before any external use.
 
 ---
 

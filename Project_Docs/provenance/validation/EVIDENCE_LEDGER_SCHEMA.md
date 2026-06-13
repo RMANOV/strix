@@ -75,8 +75,12 @@ governed mission-decision record would capture from it.
   `EpistemicEscalation`, `EpistemicConflict`, `EpistemicVacuum`,
   `FormationChange`, and `LeaderElection` are defined in the enum but are
   **not currently emitted** anywhere in the workspace.
-- **When emitted (storage):** recorded into the append-only `TraceRecorder`
-  log (`crates/strix-xai/src/trace.rs`), in-memory with JSON export/import.
+- **When emitted (storage):** recorded into the in-memory `TraceRecorder` log
+  (`crates/strix-xai/src/trace.rs`), with JSON export/import. **Bounded, not
+  unbounded append-only:** `record()` keeps at most 10,000 traces and evicts the
+  oldest at the cap (`self.traces.remove(0)`, FIFO ring buffer), so long runs or
+  large imports silently drop the earliest decisions — a future ledger consumer
+  must not treat the recorder as a complete append-only source.
 - **Governed record would capture:** the trace verbatim as payload, plus the
   provenance envelope and an integrity hash; the ledger adds durable,
   tamper-evident storage that the in-memory recorder does not provide.
@@ -98,7 +102,7 @@ governed mission-decision record would capture from it.
   (`crates/strix-swarm/src/tick.rs`, line 2498; invoked on the denial /
   escalation paths at lines 1197 / 1250 / 1258), which records a
   `DecisionType::ThreatResponse` `DecisionTrace` (regime `"ROE"`) into the
-  append-only `TraceRecorder` carrying the task id, threat distance, action,
+  bounded (10,000-entry FIFO) in-memory `TraceRecorder` carrying the task id, threat distance, action,
   and a formatted reason string. **Gap (honest):** that trace is *lossy* — it
   does not carry the structured `EngagementAuth` variant payload (typed
   `reason` / `urgency`), the `EngagementContext` snapshot, or the deciding
