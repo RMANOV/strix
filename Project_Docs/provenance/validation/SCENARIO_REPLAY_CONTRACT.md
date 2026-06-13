@@ -70,9 +70,14 @@ A scenario **passes the pre-field gate** when all of the following hold:
    commit.
 
 Reproducibility claim: same scenario YAML (same `config_hash`) + same `seed`
-+ same commit ⇒ same frames, metrics, and envelope verdict. This is what
-"deterministic kinematic public replay" (`fidelity` field) means — and all it
-means.
++ same `tick_s` + same commit ⇒ same frames, metrics, and envelope verdict.
+**`tick_s` must be pinned**: it is the `--tick-s` invocation step (default
+`10.0`, echoed into the replay JSON), **not** part of `config_hash` (which
+hashes only the scenario YAML), yet it drives frame count, timestamps,
+movement distance, GPS-noise scaling (`sqrt(tick_s)`), energy burn, and event
+windows — so a different `--tick-s` yields different frames/metrics/envelope
+from the same YAML + seed + commit. This is what "deterministic kinematic
+public replay" (`fidelity` field) means — and all it means.
 
 ## 4. What this gate is — and is not
 
@@ -95,9 +100,11 @@ or Rust CBF code. The Rust OODA / ROE / classical-CBF behavior is validated in a
   (`crates/strix-adapters/src/ros2.rs`, `crates/strix-adapters/src/mavlink.rs`);
 - RF, sensor-fidelity, or environment-fidelity evidence — the replay is
   kinematic by declaration;
-- a neural-safety demonstration — the safety mechanism exercised is classical
-  CBF (`fallback_to_classical: true` by default; GCBF+ ships no trained
-  weights);
+- a neural-safety demonstration — the safety behavior exercised in the Python
+  replay is **kinematic constraint avoidance** (`apply_constraint_avoidance`),
+  not a neural or classical-CBF mechanism. The classical-CBF safety guarantee
+  lives in the **separate Rust evidence lane** (`fallback_to_classical: true`
+  by default; GCBF+ ships no trained weights);
 - scale evidence beyond what a scenario actually ran — public scenarios use
   single-digit-to-tens of agents; the ~400–500 single-node ceiling is an
   estimate and 2000+ a roadmap target, neither demonstrated by this gate;
