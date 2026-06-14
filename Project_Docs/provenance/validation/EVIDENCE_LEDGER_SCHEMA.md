@@ -167,7 +167,13 @@ governed mission-decision record would capture from it.
   loss_count }` (line 98).
 - **When emitted:** `LossAnalyzer::record_loss()` accepts a caller-built
   `LossRecord` (the tick loop constructs it), stores it, and returns its
-  orphaned task IDs; the tick loop then emits a
+  orphaned task IDs. **Storage is a bounded in-memory FIFO, not a complete
+  history:** `loss_records` is a `VecDeque` capped at `MAX_LOSS_RECORDS = 1024`
+  — at the cap `record_loss()` evicts the oldest via `pop_front()`
+  (`crates/strix-auction/src/antifragile.rs`, lines 178-183). A governed ledger
+  that wants completeness must capture/export each loss record at emission,
+  before eviction, rather than treating `loss_records` as a full log. The tick
+  loop then emits a
   `DecisionType::ReAuction` trace (`crates/strix-swarm/src/tick.rs`, line
   608) and the playground timeline logs `TimelineEventType::DroneLost`
   (`crates/strix-playground/src/engine.rs`).
