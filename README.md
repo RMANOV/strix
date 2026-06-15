@@ -57,7 +57,12 @@ Public releases should be traceable to the official upstream and maintainer rele
 
 ## Performance Snapshot
 
-All measurements below are from Criterion benchmarks on a single core, using the default optimized `bench` profile (opt-level 3; no custom `[profile.bench]`, so not a debug/test profile).
+All measurements below are **prior-measured** software results from the
+Criterion benchmark profile on a single core, reproduced with `cargo bench`
+(the repository defines no custom `[profile.bench]`, so the standard Criterion
+`bench` profile applies). They are point-in-time figures, not final live facts,
+and must be **re-run on the exact submission commit** before being quoted as
+current.
 
 | Benchmark | Configuration | Time |
 |-----------|--------------|------|
@@ -71,7 +76,24 @@ All measurements below are from Criterion benchmarks on a single core, using the
 | Full swarm tick | 10 drones | 580 us |
 | Full swarm tick | 20 drones | 1.15 ms |
 
-The full tick benchmark covers estimation, regime updates, assignment, coordination, safety clamps, and trace capture. At 1.15 ms per tick for 20 drones, the system comfortably fits inside a 10 Hz orchestration loop with significant headroom for sensor processing and platform I/O.
+The full tick benchmark covers estimation, regime updates, assignment,
+coordination, safety clamps, and trace capture. The prior-measured ~1.15 ms per
+tick for 20 drones fits inside a 10 Hz orchestration loop, but this is a
+software-only benchmark figure to be re-confirmed on the submission commit, not
+a demonstrated end-to-end field result; it carries no sensor, RF, or platform-I/O
+budget.
+
+**Scale (estimate / roadmap, not demonstrated).** The largest full swarm-tick
+benchmark above is 20 drones at ~1.15 ms; the combinatorial auction benchmark
+reaches 50 drones, and the `swarm_tick` benchmark source exercises up to 100
+drones. A practical single-node ceiling of **~400–500 agents** at 10 Hz is an
+**audit-derived estimate**, and **2000+** agents is a **forward roadmap target**
+— neither is a demonstrated or benchmark-backed capability. These bounds are
+governed by the canonical claim map in
+[Project_Docs/CAPABILITY_BOUNDARY.md](Project_Docs/CAPABILITY_BOUNDARY.md) and
+detailed in
+[Project_Docs/provenance/validation/EVIDENCE_PACKET.md](Project_Docs/provenance/validation/EVIDENCE_PACKET.md)
+(item 7). They must never be stated as fact.
 
 ## Quick Start
 
