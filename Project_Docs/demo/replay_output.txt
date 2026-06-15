@@ -1,0 +1,81 @@
+STRIX software-replay -- captured deterministic output excerpt
+Scenario: gps_denied_recon   Seed: 42001
+Source: scripts/strix_sim_replay.py  (kind=software_replay, fidelity=deterministic_kinematic_public_replay)
+As-of commit: 3a5d46de4ed69f4321c058ae55d84047e2ccad49 (main, working tree clean)
+
+This file is an excerpt of the replay harness output: JSON blocks plus a derived/hand-formatted timeline and summary. Two consecutive
+runs in the same checkout produce a byte-identical file (cmp -s). The whole-file SHA256 is
+intentionally not pinned: the JSON embeds a git repo block, so the whole-file hash varies
+per checkout. The seed-driven scenario/metrics/envelope content is what reproduces
+deterministically across checkouts.
+
+--- scenario header (replay['scenario']) ---
+{
+  "config_hash": "829cc17c46b98d72",
+  "duration_s": 600.0,
+  "id": "gps_denied_recon",
+  "name": "GPS-Denied Reconnaissance",
+  "path": "sim/scenarios/gps_denied_recon.yaml",
+  "seed": 42001,
+  "tick_s": 10.0
+}
+
+--- metrics (replay['metrics']) ---
+{
+  "active_agents": 4,
+  "area_coverage_pct": 100.0,
+  "formation_coherence": 0.78,
+  "frame_count": 61,
+  "mean_energy_remaining_pct": 66.111,
+  "min_constraint_clearance_m": 0.0,
+  "offline_agents": 0,
+  "position_error_rms_m": 4.5
+}
+
+--- pass-envelope evaluation (replay['envelope']) ---
+{
+  "checks": [
+    {
+      "max": 100,
+      "metric": "area_coverage_pct",
+      "min": 80,
+      "observed": 100.0,
+      "status": "passed"
+    },
+    {
+      "max": 10.0,
+      "metric": "position_error_rms_m",
+      "min": 0.0,
+      "observed": 4.5,
+      "status": "passed"
+    },
+    {
+      "max": 1.0,
+      "metric": "formation_coherence",
+      "min": 0.6,
+      "observed": 0.78,
+      "status": "passed"
+    }
+  ],
+  "status": "passed"
+}
+
+--- timeline excerpt: agent_1 navigation mode at key timestamps ---
+(degraded_nav engages exactly at the t=30s scheduled gps_loss event)
+
+  t_s  agent_1.mode      agent_1 (x, y, z)               events
+-----  ----------------  ------------------------------  ------------------------
+    0  nominal           (    0.00,   200.00,  -50.00)   -
+   10  nominal           (  -51.89,   218.94,  -50.00)   -
+   20  nominal           ( -100.98,   201.07,  -50.00)   -
+   30  degraded_nav      ( -144.39,   171.75,  -50.00)   30.0s:gps_loss
+   40  degraded_nav      ( -180.79,   134.60,  -50.00)   -
+  120  degraded_nav      (  -76.23,  -212.21,  -50.00)   120.0s:wind_gust
+  300  degraded_nav      ( -144.40,   172.08,  -50.00)   300.0s:sensor_degradation
+  600  degraded_nav      ( -222.22,    39.13,  -50.00)   -
+
+Total frames: 61   Agents: 4   Constraints: 0
+
+Caveat: simulation-only deterministic kinematic replay. No RF/sensor fidelity,
+no hardware, no field validation. Safety claims are limited to classical-CBF + ROE + traces + simulator; no trained-neural safety guarantee is claimed.
+
