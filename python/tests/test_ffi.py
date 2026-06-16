@@ -153,6 +153,29 @@ class TestDetectJamming:
         assert direction == -1
 
 
+class TestFiniteValidation:
+    """Non-finite positions must be rejected at the FFI boundary.
+
+    Both DroneState and ParticleNavFilter run validate_finite on the
+    position array, which raises a Python ValueError for NaN / Inf.
+    """
+
+    def test_drone_state_rejects_nan_position(self):
+        sc = _import_strix_core()
+        with pytest.raises(ValueError):
+            sc.DroneState(drone_id=1, position=[float("nan"), 0.0, 0.0])
+
+    def test_drone_state_rejects_inf_position(self):
+        sc = _import_strix_core()
+        with pytest.raises(ValueError):
+            sc.DroneState(drone_id=1, position=[float("inf"), 0.0, 0.0])
+
+    def test_particle_nav_filter_rejects_inf_position(self):
+        sc = _import_strix_core()
+        with pytest.raises(ValueError):
+            sc.ParticleNavFilter(position=[float("inf"), 0.0, 0.0])
+
+
 class TestDetectRegime:
     def test_patrol_default(self):
         sc = _import_strix_core()
