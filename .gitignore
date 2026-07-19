@@ -36,3 +36,7 @@ docs/
 
 # Private internal notes (never in git)
 private-notes/
+
+# Local product specifications and implementation concepts are private inputs.
+# Public branches contain code, tests, and separately approved marketing only.
+/.private-specs/
