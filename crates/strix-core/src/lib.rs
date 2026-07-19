@@ -21,6 +21,7 @@
 pub mod adversarial;
 pub mod anomaly;
 pub mod cbf;
+pub mod defensive_policy;
 pub mod ew_response;
 pub mod fleet_metrics;
 pub mod formation;
