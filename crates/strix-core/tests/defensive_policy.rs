@@ -91,7 +91,7 @@ fn failed_engagement_authority_or_capacity_evades() {
 }
 
 #[test]
-fn threat_exposure_below_hard_limit_still_blocks_engagement() {
+fn threat_exposure_above_engagement_limit_blocks_engagement() {
     let mut input = snapshot();
     input.threat_confidence = 0.9;
     input.exposure = 0.5;

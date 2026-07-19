@@ -3,7 +3,7 @@
 //! The kernel returns recommendations only. It is not called by the runtime
 //! pipeline, owns no actuator, and performs no persistence or network access.
 
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NominalMode {
@@ -294,12 +294,16 @@ impl DefensivePolicy {
     }
 
     fn predictability_gate(&self, snapshot: &TacticalSnapshot) -> bool {
+        let predictions = snapshot
+            .sensor_predictions
+            .iter()
+            .map(|prediction| (prediction.sensor_id.as_str(), prediction.predictability))
+            .collect::<HashMap<_, _>>();
         self.genome.sensor_gates.iter().all(|gate| {
-            snapshot
-                .sensor_predictions
-                .iter()
-                .find(|prediction| prediction.sensor_id == gate.sensor_id)
-                .and_then(|prediction| prediction.predictability)
+            predictions
+                .get(gate.sensor_id.as_str())
+                .copied()
+                .flatten()
                 .is_some_and(|value| value >= gate.minimum_predictability)
         })
     }
@@ -340,8 +344,7 @@ impl DefensivePolicy {
         &self,
         snapshot: &TacticalSnapshot,
     ) -> Result<DefensiveDecision, PolicyError> {
-        let mut rows = snapshot.nominal_modes.clone();
-        rows.sort_by_key(|row| row.mode);
+        let rows = &snapshot.nominal_modes;
         let score = |row: &ModeMetrics| {
             self.genome.throughput_weight * row.throughput
                 + self.genome.safety_weight * row.safety
