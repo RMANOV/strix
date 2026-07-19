@@ -18,4 +18,4 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
-mavlink = { version = "0.17", features = ["ardupilotmega"], optional = true }
+mavlink = { git = "https://github.com/mavlink/rust-mavlink", rev = "25cbe4e6a85d62b2ee8320b1a3d2935e0be309fa", version = "0.18", features = ["dialect-ardupilotmega"], optional = true }

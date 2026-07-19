@@ -266,7 +266,7 @@ impl PlatformAdapter for MavlinkAdapter {
 pub mod hw {
     use super::*;
 
-    use mavlink::ardupilotmega::{
+    use mavlink::dialects::ardupilotmega::{
         MavAutopilot, MavMessage, MavModeFlag, MavState, MavType, ATTITUDE_DATA,
         GLOBAL_POSITION_INT_DATA, HEARTBEAT_DATA,
     };
@@ -518,7 +518,7 @@ mod tests {
     #[cfg(feature = "mavlink-hw")]
     mod hw_tests {
         use super::super::hw::MavlinkConnection;
-        use mavlink::ardupilotmega::{ATTITUDE_DATA, GLOBAL_POSITION_INT_DATA};
+        use mavlink::dialects::ardupilotmega::{ATTITUDE_DATA, GLOBAL_POSITION_INT_DATA};
 
         /// Verify lat/lon/alt unit conversions for parse_position().
         ///
