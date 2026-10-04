@@ -29,15 +29,12 @@ jobs:
         toolchain: [stable, nightly]
     steps:
       - uses: actions/checkout@v4
-      - name: Stub phi-sim (optional local-only dependency)
-        run: |
-          mkdir -p ../phi-sim/src
-          printf '[package]\nname = "phi-sim"\nversion = "0.5.0"\nedition = "2021"\n' > ../phi-sim/Cargo.toml
-          echo '// stub' > ../phi-sim/src/lib.rs
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
+      - name: Verify standalone public Cargo boundary
+        run: python3 scripts/verify_cargo_boundary.py
       - name: Test workspace
         run: cargo test --workspace
       - name: Test with temporal feature
@@ -48,11 +45,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Stub phi-sim
-        run: |
-          mkdir -p ../phi-sim/src
-          printf '[package]\nname = "phi-sim"\nversion = "0.5.0"\nedition = "2021"\n' > ../phi-sim/Cargo.toml
-          echo '// stub' > ../phi-sim/src/lib.rs
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -67,11 +59,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Stub phi-sim
-        run: |
-          mkdir -p ../phi-sim/src
-          printf '[package]\nname = "phi-sim"\nversion = "0.5.0"\nedition = "2021"\n' > ../phi-sim/Cargo.toml
-          echo '// stub' > ../phi-sim/src/lib.rs
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
@@ -85,11 +72,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Stub phi-sim
-        run: |
-          mkdir -p ../phi-sim/src
-          printf '[package]\nname = "phi-sim"\nversion = "0.5.0"\nedition = "2021"\n' > ../phi-sim/Cargo.toml
-          echo '// stub' > ../phi-sim/src/lib.rs
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -111,11 +93,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Stub phi-sim
-        run: |
-          mkdir -p ../phi-sim/src
-          printf '[package]\nname = "phi-sim"\nversion = "0.5.0"\nedition = "2021"\n' > ../phi-sim/Cargo.toml
-          echo '// stub' > ../phi-sim/src/lib.rs
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -143,11 +120,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Stub phi-sim
-        run: |
-          mkdir -p ../phi-sim/src
-          printf '[package]\nname = "phi-sim"\nversion = "0.5.0"\nedition = "2021"\n' > ../phi-sim/Cargo.toml
-          echo '// stub' > ../phi-sim/src/lib.rs
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: |

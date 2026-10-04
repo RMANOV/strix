@@ -7,7 +7,6 @@ description = "Integration orchestrator: chains all STRIX crates into a unified 
 
 [features]
 default = []
-phi-sim = ["dep:phi-sim"]
 temporal = []
 gcbf = []
 
@@ -17,7 +16,6 @@ strix-auction = { path = "../strix-auction" }
 strix-mesh = { path = "../strix-mesh" }
 strix-adapters = { path = "../strix-adapters" }
 strix-xai = { path = "../strix-xai" }
-phi-sim = { path = "../../../phi-sim", optional = true }
 nalgebra.workspace = true
 ndarray.workspace = true
 rand.workspace = true
@@ -31,3 +29,7 @@ harness = false
 [dev-dependencies]
 rand_distr = "0.4"
 criterion.workspace = true
+
+# Shared source retains the separately owned optional integration condition.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("phi-sim"))'] }
