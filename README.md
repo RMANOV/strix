@@ -108,6 +108,21 @@ pip install -e .
 
 **Requirements**: Rust 1.83+, Python 3.11+, maturin 1.11+
 
+The public Cargo workspace is standalone: no sibling checkout or placeholder
+crate is required. Its supported swarm features are `temporal` and `gcbf`;
+`cargo test --workspace --features temporal` exercises the temporal build.
+`python3 scripts/verify_cargo_boundary.py` checks metadata from a temporary
+tracked-source copy with no sibling directory. This is a packaging regression
+check, not a security sandbox or a substitute for compiling and running tests.
+
+The former public `--features phi-sim` invocation has moved to an independently
+owned, authorized integration workspace. That workspace supplies the real
+optional dependency and reuses the same Rust source and targets through explicit
+manifests. Use its documented manifest-path command for the opt-in build. Public
+CI does not create a placeholder dependency and does not validate that private
+integration. Dependency advisories in that separate graph require independent
+review; removing them from the public lockfile does not patch the private graph.
+
 ## Software-Only Replay
 
 STRIX includes a public-safe deterministic replay harness for inspecting
