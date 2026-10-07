@@ -2,7 +2,8 @@
 #
 # Intentionally empty. The previous ignores (RUSTSEC-2025-0021 gix-features,
 # RUSTSEC-2026-0098/0099/0104 rustls-webpki) covered crates that left Cargo.lock
-# when the optional phi-sim path dependency was removed (#23), so any return of
-# those crates now fails the security audit instead of being silently ignored.
+# when the optional phi-sim path dependency was removed (#23), so any reintroduced
+# vulnerable version of those crates now fails the security audit instead of
+# being silently ignored.
 [advisories]
 ignore = []
