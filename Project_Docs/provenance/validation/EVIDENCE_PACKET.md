@@ -62,6 +62,14 @@ the exact submission commit before any external use.
 
 ## Claim → evidence → caveat → source matrix
 
+**Correction, 2026-10-14:** the Python `gps_denied_recon` replay previously
+published in the reviewer demo does not establish coverage, navigation RMS, or
+formation coherence. Its former PASS used constants / an active-agent proxy
+and is withdrawn. The corrected player fails the unchanged scenario envelope
+with these metrics `not_observed`; see
+[the corrected capture](../../demo/replay_output.txt). This is separate from
+the dated Rust test receipt and Criterion benchmark claims below.
+
 | # | Claim (as allowed by claim freeze) | Evidence | Caveat | Source |
 |---|---|---|---|---|
 | 1 | Workspace test suite passes: 843 passed / 0 failed / 3 ignored at commit `7ce303c`, 2026-06-12. | Live `cargo test --workspace` run recorded above, with per-suite breakdown. | Point-in-time count; re-run on the exact submission commit. `phi_sim_integration` contributes 0 tests unless the `phi-sim` feature is enabled. | This document, section above; suites listed per crate (e.g. `crates/strix-core/src/`, `crates/strix-swarm/tests/twenty_drone_integration.rs`). |

@@ -137,6 +137,15 @@ The command writes a JSON timeline and a self-contained HTML canvas under
 scenario regression evidence, and visual inspection of agent reactions. It is
 not a substitute for hardware, RF, sensor, or field validation.
 
+**Replay result correction (2026-10-14):** the former GPS-denied replay PASS
+used fixed position-error / formation values and an active-agent ratio labelled
+as area coverage. Those values were not measurements and are withdrawn. The
+corrected replay retains computed kinematic diagnostics, marks unsupported
+acceptance metrics `not_observed`, and exits `1` for this scenario. Its original
+acceptance targets remain unchanged. See the corrected
+[reviewer walkthrough](Project_Docs/demo/DEMO.md) and
+[captured result](Project_Docs/demo/replay_output.txt).
+
 ## Capability status / public claim boundary
 
 STRIX is a civilian-dogfooded, single-operator, test-backed, simulator-first

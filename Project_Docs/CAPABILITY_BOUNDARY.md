@@ -102,6 +102,16 @@ are listed as the do-not-claim set, not as assertions:
 
 ## Allowed public claims (frozen claim-set)
 
+**Replay correction (2026-10-14):** the historical Python GPS-denied replay
+PASS and its coverage / RMS / coherence figures are withdrawn as evidence.
+The values were constants or an active-agent proxy, not measurements of those
+quantities. Unsupported scenario metrics now remain `not_observed` and fail
+the envelope. Computed kinematic counters / energy do not establish navigation,
+coverage, formation, radio, or threat-response performance. This correction
+also removes fixed KPI outputs for the attrition and multi-domain replays.
+See [the corrected reviewer demo](demo/DEMO.md). Historical Criterion timing
+figures belong to a separate benchmark lane and are not measured by this player.
+
 STRIX may publicly claim:
 
 - A public-safe research / prototype autonomy stack.

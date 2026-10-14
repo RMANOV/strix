@@ -327,60 +327,84 @@ def replay_metrics(
 ) -> dict[str, float | int]:
     total_agents = len(agents)
     active_agents = sum(1 for agent in agents if agent.status == "active")
-    alive_fraction = active_agents / total_agents if total_agents else 0.0
-    scenario_id = str(scenario.get("scenario_id", "scenario"))
-    base_coverage = min(100.0, len(frames) / max(1, FRAME_LIMIT) * 100.0)
-    if frames:
-        base_coverage = 100.0 * alive_fraction
+    # Scenario names and target envelopes are not measurement sources. This
+    # model records kinematics, scripted statuses and an endurance-based energy
+    # budget; it has no sensor coverage, navigation estimator or radio model.
     metrics: dict[str, float | int] = {
         "active_agents": active_agents,
-        "area_coverage_pct": round(base_coverage, 3),
         "offline_agents": total_agents - active_agents,
         "frame_count": len(frames),
         "mean_energy_remaining_pct": round(
             100.0 * sum(agent.energy for agent in agents) / max(1, total_agents),
             3,
         ),
-        "min_constraint_clearance_m": round(min_constraint_clearance_m, 3)
-        if min_constraint_clearance_m is not None
-        else 0.0,
     }
-
-    if scenario_id == "gps_denied_recon":
-        metrics.update(
-            {
-                "area_coverage_pct": round(base_coverage, 3),
-                "position_error_rms_m": 4.5,
-                "formation_coherence": 0.78,
-            }
-        )
-    elif scenario_id == "mass_attrition":
-        metrics.update(
-            {
-                "drone_survival_rate": round(alive_fraction, 3),
-                "kill_zone_avoidance_success_rate": 0.74,
-                "formation_recovery_time_per_loss": 20.0,
-            }
-        )
-    elif scenario_id == "multi_domain":
-        metrics.update(
-            {
-                "relay_link_availability_pct": 97.0,
-                "threat_detection_to_response_s": 30.0,
-                "formation_coherence_per_phase": 0.72,
-            }
-        )
+    if min_constraint_clearance_m is not None:
+        metrics["min_constraint_clearance_m"] = round(min_constraint_clearance_m, 3)
     return metrics
+
+
+def unobserved_metric_reason(metric_name: str) -> str:
+    reasons = {
+        "area_coverage_pct": "No sensor footprint or surveyed-area accumulator is implemented.",
+        "position_error_rms_m": "No estimated/reference position pairs are recorded.",
+        "formation_coherence": "No formation coherence observer is implemented.",
+        "drone_survival_rate": "Losses are scripted; no physical survivability model is implemented.",
+        "kill_zone_avoidance_success_rate": "No avoidance outcome/trial recorder is implemented.",
+        "formation_recovery_time_per_loss": "No formation recovery detector is implemented.",
+        "relay_link_availability_pct": "No radio/link availability model is implemented.",
+        "threat_detection_to_response_s": "No detection/response timestamp pair is recorded.",
+        "formation_coherence_per_phase": "No phase-specific formation coherence observer is implemented.",
+        "min_constraint_clearance_m": "No constraint clearance samples were recorded.",
+    }
+    return reasons.get(metric_name, "This replay has no measurement recorder for the requested metric.")
+
+
+def build_metric_evidence(metrics: dict[str, float | int], scenario: dict[str, Any]) -> dict[str, Any]:
+    sources = {
+        "active_agents": "Count of final AgentState.status == active; losses are scripted.",
+        "offline_agents": "Count of final AgentState.status != active; losses are scripted.",
+        "frame_count": "Number of emitted replay frames.",
+        "mean_energy_remaining_pct": "Mean final AgentState.energy from the time/endurance model, not battery telemetry.",
+        "min_constraint_clearance_m": "Minimum sampled agent-to-constraint boundary distance in the kinematic model.",
+    }
+    evidence = {
+        name: {"status": "computed", "source": sources[name], "scope": "deterministic_kinematic_model"}
+        for name in metrics
+    }
+    requested = set(scenario.get("metrics", []) or [])
+    requested.update((scenario.get("pass_envelope", {}) or {}).keys())
+    requested.add("min_constraint_clearance_m")
+    for name in sorted(requested - metrics.keys()):
+        evidence[name] = {"status": "not_observed", "reason": unobserved_metric_reason(name)}
+    return evidence
 
 
 def evaluate_envelope(metrics: dict[str, float | int], scenario: dict[str, Any]) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     for metric_name, bounds in (scenario.get("pass_envelope", {}) or {}).items():
-        if not isinstance(bounds, dict):
+        if not isinstance(bounds, dict) or not any(name in bounds for name in ("min", "max")):
+            checks.append({"metric": metric_name, "status": "invalid_envelope"})
+            continue
+        limits = [bounds[name] for name in ("min", "max") if name in bounds]
+        if any(isinstance(limit, bool) or not isinstance(limit, (int, float)) or not math.isfinite(limit) for limit in limits):
+            checks.append({"metric": metric_name, "status": "invalid_envelope"})
+            continue
+        if "min" in bounds and "max" in bounds and bounds["min"] > bounds["max"]:
+            checks.append({"metric": metric_name, "status": "invalid_envelope"})
             continue
         observed = metrics.get(metric_name)
         if observed is None:
-            checks.append({"metric": metric_name, "status": "not_observed"})
+            checks.append({
+                "metric": metric_name,
+                "status": "not_observed",
+                "min": bounds.get("min"),
+                "max": bounds.get("max"),
+                "reason": unobserved_metric_reason(metric_name),
+            })
+            continue
+        if isinstance(observed, bool) or not isinstance(observed, (int, float)) or not math.isfinite(observed):
+            checks.append({"metric": metric_name, "status": "invalid_observation"})
             continue
         passed = True
         if "min" in bounds and float(observed) < float(bounds["min"]):
@@ -489,6 +513,7 @@ def build_replay(scenario_path: Path, tick_s: float) -> dict[str, Any]:
         ],
         "constraints": constraints,
         "metrics": metrics,
+        "metric_evidence": build_metric_evidence(metrics, scenario),
         "envelope": envelope,
         "frames": frames,
     }
@@ -658,8 +683,21 @@ def render_html(replay: dict[str, Any]) -> str:
       slider.value = String(frameIndex);
     }}
     function metricCards() {{
-      const show = ["active_agents", "offline_agents", "mean_energy_remaining_pct", "min_constraint_clearance_m", "frame_count"];
-      cards.innerHTML = show.filter(k => k in replay.metrics).map(k => `<div class="card"><div class="label">${{k}}</div><div class="value">${{replay.metrics[k]}}</div></div>`).join("");
+      const entries = [
+        ["envelope", replay.envelope.status, "Requested scenario targets must be observed to pass."],
+        ...Object.entries(replay.metric_evidence).map(([key, evidence]) => [
+          key,
+          evidence.status === "computed" ? replay.metrics[key] : "not observed",
+          evidence.source || evidence.reason
+        ])
+      ];
+      for (const [key, value, detail] of entries) {{
+        const card = document.createElement("div"); card.className = "card";
+        const label = document.createElement("div"); label.className = "label"; label.textContent = key;
+        const display = document.createElement("div"); display.className = "value"; display.textContent = value;
+        const explanation = document.createElement("p"); explanation.textContent = detail;
+        card.append(label, display, explanation); cards.appendChild(card);
+      }}
     }}
     button.onclick = () => {{ playing = !playing; button.textContent = playing ? "Pause" : "Play"; }};
     slider.oninput = () => {{ frameIndex = Number(slider.value); draw(); }};
