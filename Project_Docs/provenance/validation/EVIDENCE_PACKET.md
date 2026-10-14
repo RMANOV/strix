@@ -62,6 +62,14 @@ the exact submission commit before any external use.
 
 ## Claim → evidence → caveat → source matrix
 
+**Correction, 2026-10-14:** the Python `gps_denied_recon` replay previously
+published in the reviewer demo does not establish coverage, navigation RMS, or
+formation coherence. Its former PASS used constants / an active-agent proxy
+and is withdrawn. The corrected player fails the unchanged scenario envelope
+with these metrics `not_observed`; see
+[the corrected capture](../../demo/replay_output.txt). This is separate from
+the dated Rust test receipt and Criterion benchmark claims below.
+
 | # | Claim (as allowed by claim freeze) | Evidence | Caveat | Source |
 |---|---|---|---|---|
 | 1 | Workspace test suite passes: 843 passed / 0 failed / 3 ignored at commit `7ce303c`, 2026-06-12. | Live `cargo test --workspace` run recorded above, with per-suite breakdown. | Point-in-time count; re-run on the exact submission commit. `phi_sim_integration` contributes 0 tests unless the `phi-sim` feature is enabled. | This document, section above; suites listed per crate (e.g. `crates/strix-core/src/`, `crates/strix-swarm/tests/twenty_drone_integration.rs`). |
@@ -77,13 +85,24 @@ the exact submission commit before any external use.
 
 ## Reproduction
 
+The historical Rust receipt (item 1) is reproduced from its dated commit only:
+
 ```bash
 git checkout 7ce303cb8b9cd05654870c7922bd3c467804c230
 cargo test --workspace                      # live test evidence (item 1)
+```
+
+Switch to the tested replay-correction commit before generating replay evidence
+or re-measuring benchmark timings. The old checkout above must not be used for
+the corrected replay. This pinned source has 175 local Python tests passing;
+for a future submission, re-run on that submission's exact source commit.
+
+```bash
+git checkout ea29fc11d4a9037de0a21a47f61ac227d020f93b
 cargo bench -p strix-swarm                  # re-measure tick timings (item 2)
 python scripts/strix_test_matrix.py --list  # public software-only evidence harness
 python scripts/strix_sim_replay.py \
-  --scenario sim/scenarios/gps_denied_recon.yaml  # deterministic replay artifact
+  --scenario sim/scenarios/gps_denied_recon.yaml  # writes replay; expected exit 1
 ```
 
 All commands are software-only. None of them produce, or substitute for,

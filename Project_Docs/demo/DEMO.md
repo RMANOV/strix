@@ -1,4 +1,4 @@
-# STRIX Reviewer Demo — `gps_denied_recon` (Software Replay)
+# STRIX Reviewer Demo — `gps_denied_recon` (Corrected Software Replay)
 
 > Simulation-only. Zero hardware flights. No RF/sensor fidelity. No field validation. Safety claims are limited to classical-CBF + ROE + traces + simulator; no trained-neural safety guarantee is claimed.
 
@@ -6,12 +6,18 @@ This is a **static, reviewer-facing** walkthrough of one deterministic software-
 scenario replay. It shows exactly how to reproduce a single worked scenario and what
 the harness emits, so a reviewer can re-run it and obtain byte-identical output.
 
-- **Scope:** documentation-only. No source, manifest, or test was modified to produce this doc.
+- **Correction date:** 2026-10-14. Replay metric production and its regression tests
+  were corrected along with this walkthrough.
 - **Evidence kind:** `software_replay`, `fidelity = deterministic_kinematic_public_replay`.
-- **As-of commit:** `3a5d46de4ed69f4321c058ae55d84047e2ccad49` (`main`, working tree clean).
-- **Claim posture:** every figure below is a *prior measured software-replay result to be
-  re-run on the exact submission commit*, never a final live fact, and never inferred
-  hardware/RF/field readiness. See [`../CAPABILITY_BOUNDARY.md`](../CAPABILITY_BOUNDARY.md).
+- **Withdrawn result:** the capture at `3a5d46de4ed69f4321c058ae55d84047e2ccad49`
+  reported 100% area coverage, 4.5 m position RMS, 0.78 formation coherence, and
+  PASS. Coverage was an active-agent ratio; RMS and coherence were fixed
+  constants selected by scenario id. These are not measurements of those
+  quantities and must not be cited as achieved results.
+- **Corrected result:** the original three acceptance criteria are
+  `not_observed`; the envelope is `failed` and the process exits `1`.
+  The computed counters and energy below describe the Python kinematic model
+  only. See [`../CAPABILITY_BOUNDARY.md`](../CAPABILITY_BOUNDARY.md).
 
 The replay harness is a lightweight **kinematic** scenario player. It is **not** a
 field-physics, RF, or hardware-fidelity simulator. Its purpose is repeatable,
@@ -22,7 +28,9 @@ inspectable public scenario behavior before any integration testing.
 ## 1. The worked scenario
 
 `gps_denied_recon` — four aerial agents fly a reconnaissance pattern and transition to
-GPS-denied (degraded) navigation when GPS is lost at `t = 30 s`. The scenario's seed is
+the scripted `degraded_nav` mode when the GPS-loss event occurs at `t = 30 s`.
+This is a mode flag and noisy kinematic movement, not a run of the Rust particle
+filter or a measurement of GPS-denied navigation accuracy. The scenario's seed is
 fixed at **42001** inside the scenario file itself
 (`sim/scenarios/gps_denied_recon.yaml`), so the replay is deterministic by construction.
 
@@ -46,14 +54,16 @@ python3 scripts/strix_sim_replay.py \
   --no-html
 ```
 
-`--no-html` writes only the JSON evidence. The process exits `0` when the scenario's
-pass-envelope is satisfied.
+`--no-html` writes only the JSON evidence. This scenario currently exits `1`
+after writing the artifact because its required performance metrics are
+unmeasured. Exit `0` requires every acceptance metric to be observed and within
+the original bounds.
 
 ---
 
 ## 3. Determinism proof (double run, byte-identical)
 
-The command was run **twice** in sequence into two separate files, then compared byte-for-byte:
+Run the command twice into separate files, preserving both expected exit codes:
 
 ```bash
 python3 scripts/strix_sim_replay.py --scenario sim/scenarios/gps_denied_recon.yaml --output /tmp/a1_run1.json --no-html
@@ -62,7 +72,8 @@ cmp -s /tmp/a1_run1.json /tmp/a1_run2.json && echo "byte-identical"
 ```
 
 Within a single checkout, the two runs are **byte-for-byte identical to each other** —
-`cmp -s` reports no difference.
+`cmp -s` reports no difference. Both replay commands still exit `1`. Determinism
+does not make an unmeasured acceptance criterion pass.
 
 > The whole-file `sha256sum` is **intentionally not pinned** in this doc. The replay
 > JSON embeds a `repo` block (`commit`, `branch`, `working_tree_clean`) that reflects
@@ -100,37 +111,36 @@ A captured excerpt of the harness output for this run is stored alongside this d
 ```json
 {
   "active_agents": 4,
-  "area_coverage_pct": 100.0,
-  "formation_coherence": 0.78,
   "frame_count": 61,
   "mean_energy_remaining_pct": 66.111,
-  "min_constraint_clearance_m": 0.0,
-  "offline_agents": 0,
-  "position_error_rms_m": 4.5
+  "offline_agents": 0
 }
 ```
 
-These are prior measured software-replay values for this seed/commit, to be re-run on the
-exact submission commit. They are not hardware, RF, or field measurements.
+These are computed replay diagnostics for seed 42001 and tick 10 s. Active
+agents do not measure spatial coverage. The energy value is the model's
+endurance-based accounting, not battery telemetry. Unsupported metrics are
+omitted from `metrics`; `metric_evidence` records why each cannot be observed.
 
 ### 4.3 Pass-envelope evaluation — `replay["envelope"]`
 
-```json
-{
-  "checks": [
-    { "metric": "area_coverage_pct",   "observed": 100.0, "min": 80,  "max": 100,  "status": "passed" },
-    { "metric": "position_error_rms_m", "observed": 4.5,   "min": 0.0, "max": 10.0, "status": "passed" },
-    { "metric": "formation_coherence",  "observed": 0.78,  "min": 0.6, "max": 1.0,  "status": "passed" }
-  ],
-  "status": "passed"
-}
-```
+| Required metric | Unchanged acceptance bounds | Corrected result | Missing measurement |
+|---|---|---|---|
+| `area_coverage_pct` | 80–100% | `not_observed` | Sensor footprint / spatial coverage accumulation |
+| `position_error_rms_m` | 0–10 m | `not_observed` | Estimated and reference positions to compare |
+| `formation_coherence` | 0.6–1.0 | `not_observed` | Defined, instrumented formation-quality calculation |
+
+Overall `envelope.status = "failed"`; CLI exit code **1**. The full checks and
+their reasons are captured in [`replay_output.txt`](replay_output.txt). This
+means the replay cannot determine whether those performance targets were met;
+it does not supply measured values below the target. The matrix entry still
+requires exit `0` and therefore also fails.
 
 ### 4.4 Timeline excerpt — degraded-nav transition at GPS loss
 
 The per-agent `mode` field flips from `nominal` to `degraded_nav` exactly at the
 scheduled `t = 30 s` `gps_loss` event, and scenario events surface at their scheduled
-times. This is the documented degraded-mode / EW behavior under GPS loss.
+times. This establishes scheduled event playback and the Python mode transition.
 
 ```
   t_s  agent_1.mode      agent_1 (x, y, z)               events
@@ -145,10 +155,11 @@ times. This is the documented degraded-mode / EW behavior under GPS loss.
   600  degraded_nav      ( -222.22,    39.13,  -50.00)   -
 ```
 
-This scenario defines no threat constraints, so `min_constraint_clearance_m` is `0.0`
-and no constraint-avoidance gating fires in this run. The shipped safety story rests on
-classical control-barrier-function gating plus ROE plus traces plus the simulator; this
-particular scenario exercises the GPS-denied degraded-navigation path, not CBF gating.
+This scenario defines no threat constraints, so `min_constraint_clearance_m`
+is **not observed** and is omitted, rather than reported as zero. This Python
+player does not invoke the Rust orchestrator, classical CBF, ROE, or particle
+filter. Those need separate Rust evidence; this capture establishes none of
+their performance or safety properties.
 
 ---
 
@@ -177,21 +188,26 @@ flowchart LR
 
 ## 6. Reproduce checklist
 
-1. Check out commit `3a5d46de4ed69f4321c058ae55d84047e2ccad49`, clean working tree.
+1. Check out the commit containing this correction, with a clean working tree;
+   record its hash. The withdrawn historical commit reproduces the defect.
 2. From the repo root, run the command in Section 2.
 3. Run it a second time to a different output path.
 4. `cmp -s` the two outputs — within your checkout they are byte-identical to each
    other. (The whole-file `sha256sum` is checkout-specific and intentionally not
    pinned — see Section 3.)
-5. Compare your `scenario` / `metrics` / `envelope` blocks to Section 4 — these are the
-   seed-deterministic, checkout-independent reproducibility check.
+5. Confirm exit `1`, three `not_observed` acceptance checks, and overall `failed`.
+   Compare the `scenario` / `metrics` / `metric_evidence` / `envelope` blocks to
+   the corrected capture. A Python regression-suite PASS verifies this honest
+   failure behavior; it is not a GPS-denied scenario PASS.
 
 ---
 
 ## 7. Boundary reminder
 
 - Software replay only. No hardware flights, no RF/sensor fidelity, no field validation.
-- Numbers are prior measured software-replay results, re-run on the submission commit.
+- The historical fixed / proxy KPI values and their PASS are withdrawn.
+- Current counters / energy are kinematic diagnostics; the three performance
+  acceptance metrics remain unmeasured. Re-run on the exact submission commit.
 - No fielded deployment, no delivered ROS2/MAVLink hardware integration, no defence
   validation/accreditation, no trained-neural safety guarantee is claimed.
 - Authoritative claim map: [`../CAPABILITY_BOUNDARY.md`](../CAPABILITY_BOUNDARY.md).

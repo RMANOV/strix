@@ -71,7 +71,7 @@
     },
     {
       "id": "software_replay_gps_denied",
-      "name": "Software-only visual replay generation",
+      "name": "GPS-denied replay acceptance envelope (unmeasured criteria fail)",
       "tags": [
         "smoke",
         "scenario",

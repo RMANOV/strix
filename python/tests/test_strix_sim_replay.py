@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 def _load_module():
@@ -45,11 +48,11 @@ events:
   - time: 10
     type: gps_loss
 metrics:
-  - area_coverage_pct
+  - active_agents
 pass_envelope:
-  area_coverage_pct:
-    min: 0
-    max: 100
+  active_agents:
+    min: 2
+    max: 2
 """,
         encoding="utf-8",
     )
@@ -130,7 +133,7 @@ def test_envelope_fails_when_required_metric_is_missing(tmp_path):
     scenario = tmp_path / "scenario.yaml"
     _write_scenario(scenario)
     data = scenario.read_text(encoding="utf-8").replace(
-        "  area_coverage_pct:\n    min: 0\n    max: 100\n",
+        "  active_agents:\n    min: 2\n    max: 2\n",
         "  missing_metric:\n    min: 1\n    max: 2\n",
     )
     scenario.write_text(data, encoding="utf-8")
@@ -175,5 +178,108 @@ attrition_schedule:
 
     assert replay["metrics"]["active_agents"] == 1
     assert replay["metrics"]["offline_agents"] == 1
+    assert replay["envelope"]["status"] == "failed"
     offline_events = [event for event in replay["frames"][1]["events"] if event["type"] == "agent_offline"]
     assert offline_events[0]["agent_index"] == 0
+
+
+@pytest.mark.parametrize("scenario_name", ["gps_denied_recon", "mass_attrition", "multi_domain"])
+def test_official_replay_does_not_claim_uninstrumented_targets(scenario_name):
+    module = _load_module()
+    scenario = module.ROOT / "sim" / "scenarios" / f"{scenario_name}.yaml"
+
+    replay = module.build_replay(scenario, tick_s=10)
+    required = module.read_scenario(scenario)["pass_envelope"]
+
+    assert replay["envelope"]["status"] == "failed"
+    assert all(check["status"] == "not_observed" for check in replay["envelope"]["checks"])
+    for metric_name in required:
+        assert metric_name not in replay["metrics"]
+        assert replay["metric_evidence"][metric_name]["status"] == "not_observed"
+        assert replay["metric_evidence"][metric_name]["reason"]
+
+
+def test_scenario_id_cannot_create_measurements(tmp_path):
+    module = _load_module()
+    scenario = tmp_path / "scenario.yaml"
+    _write_scenario(scenario)
+    ordinary = module.build_replay(scenario, tick_s=10)
+    for scenario_id in ("gps_denied_recon", "mass_attrition", "multi_domain"):
+        data = scenario.read_text(encoding="utf-8")
+        data = data.replace(data.splitlines()[1], f"scenario_id: {scenario_id}")
+        scenario.write_text(data, encoding="utf-8")
+        named = module.build_replay(scenario, tick_s=10)
+        assert named["frames"] == ordinary["frames"]
+        assert named["metrics"] == ordinary["metrics"]
+
+
+def test_no_constraints_means_clearance_is_not_observed(tmp_path):
+    module = _load_module()
+    scenario = tmp_path / "scenario.yaml"
+    _write_scenario(scenario)
+
+    replay = module.build_replay(scenario, tick_s=10)
+
+    assert replay["constraints"] == []
+    assert "min_constraint_clearance_m" not in replay["metrics"]
+    assert replay["metric_evidence"]["min_constraint_clearance_m"]["status"] == "not_observed"
+
+
+@pytest.mark.parametrize("observed", [float("nan"), float("inf"), float("-inf"), True, "not-a-number"])
+def test_invalid_value_cannot_pass_envelope(observed):
+    module = _load_module()
+
+    result = module.evaluate_envelope({"value": observed}, {"pass_envelope": {"value": {"min": 0}}})
+
+    assert result["status"] == "failed"
+    assert result["checks"][0]["status"] == "invalid_observation"
+
+
+def test_official_gps_replay_cli_preserves_targets_and_returns_failure(tmp_path):
+    module = _load_module()
+    scenario = module.ROOT / "sim" / "scenarios" / "gps_denied_recon.yaml"
+    original_scenario = scenario.read_bytes()
+    output = tmp_path / "replay.json"
+    html_output = tmp_path / "replay.html"
+
+    result = subprocess.run(
+        [sys.executable, str(module.ROOT / "scripts" / "strix_sim_replay.py"),
+         "--scenario", str(scenario), "--output", str(output), "--html", str(html_output)],
+        capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert scenario.read_bytes() == original_scenario
+    replay = json.loads(output.read_text(encoding="utf-8"))
+    assert replay["envelope"]["status"] == "failed"
+    assert replay["metrics"]["frame_count"] == 61
+    assert replay["metrics"]["active_agents"] == 4
+    assert "not_observed" in html_output.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("bounds", [None, {}, {"min": float("nan")}, {"max": float("inf")}, {"min": True}, {"max": "not-a-number"}, {"min": 2, "max": 1}])
+def test_invalid_requirement_cannot_be_skipped_or_passed(bounds):
+    module = _load_module()
+
+    result = module.evaluate_envelope({"value": 1}, {"pass_envelope": {"value": bounds}})
+
+    assert result["status"] == "failed"
+    assert result["checks"][0]["status"] == "invalid_envelope"
+
+
+@pytest.mark.parametrize(
+    ("metrics", "bounds", "expected_check"),
+    [
+        ({}, {"min": 10 ** 1000}, "not_observed"),
+        ({"value": 1}, {"min": 10 ** 1000}, "failed"),
+        ({"value": 1}, {"max": 10 ** 1000}, "passed"),
+        ({"value": 10 ** 1000}, {"min": 10 ** 1000, "max": 10 ** 1000}, "passed"),
+    ],
+)
+def test_large_integer_bounds_and_observations_keep_exact_comparisons(metrics, bounds, expected_check):
+    module = _load_module()
+
+    result = module.evaluate_envelope(metrics, {"pass_envelope": {"value": bounds}})
+
+    assert result["checks"][0]["status"] == expected_check
+    assert result["status"] == ("passed" if expected_check == "passed" else "failed")

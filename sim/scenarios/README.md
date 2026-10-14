@@ -12,8 +12,12 @@ python scripts/strix_sim_replay.py --scenario sim/scenarios/gps_denied_recon.yam
 ```
 
 The replay output is a JSON timeline plus an optional self-contained HTML canvas
-for visual inspection. This validates seeded orchestration behavior and public
-scenario envelopes; it does not replace hardware, RF, or field validation.
+for visual inspection. It reproduces the Python player's seeded movement and
+scheduled events. Acceptance targets are not observations: a metric without
+an implemented measurement is `not_observed` and fails the envelope. The
+GPS-denied, attrition, and multi-domain scenarios currently have unsupported
+acceptance metrics; their replay output must not be presented as scenario PASS.
+The Python player does not exercise the Rust orchestrator.
 
 These scenarios are public software-only replay **inputs**. They are not sensor,
 RF, or hardware validation artifacts, and they do not by themselves demonstrate

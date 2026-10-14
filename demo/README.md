@@ -15,6 +15,12 @@ Open the generated HTML file locally to inspect agent movement, event timing,
 constraint avoidance, energy, and replay metrics. Generated replay assets live
 under `target/` by default and are not committed.
 
+The GPS-denied command currently writes its artifacts and exits `1`: coverage,
+position-error RMS, and formation coherence are not instrumented by this
+kinematic player. They are `not_observed`, so the scenario envelope fails.
+The earlier PASS based on fixed values / an active-agent coverage proxy is
+withdrawn; see [the corrected walkthrough](../Project_Docs/demo/DEMO.md).
+
 Demo output is public-safe software replay intended for visual inspection of
 seeded behavior. It is **not** hardware, RF, sensor, or field validation. See
 [../Project_Docs/CAPABILITY_BOUNDARY.md](../Project_Docs/CAPABILITY_BOUNDARY.md)
