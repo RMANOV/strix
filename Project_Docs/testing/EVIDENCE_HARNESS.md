@@ -114,7 +114,7 @@ availability, or threat-response latency is established by these runs.
 Verification of this correction used `/usr/bin/python3` 3.14.7, pytest 9.0.2,
 NumPy 2.3.5, and PyYAML 6.0.3. The complete Python suite changed from
 **153 passed** at parent commit `b883500e8be932bd226960278f15e7aaa62a2e90`
-to **171 passed**, including **26 replay tests**. New regressions failed
+to **175 passed**, including **30 replay tests**. New regressions failed
 against the old producer before the fix. The selected `replay` matrix check
 returned exit `1` / **failed**, as required while the three metrics are missing.
 These are dated local Python verification results, not a new Rust, native FFI,

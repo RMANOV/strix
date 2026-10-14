@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import sys
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 
 
 def _load_module():
@@ -265,3 +265,21 @@ def test_invalid_requirement_cannot_be_skipped_or_passed(bounds):
 
     assert result["status"] == "failed"
     assert result["checks"][0]["status"] == "invalid_envelope"
+
+
+@pytest.mark.parametrize(
+    ("metrics", "bounds", "expected_check"),
+    [
+        ({}, {"min": 10 ** 1000}, "not_observed"),
+        ({"value": 1}, {"min": 10 ** 1000}, "failed"),
+        ({"value": 1}, {"max": 10 ** 1000}, "passed"),
+        ({"value": 10 ** 1000}, {"min": 10 ** 1000, "max": 10 ** 1000}, "passed"),
+    ],
+)
+def test_large_integer_bounds_and_observations_keep_exact_comparisons(metrics, bounds, expected_check):
+    module = _load_module()
+
+    result = module.evaluate_envelope(metrics, {"pass_envelope": {"value": bounds}})
+
+    assert result["checks"][0]["status"] == expected_check
+    assert result["status"] == ("passed" if expected_check == "passed" else "failed")

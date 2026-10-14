@@ -380,6 +380,13 @@ def build_metric_evidence(metrics: dict[str, float | int], scenario: dict[str, A
     return evidence
 
 
+def is_finite_number(value: Any) -> bool:
+    """Accept exact integers without converting them to bounded floats."""
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, int) or (isinstance(value, float) and math.isfinite(value))
+
+
 def evaluate_envelope(metrics: dict[str, float | int], scenario: dict[str, Any]) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     for metric_name, bounds in (scenario.get("pass_envelope", {}) or {}).items():
@@ -387,7 +394,7 @@ def evaluate_envelope(metrics: dict[str, float | int], scenario: dict[str, Any])
             checks.append({"metric": metric_name, "status": "invalid_envelope"})
             continue
         limits = [bounds[name] for name in ("min", "max") if name in bounds]
-        if any(isinstance(limit, bool) or not isinstance(limit, (int, float)) or not math.isfinite(limit) for limit in limits):
+        if any(not is_finite_number(limit) for limit in limits):
             checks.append({"metric": metric_name, "status": "invalid_envelope"})
             continue
         if "min" in bounds and "max" in bounds and bounds["min"] > bounds["max"]:
@@ -403,13 +410,13 @@ def evaluate_envelope(metrics: dict[str, float | int], scenario: dict[str, Any])
                 "reason": unobserved_metric_reason(metric_name),
             })
             continue
-        if isinstance(observed, bool) or not isinstance(observed, (int, float)) or not math.isfinite(observed):
+        if not is_finite_number(observed):
             checks.append({"metric": metric_name, "status": "invalid_observation"})
             continue
         passed = True
-        if "min" in bounds and float(observed) < float(bounds["min"]):
+        if "min" in bounds and observed < bounds["min"]:
             passed = False
-        if "max" in bounds and float(observed) > float(bounds["max"]):
+        if "max" in bounds and observed > bounds["max"]:
             passed = False
         checks.append(
             {
