@@ -85,13 +85,24 @@ the dated Rust test receipt and Criterion benchmark claims below.
 
 ## Reproduction
 
+The historical Rust receipt (item 1) is reproduced from its dated commit only:
+
 ```bash
 git checkout 7ce303cb8b9cd05654870c7922bd3c467804c230
 cargo test --workspace                      # live test evidence (item 1)
+```
+
+Switch to the tested replay-correction commit before generating replay evidence
+or re-measuring benchmark timings. The old checkout above must not be used for
+the corrected replay. This pinned source has 175 local Python tests passing;
+for a future submission, re-run on that submission's exact source commit.
+
+```bash
+git checkout ea29fc11d4a9037de0a21a47f61ac227d020f93b
 cargo bench -p strix-swarm                  # re-measure tick timings (item 2)
 python scripts/strix_test_matrix.py --list  # public software-only evidence harness
 python scripts/strix_sim_replay.py \
-  --scenario sim/scenarios/gps_denied_recon.yaml  # deterministic replay artifact
+  --scenario sim/scenarios/gps_denied_recon.yaml  # writes replay; expected exit 1
 ```
 
 All commands are software-only. None of them produce, or substitute for,
